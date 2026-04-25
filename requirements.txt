@@ -1,0 +1,30 @@
+# Core runtime dependencies
+numpy>=1.26
+
+# Optional – install extras as needed:
+#   pip install "hotelling[llm]"       for LLM agents
+#   pip install "hotelling[spatial]"   for GIS/raster data
+#   pip install "hotelling[viz]"       for plotting
+#   pip install "hotelling[notebooks]" for Jupyter support
+#   pip install "hotelling[yaml]"      for YAML config loading
+#   pip install "hotelling[all]"       for everything
+
+# LLM
+# openai>=1.0
+
+# Spatial
+# geopandas>=0.14
+# rasterio>=1.3
+# shapely>=2.0
+
+# Visualisation
+# matplotlib>=3.8
+# plotly>=5.18
+
+# Notebooks
+# jupyter>=1.0
+# ipywidgets>=8.0
+# tqdm>=4.0
+
+# Config
+# pyyaml>=6.0

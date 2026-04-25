@@ -203,6 +203,36 @@ cython_debug/
 # Temporary file for partial code execution
 tempCodeRunnerFile.py
 
+# -----------------------------------------------------------------------
+# Project-specific ignores
+# -----------------------------------------------------------------------
+
+# Large / sensitive data files – track with DVC or similar instead
+data/raw/*
+data/processed/*
+data/synthetic/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/synthetic/.gitkeep
+
+# Trained model artefacts – large binary files
+models/llm/*
+models/qlearning/*
+!models/llm/.gitkeep
+!models/qlearning/.gitkeep
+
+# Simulation results
+results/
+
+# API keys and secrets
+.env.local
+secrets.yaml
+*.key
+
+# Notebook outputs (strip before committing, or keep – team preference)
+# Uncomment the line below to ignore all notebook outputs:
+# *.ipynb
+
 # Ruff stuff:
 .ruff_cache/
 

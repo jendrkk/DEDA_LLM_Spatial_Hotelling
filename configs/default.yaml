@@ -1,0 +1,12 @@
+# Default simulation configuration
+# Values here are overridden by experiment-specific YAML files or
+# by passing SimulationConfig kwargs directly in Python.
+
+n_steps: 100
+city_width: 1.0
+city_height: 1.0
+n_consumers: 1000
+transport_cost: 1.0
+seed: 42
+log_every: 10
+output_dir: results/default

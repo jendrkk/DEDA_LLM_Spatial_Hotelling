@@ -1,0 +1,17 @@
+# LLM agent configuration
+# Override the defaults below to configure the LLM-backed market actor.
+
+n_steps: 50
+city_width: 1.0
+city_height: 1.0
+n_consumers: 1000
+transport_cost: 1.0
+seed: 42
+log_every: 5
+output_dir: results/llm
+
+extra:
+  llm_model: "gpt-4o-mini"
+  temperature: 0.2
+  max_tokens: 256
+  # base_url: "http://localhost:11434/v1"   # Uncomment for local Ollama

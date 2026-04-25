@@ -1,0 +1,18 @@
+# Q-learning agent configuration
+n_steps: 500
+city_width: 1.0
+city_height: 1.0
+n_consumers: 2000
+transport_cost: 1.0
+seed: 42
+log_every: 25
+output_dir: results/qlearning
+
+extra:
+  n_bins: 10
+  alpha: 0.1
+  gamma: 0.95
+  epsilon: 1.0
+  epsilon_decay: 0.995
+  epsilon_min: 0.05
+  step_size: 0.1

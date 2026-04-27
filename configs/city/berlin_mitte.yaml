@@ -1,0 +1,9 @@
+# city/berlin_mitte.yaml - Berlin Mitte district (EPSG:25833)
+# Boundary derived from OpenStreetMap admin boundary relation 55765.
+boundary: [383000.0, 5816000.0, 390000.0, 5822000.0]  # metres (EPSG:25833)
+crs: "EPSG:25833"
+osm_place: "Berlin Mitte, Berlin, Germany"
+population_raster: data/raw/zensus2022_mitte_100m.tif
+n_consumer_samples: 50000
+transport_cost: 0.001              # € per metre
+mu: 0.25

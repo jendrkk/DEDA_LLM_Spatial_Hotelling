@@ -1,0 +1,19 @@
+# config.yaml - top-level Hydra config
+# Compose from sub-configs using Hydra defaults list.
+# Run: python -m hotelling.cli train
+
+defaults:
+  - city: unit_square
+  - env: base
+  - agents: qlearning_duopoly
+  - _self_
+
+# Session settings
+seed: 42
+max_steps: 1_000_000
+output_dir: results/runs
+
+# Logging
+logging:
+  level: INFO
+  json_format: false

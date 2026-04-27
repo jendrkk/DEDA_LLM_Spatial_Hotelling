@@ -1,0 +1,16 @@
+# sweep/transport_cost.yaml - dose-response: profit gain vs transport cost t
+#
+# Run: hotelling sweep --config configs/sweep/transport_cost.yaml
+
+defaults:
+  - override /city: unit_square
+  - override /env: base
+  - override /agents: qlearning_duopoly
+
+sweep:
+  axes:
+    - param: city.transport_cost
+      values: [0.1, 0.2, 0.5, 1.0, 1.5, 2.0, 3.0]
+
+n_seeds: 20
+max_steps: 1_000_000

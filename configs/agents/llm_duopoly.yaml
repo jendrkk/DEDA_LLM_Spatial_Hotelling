@@ -1,0 +1,23 @@
+# agents/llm_duopoly.yaml - two LLM agents (GPT-4o snapshot)
+_target_: hotelling.agents.llm.LLMAgent
+
+firms:
+  - firm_id: firm_0
+    location: [0.25, 0.5]
+    marginal_cost: 1.0
+    quality: 1.0
+    agent:
+      model: "gpt-4o-2024-08-06"
+      temperature: 0
+      max_tokens: 512
+      max_retries: 3
+
+  - firm_id: firm_1
+    location: [0.75, 0.5]
+    marginal_cost: 1.0
+    quality: 1.0
+    agent:
+      model: "gpt-4o-2024-08-06"
+      temperature: 0
+      max_tokens: 512
+      max_retries: 3

@@ -1,4 +1,4 @@
-# Development dependencies (testing, linting, docs)
+# Development dependencies (testing, linting, pre-commit, type checking)
 -r requirements.txt
 
 # Testing
@@ -7,6 +7,9 @@ pytest-cov>=5.0
 
 # Linting / formatting
 ruff>=0.4
+
+# Pre-commit hooks
+pre-commit>=3.7
 
 # Type checking
 mypy>=1.9

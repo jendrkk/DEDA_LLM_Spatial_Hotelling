@@ -18,7 +18,8 @@ from hotelling.agents.base import Action, Observation, Transition
 class RandomAgent:
     """Uniformly random agent that serves as a baseline."""
 
-    def __init__(self, m: int = 15, seed: Optional[int] = None) -> None:
+    def __init__(self, firm_id: str = "", m: int = 15, seed: Optional[int] = None) -> None:
+        self.firm_id = firm_id
         self.m = m
         self._rng = np.random.default_rng(seed)
 

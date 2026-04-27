@@ -1,0 +1,6 @@
+# city/unit_square.yaml - normalised 1x1 unit square market
+# Used for Calvano-style theoretical benchmarks.
+boundary: [0.0, 0.0, 1.0, 1.0]  # xmin, ymin, xmax, ymax
+n_consumer_samples: 10000         # number of Monte-Carlo consumer samples
+transport_cost: 1.0
+mu: 0.25                          # logit taste heterogeneity

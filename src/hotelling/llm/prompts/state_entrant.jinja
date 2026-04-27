@@ -1,0 +1,97 @@
+{% if call_type == "ENTRY" %}
+## Market state at entry (Period 0)
+
+You are observing the **incumbent market** before your entry. All stores below are competitors.
+
+---
+
+### 1. Incumbent chain overview
+
+| Chain | Type | Stores in Ring | Mean price (last obs.) | Dominant zones |
+|-------|------|---------------|----------------------|----------------|
+{% for c in incumbents %}
+| {{ c.chain_id }} | {{ c.chain_type }} | {{ c.n_stores }} | {{ "%.3f"|format(c.mean_price) }} € | {{ c.dominant_zones | join(", ") }} |
+{% endfor %}
+
+---
+
+### 2. Spatial zone overview
+
+| Zone | Population | LOR status index | Discount stores | Standard stores | Bio stores | Commercial sites available |
+|------|-----------|-----------------|----------------|----------------|------------|--------------------------|
+{% for z in zones %}
+| {{ z.label }} | {{ "{:,.0f}".format(z.population) }} | {{ "%.2f"|format(z.lor_status) }} | {{ z.n_discount }} | {{ z.n_standard }} | {{ z.n_bio }} | {{ z.n_sites_available }} |
+{% endfor %}
+
+*LOR status index: 0 = lowest social status / most price-sensitive; 1 = highest status / most quality-seeking*
+
+---
+
+### 3. Candidate entry sites
+
+{% for s in candidate_sites %}
+**Site {{ loop.index0 }}** — Zone: `{{ s.zone }}` | LOR status: {{ "%.2f"|format(s.lor_status) }} | Nearby competitors (500m): {{ s.n_rivals_nearby }} ({{ s.rival_type_summary }}) | Distance to nearest competitor: {{ s.nearest_rival_distance_m | round | int }} m | Estimated foot traffic index: {{ "%.2f"|format(s.foot_traffic_index) }}
+{% endfor %}
+
+---
+
+### 4. Consumer market summary
+
+- Total residential population (inner Ring): {{ "{:,.0f}".format(consumers.total_population) }}
+- High-status consumer share (ring-wide): {{ "%.1f"|format(consumers.high_status_share_pct) }}%
+- Average grocery trip distance: ~{{ consumers.avg_trip_distance_m | round | int }} m
+
+{% else %}
+## Market state — Period {{ current_period }} ({{ time_since_last }} periods since last review)
+
+---
+
+### 1. Your performance since last review (Period {{ last_review_period }}–{{ current_period }})
+
+| Metric | Last review | Current | Change |
+|--------|------------|---------|--------|
+| Mean price | {{ "%.3f"|format(perf.mean_price_prev) }} € | {{ "%.3f"|format(perf.mean_price_curr) }} € | {{ "%+.3f"|format(perf.mean_price_curr - perf.mean_price_prev) }} € |
+| Mean effort | {{ "%.3f"|format(perf.mean_effort_prev) }} | {{ "%.3f"|format(perf.mean_effort_curr) }} | {{ "%+.3f"|format(perf.mean_effort_curr - perf.mean_effort_prev) }} |
+| Mean demand/period | {{ "%.1f"|format(perf.mean_demand_prev) }} | {{ "%.1f"|format(perf.mean_demand_curr) }} | {{ "%+.1f"|format(perf.mean_demand_curr - perf.mean_demand_prev) }} |
+| Mean profit/period | {{ "%.2f"|format(perf.mean_profit_prev) }} € | {{ "%.2f"|format(perf.mean_profit_curr) }} € | {{ "%+.2f"|format(perf.mean_profit_curr - perf.mean_profit_prev) }} € |
+| Profit trend | — | {{ "%+.1f"|format(perf.profit_trend_pct) }}% | vs. rolling mean |
+
+---
+
+### 2. Current response function (active since Period {{ last_review_period }})
+
+```json
+{{ current_response_function | tojson(indent=2) }}
+```
+
+---
+
+### 3. Nearest rival chains (public information only)
+
+| Chain | Type | Distance to your store | Last mean price | Price trend ({{ time_since_last }} periods) |
+|-------|------|----------------------|----------------|---------------------------------------------|
+{% for r in nearest_rivals %}
+| {{ r.chain_id }} | {{ r.chain_type }} | {{ r.distance_m | round | int }} m | {{ "%.3f"|format(r.last_mean_price) }} € | {{ "%+.1f"|format(r.price_trend_pct) }}% |
+{% endfor %}
+
+---
+
+### 4. Market context
+
+| Zone | Population | LOR status | Discount mean price | Standard mean price | Bio mean price |
+|------|-----------|------------|-------------------|-------------------|---------------|
+{% for z in zones %}
+| {{ z.label }} | {{ "{:,.0f}".format(z.population) }} | {{ "%.2f"|format(z.lor_status) }} | {% if z.discount_mean_price %}{{ "%.3f"|format(z.discount_mean_price) }} €{% else %}—{% endif %} | {% if z.standard_mean_price %}{{ "%.3f"|format(z.standard_mean_price) }} €{% else %}—{% endif %} | {% if z.bio_mean_price %}{{ "%.3f"|format(z.bio_mean_price) }} €{% else %}—{% endif %} |
+{% endfor %}
+
+---
+
+### 5. What triggered this review
+
+{{ trigger_description }}
+
+{% endif %}
+
+---
+
+Think step by step. Then output your JSON decision.

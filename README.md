@@ -15,12 +15,15 @@ extended to **two dimensions** and enriched with intelligent market actors:
 
 | Agent type | Description |
 |------------|-------------|
-| **LLM agent** | Uses a large language model (OpenAI-compatible API) to decide location and price each period |
-| **Q-learning agent** | Learns a tabular Q-policy over discretised location/price states |
-| **Naive agent** | Rule-based heuristics (move-to-centre, random walk, stay) |
+| **LLM agent** | Uses a large language model (LiteLLM + Instructor) to price each period with structured output validation |
+| **Q-learning agent** | Tabular Q-policy over discretised price states (Calvano et al. 2020 calibration) |
+| **Myopic agent** | Stage-game Bertrand-Nash best-response baseline |
+| **Random agent** | Uniformly random baseline for benchmarking |
+| **Deep-Q agent** | Neural Q-network for larger state spaces |
 
-The toolkit supports both **synthetic** city geometries and **real spatial data**
-(population rasters, geographic boundaries, business location datasets).
+The toolkit supports both **synthetic** unit-square geometries and **real
+spatial data** (Zensus 2022 population rasters, OpenStreetMap boundaries,
+Berlin business locations).
 
 ---
 
@@ -29,52 +32,53 @@ The toolkit supports both **synthetic** city geometries and **real spatial data*
 ```text
 DEDA_LLM_Spatial_Hotelling/
 │
-├── hotelling/                  # Main installable package
-│   ├── core/                   # City, Market, Firm, Consumer models
-│   ├── agents/                 # BaseAgent, LLMAgent, QLearningAgent, NaiveAgent
-│   ├── spatial/                # MapLoader, PopulationGrid, BusinessLocations
-│   ├── simulation/             # SimulationEngine, SimulationConfig, metrics
-│   ├── visualization/          # Static (matplotlib) & interactive (plotly) plots
-│   └── utils/                  # Logging, data I/O helpers
+├── src/hotelling/              # Main installable package (src layout)
+│   ├── core/                   # City, Firm, market clearing, equilibrium solvers
+│   ├── agents/                 # AgentProtocol, Q-learning, deep-Q, myopic, random, LLM
+│   ├── env/                    # PettingZoo HotellingMarketEnv, EntryGame
+│   ├── spatial/                # SquareGrid, OSM loader, raster reader, distance utils
+│   ├── simulation/             # SimulationEngine, batch runner, Parquet recorder
+│   ├── analysis/               # ResultsDB (DuckDB), metrics, IRF
+│   ├── viz/                    # Static (matplotlib), interactive (plotly/folium), animation
+│   ├── llm/                    # LiteLLM client, Pydantic schemas, Jinja2 prompts
+│   ├── utils/                  # Seeding, structured logging
+│   └── cli.py                  # Typer CLI (hotelling train / sweep / export)
+│
+├── configs/                    # Hydra-style YAML configs
+│   ├── config.yaml             # Top-level defaults
+│   ├── city/                   # unit_square.yaml, berlin_mitte.yaml
+│   ├── env/                    # base.yaml
+│   ├── agents/                 # qlearning_duopoly.yaml, llm_duopoly.yaml
+│   └── sweep/                  # alpha_beta.yaml, transport_cost.yaml
+│
+├── apps/
+│   └── explore_market.py       # Interactive marimo exploration app
+│
+├── tests/
+│   ├── conftest.py             # Shared fixtures
+│   ├── unit/                   # Unit tests (core, agents, utils, llm, recorder)
+│   └── integration/            # Integration tests (env construction, etc.)
+│
+├── notebooks/                  # Jupyter notebooks (01–05)
+├── docs/
+│   ├── decisions/              # Architecture Decision Records (ADR-001 – ADR-003)
+│   └── theory/                 # Background notes on the Hotelling model
+│
+├── report/
+│   ├── figures/                # Generated figures (PNG/PDF)
+│   └── README.md               # Figure generation instructions
 │
 ├── data/
 │   ├── raw/                    # Raw spatial / business data (not committed)
 │   ├── processed/              # Pre-processed datasets
 │   └── synthetic/              # Generated synthetic datasets
 │
-├── models/
-│   ├── llm/                    # LLM prompts, adapter configs, fine-tune artefacts
-│   └── qlearning/              # Saved Q-table JSON files
-│
-├── notebooks/                  # Jupyter notebooks for interactive analysis
-│   ├── 01_getting_started.ipynb
-│   ├── 02_general_simulation.ipynb
-│   ├── 03_llm_agents.ipynb
-│   ├── 04_spatial_analysis.ipynb
-│   └── 05_results_analysis.ipynb
-│
-├── experiments/                # Runnable experiment scripts
-│   ├── general_hotelling.py
-│   ├── llm_competition.py
-│   └── spatial_real_data.py
-│
-├── tests/                      # Pytest test suite
-│   ├── test_core/
-│   ├── test_agents/
-│   └── test_simulation/
-│
-├── docs/
-│   └── theory/                 # Background notes on the Hotelling model
-│
-├── configs/                    # YAML configuration files
-│   ├── default.yaml
-│   ├── llm_config.yaml
-│   └── qlearning_config.yaml
-│
-├── pyproject.toml              # Package metadata & tool configuration
-├── requirements.txt            # Runtime dependencies
-├── requirements-dev.txt        # Development dependencies
-└── .gitignore
+├── pyproject.toml              # Package metadata & tool configuration (src layout)
+├── Makefile                    # Development workflow shortcuts
+├── .pre-commit-config.yaml     # Pre-commit hooks (ruff lint + format)
+├── .python-version             # Pinned Python version (3.11)
+├── requirements.txt            # Runtime pinned dependencies (for reproducibility)
+└── requirements-dev.txt        # Development dependencies
 ```
 
 ---
@@ -86,22 +90,27 @@ DEDA_LLM_Spatial_Hotelling/
 git clone https://github.com/jendrkk/DEDA_LLM_Spatial_Hotelling.git
 cd DEDA_LLM_Spatial_Hotelling
 
-# Install core package (editable mode)
+# Install core package in editable mode (src layout)
 pip install -e .
 
-# Install all optional extras (LLM, spatial, visualisation, notebooks)
+# Install all optional extras (LLM, spatial, viz, RL, DB, CLI, notebooks)
 pip install -e ".[all]"
+
+# Or use the Makefile shortcut
+make install-dev
 ```
 
 ### Optional extras
 
-| Extra | Installs | Use case |
-|-------|----------|----------|
-| `llm` | `openai` | LLM-powered agents |
-| `spatial` | `geopandas`, `rasterio`, `shapely` | Real GIS / raster data |
-| `viz` | `matplotlib`, `plotly` | Static & interactive plots |
-| `notebooks` | `jupyter`, `ipywidgets`, `tqdm` | Jupyter notebooks |
-| `yaml` | `pyyaml` | YAML config loading |
+| Extra | Key packages | Use case |
+|-------|-------------|----------|
+| `llm` | `litellm`, `instructor`, `openai` | LLM-powered agents |
+| `spatial` | `geopandas`, `rasterio`, `shapely`, `osmnx` | Real GIS / raster data |
+| `viz` | `matplotlib`, `plotly`, `folium`, `pydeck`, `imageio` | All visualizations |
+| `rl` | `torch`, `gymnasium`, `pettingzoo` | Deep-Q and RL training |
+| `db` | `duckdb`, `pyarrow` | DuckDB query layer for results |
+| `cli` | `typer` | Command-line interface |
+| `notebooks` | `jupyter`, `marimo`, `tqdm` | Interactive notebooks |
 | `all` | All of the above | Full functionality |
 
 ---
@@ -111,54 +120,84 @@ pip install -e ".[all]"
 ### Programmatic API
 
 ```python
-from hotelling.agents.naive_agent import NaiveAgent
-from hotelling.simulation.config import SimulationConfig
-from hotelling.simulation.engine import SimulationEngine
-from hotelling.simulation.metrics import aggregate_results
+from hotelling.core.city import City
+from hotelling.core.firm import Firm
+from hotelling.env.market_env import HotellingMarketEnv
+from hotelling.agents.qlearning import QLearningAgent
 
-cfg = SimulationConfig(n_steps=100, n_consumers=2000, seed=42)
-engine = SimulationEngine(config=cfg)
-
+# Define a unit-square city with two duopoly firms
+city = City(boundary=(0.0, 0.0, 1.0, 1.0))
 firms = [
-    NaiveAgent("Firm_A", location=(0.1, 0.5), strategy="center"),
-    NaiveAgent("Firm_B", location=(0.9, 0.5), strategy="center"),
+    Firm(id="firm_0", location=(0.25, 0.5), marginal_cost=1.0),
+    Firm(id="firm_1", location=(0.75, 0.5), marginal_cost=1.0),
 ]
+city.firms = firms
 
-engine.setup(firms)
-results = engine.run()
-agg = aggregate_results(results)
-print(engine.market.summary())
+# Create the PettingZoo-compatible environment
+env = HotellingMarketEnv(city=city, firms=firms, m=15)
+
+# Create Q-learning agents (Calvano 2020 calibration)
+agents = {
+    f.id: QLearningAgent(firm_id=f.id, m=15, alpha=0.10, beta=2e-5, seed=i)
+    for i, f in enumerate(firms)
+}
+
+print("Environment ready. Agents:", list(agents.keys()))
 ```
 
-### Running experiments
+### CLI
 
 ```bash
-# General Hotelling competition (naive agents)
-python experiments/general_hotelling.py
+# Run a single training session
+hotelling train --config configs/config.yaml
 
-# LLM vs. naive agent (requires OPENAI_API_KEY)
-OPENAI_API_KEY=sk-... python experiments/llm_competition.py
+# Run an (α, β) parameter sweep
+hotelling sweep --config configs/sweep/alpha_beta.yaml --jobs -1
 
-# Spatial experiment with real data (falls back to synthetic if data absent)
-python experiments/spatial_real_data.py
+# Merge all run Parquet files into one summary
+hotelling export results/runs/ --out results/summary.parquet
 ```
 
-### Jupyter notebooks
+### Interactive exploration
 
 ```bash
-jupyter notebook notebooks/
+# Install marimo, then launch the exploration app
+pip install marimo
+marimo edit apps/explore_market.py
 ```
-
-Start with `01_getting_started.ipynb` for a guided tour of the package.
 
 ---
 
 ## Running Tests
 
 ```bash
-pip install -e ".[all]"
-pip install pytest pytest-cov
-pytest
+make install-dev
+make test          # all tests
+make test-unit     # unit tests only
+make coverage      # with HTML coverage report
+```
+
+Or directly:
+
+```bash
+pytest tests/unit/ tests/integration/ -v
+```
+
+---
+
+## Development
+
+```bash
+make lint          # ruff check
+make format        # ruff format
+make lint-fix      # auto-fix lint issues
+```
+
+Pre-commit hooks (ruff lint + format + standard checks):
+
+```bash
+pip install pre-commit
+pre-commit install
 ```
 
 ---
@@ -169,59 +208,48 @@ Place raw data files in `data/raw/`:
 
 | File | Description |
 |------|-------------|
-| `boundary.geojson` | Geographic boundary of the study area |
-| `population.tif` | Population density raster (GeoTIFF) |
+| `zensus2022_mitte_100m.tif` | Zensus 2022 population raster at 100 m resolution |
+| `boundary.geojson` | Geographic boundary of the study area (OSM admin polygon) |
 | `businesses.csv` | Business locations with `lon`/`lat` columns |
 
-Processed/derived datasets go in `data/processed/`.
 Large data files should be tracked with [DVC](https://dvc.org/) rather than
 committed directly to Git.
 
 ---
 
-## LLM Agent Configuration
+## LLM Agent
 
-The LLM agent uses any OpenAI-compatible endpoint.  Configure it in
-`configs/llm_config.yaml` or pass parameters directly:
+The LLM agent works with any OpenAI-compatible endpoint via LiteLLM.
+Always pin to a model snapshot for reproducibility:
 
 ```python
-from hotelling.agents.llm_agent import LLMAgent
+from hotelling.agents.llm import LLMAgent
 
 agent = LLMAgent(
-    firm_id="GPT_Firm",
-    model="gpt-4o-mini",
-    # For local Ollama:
-    # base_url="http://localhost:11434/v1",
-    # api_key="ollama",
+    firm_id="gpt_firm",
+    model="gpt-4o-2024-08-06",   # always pin to a snapshot
+    temperature=0,
+    log_path="results/llm_calls.jsonl",
+)
+
+# For local Ollama
+agent_local = LLMAgent(
+    firm_id="local_firm",
+    model="ollama/llama3",
 )
 ```
 
----
-
-## Q-Learning Agent
-
-Trained Q-tables are saved as JSON files in `models/qlearning/`:
-
-```python
-from hotelling.agents.qlearning_agent import QLearningAgent
-
-agent = QLearningAgent(firm_id="QL_Firm", n_bins=10, alpha=0.1, gamma=0.95)
-# ... run simulation ...
-agent.save("models/qlearning/ql_firm.json")
-
-# Load in a later session
-agent.load("models/qlearning/ql_firm.json")
-```
+Set your API key: `export OPENAI_API_KEY=sk-...`
 
 ---
 
-## Contributing
+## Architecture Decisions
 
-1. Fork the repository and create a feature branch.
-2. Install dev dependencies: `pip install -e ".[all]" -r requirements-dev.txt`
-3. Run the test suite: `pytest`
-4. Run the linter: `ruff check . && ruff format .`
-5. Open a pull request.
+See [`docs/decisions/`](docs/decisions/) for Architecture Decision Records:
+
+- [ADR-001](docs/decisions/ADR-001-src-layout.md) – src layout for the Python package
+- [ADR-002](docs/decisions/ADR-002-llm-litellm-instructor.md) – LiteLLM + Instructor for LLM integration
+- [ADR-003](docs/decisions/ADR-003-pettingzoo-env.md) – PettingZoo ParallelEnv as simulation wrapper
 
 ---
 
@@ -229,11 +257,16 @@ agent.load("models/qlearning/ql_firm.json")
 
 * Hotelling, H. (1929). *Stability in Competition*. The Economic Journal, 39(153), 41–57.
 * d'Aspremont et al. (1979). *On Hotelling's 'Stability in Competition'*. Econometrica.
-* Tirole, J. (1988). *The Theory of Industrial Organization*. MIT Press.
-* Sutton & Barto (2018). *Reinforcement Learning: An Introduction* (2nd ed.). MIT Press.
+* Calvano, E., Calzolari, G., Denicolo, V., & Pastorello, S. (2020).
+  *Artificial intelligence, algorithmic pricing, and collusion*.
+  American Economic Review, 110(10), 3267–3297.
+* Anderson, de Palma, Thisse (1992). *Discrete Choice Theory of Product Differentiation*. MIT Press.
+* Tabuchi, T. (1994). *Two-stage two-dimensional spatial competition between two firms*. Regional Science and Urban Economics.
+* Terry, J. et al. (2021). *PettingZoo: Gym for Multi-Agent Reinforcement Learning*.
 
 ---
 
 ## License
 
 [MIT](LICENSE)
+

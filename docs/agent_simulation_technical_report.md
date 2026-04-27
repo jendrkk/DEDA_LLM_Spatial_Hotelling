@@ -499,20 +499,3 @@ The following implementation decisions were made in the design process and must 
 | Group membership assigned once at startup | Groups reflect structural store characteristics (location, neighbourhood); not a dynamic state variable |
 | At most 2 simultaneous group divisions | Beyond 2 divisions, CEO action space grows to 32+ parameters; identification of effects becomes impossible |
 | Group divisions extensible via registry | Anticipated need for new divisions (e.g., rival-type based) without touching envelope or CEO logic |
-
----
-
-## 11. ADRs to Add to `docs/decisions/`
-
-The following Architecture Decision Records should be created alongside the refactoring:
-
-| File | Decision |
-|---|---|
-| `0005-per-store-independent-qtables.md` | Why store Q-tables are not shared within a chain |
-| `0006-relative-action-space.md` | Why actions are relative adjustments, not absolute price levels |
-| `0007-three-phase-simulation.md` | Why burn-in precedes CEO activation; why entry is a separate phase |
-| `0008-llm-calls-not-batched.md` | Why chains are called separately; information isolation argument |
-| `0009-gamma-fixed-globally.md` | Why gamma is not a CEO output parameter |
-| `0010-group-division-extensibility.md` | How to add a new group division; interface contract |
-| `0011-entrant-response-function.md` | Why entrant uses committed response function rather than per-period LLM |
-| `0012-inner-ring-not-pankow.md` | Geographic scope change and implications for data pipeline |

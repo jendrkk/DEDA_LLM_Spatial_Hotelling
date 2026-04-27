@@ -36,7 +36,7 @@ Each store maintains its own independent Q-table. Q-tables are never shared betw
 
 - Within-chain price dispersion emerges naturally from independent learning and is observable in simulation output.
 - Two same-chain stores in similar environments may reach different converged policies; this is expected and should be documented in results.
-- Q-table initialisation for the entrant store must be handled explicitly (see ADR 0011) since the entrant cannot benefit from the burn-in phase.
+- Q-table initialisation for the entrant store must be handled explicitly (see ADR-010) since the entrant cannot benefit from the burn-in phase.
 - The `store_rl.py` module instantiates one `StoreQLearner` object per store, each with its own Q-table array. There is no shared Q-table registry.
 
 ---

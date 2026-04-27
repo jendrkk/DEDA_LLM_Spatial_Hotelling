@@ -1,0 +1,25 @@
+# sweep/alpha_beta.yaml - Calvano (2020) Table 1 replication sweep
+# Sweeps over learning rate alpha and exploration decay beta.
+#
+# Run: hotelling sweep --config configs/sweep/alpha_beta.yaml --jobs -1
+
+defaults:
+  - override /city: unit_square
+  - override /env: base
+  - override /agents: qlearning_duopoly
+
+sweep:
+  axes:
+    - param: agents.firms[0].agent.alpha
+      values: [0.025, 0.05, 0.10, 0.20, 0.40]
+    - param: agents.firms[0].agent.beta
+      values: [1.0e-5, 2.0e-5, 4.0e-5, 8.0e-5]
+  sync_params:
+    # Keep both firms' hyperparameters identical
+    - source: agents.firms[0].agent.alpha
+      target: agents.firms[1].agent.alpha
+    - source: agents.firms[0].agent.beta
+      target: agents.firms[1].agent.beta
+
+n_seeds: 10   # replications per parameter combination
+max_steps: 1_000_000

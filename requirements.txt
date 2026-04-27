@@ -1,30 +1,17 @@
-# Core runtime dependencies
+# Core runtime dependencies (pinned to ranges; see pyproject.toml for full extras)
 numpy>=1.26
+pandas>=2.1
+pydantic>=2.7
+jinja2>=3.1
+pyyaml>=6.0
+scipy>=1.11
 
 # Optional – install extras as needed:
-#   pip install "hotelling[llm]"       for LLM agents
-#   pip install "hotelling[spatial]"   for GIS/raster data
-#   pip install "hotelling[viz]"       for plotting
-#   pip install "hotelling[notebooks]" for Jupyter support
-#   pip install "hotelling[yaml]"      for YAML config loading
+#   pip install "hotelling[llm]"       for LLM agents (litellm, instructor, openai)
+#   pip install "hotelling[spatial]"   for GIS/raster data (geopandas, rasterio, osmnx)
+#   pip install "hotelling[viz]"       for plotting (matplotlib, plotly, folium, pydeck)
+#   pip install "hotelling[rl]"        for RL agents (torch, gymnasium, pettingzoo)
+#   pip install "hotelling[db]"        for results DB (duckdb, pyarrow)
+#   pip install "hotelling[cli]"       for CLI (typer)
+#   pip install "hotelling[notebooks]" for Jupyter/marimo notebooks
 #   pip install "hotelling[all]"       for everything
-
-# LLM
-# openai>=1.0
-
-# Spatial
-# geopandas>=0.14
-# rasterio>=1.3
-# shapely>=2.0
-
-# Visualisation
-# matplotlib>=3.8
-# plotly>=5.18
-
-# Notebooks
-# jupyter>=1.0
-# ipywidgets>=8.0
-# tqdm>=4.0
-
-# Config
-# pyyaml>=6.0

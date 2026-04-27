@@ -1,0 +1,25 @@
+# agents/qlearning_duopoly.yaml - two Q-learning agents (Calvano 2020 calibration)
+_target_: hotelling.agents.qlearning.QLearningAgent
+
+firms:
+  - firm_id: firm_0
+    location: [0.25, 0.5]
+    marginal_cost: 1.0
+    quality: 1.0
+    agent:
+      alpha: 0.10
+      beta: 2.0e-5
+      delta: 0.95
+      mu: 0.25
+      update_mode: sync
+
+  - firm_id: firm_1
+    location: [0.75, 0.5]
+    marginal_cost: 1.0
+    quality: 1.0
+    agent:
+      alpha: 0.10
+      beta: 2.0e-5
+      delta: 0.95
+      mu: 0.25
+      update_mode: sync

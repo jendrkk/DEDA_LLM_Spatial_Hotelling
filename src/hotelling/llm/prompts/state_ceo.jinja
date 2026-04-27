@@ -1,0 +1,81 @@
+## Current market state — Epoch {{ epoch }}
+
+---
+
+### 1. Your chain performance (last {{ T_ceo }} periods)
+
+| Metric | Value |
+|--------|-------|
+| Number of stores | {{ own.n_stores }} |
+| Mean price | {{ "%.3f"|format(own.mean_price_last_T) }} € |
+| Mean effort | {{ "%.3f"|format(own.mean_effort_last_T) }} |
+| Total demand | {{ "{:,.0f}".format(own.total_demand_last_T) }} units |
+| Total profit | {{ "%.2f"|format(own.total_profit_last_T) }} € |
+| Profit trend vs. previous epoch | {{ "%+.1f"|format(own.profit_trend_pct) }}% |
+
+{% if active_divisions %}
+#### Performance by store group
+
+| Group | Mean price | Mean effort | Demand share | Profit share |
+|-------|-----------|-------------|-------------|-------------|
+{% for g in own.group_performance %}
+| {{ g.group_key }} | {{ "%.3f"|format(g.mean_price) }} € | {{ "%.3f"|format(g.mean_effort) }} | {{ "%.1f"|format(g.demand_share_pct) }}% | {{ "%.1f"|format(g.profit_share_pct) }}% |
+{% endfor %}
+{% endif %}
+
+---
+
+### 2. Previous envelope decisions
+
+{% if history %}
+| Epoch | {% if active_divisions %}Group{% endif %} p_bar | delta_p | e_bar | delta_e | epsilon | Realised profit |
+|-------|{% if active_divisions %}------{% endif %}-------|---------|-------|---------|---------|----------------|
+{% for h in history %}
+{% if active_divisions %}
+{% for g_key, env in h.envelopes.items() %}
+| {{ h.epoch }} | {{ g_key }}: {{ "%.3f"|format(env.p_bar) }} | {{ "%.3f"|format(env.delta_p) }} | {{ "%.3f"|format(env.e_bar) }} | {{ "%.3f"|format(env.delta_e) }} | {{ "%.3f"|format(env.epsilon) }} | {{ "%.2f"|format(h.profit_realized) }} € |
+{% endfor %}
+{% else %}
+| {{ h.epoch }} | {{ "%.3f"|format(h.envelopes.default.p_bar) }} | {{ "%.3f"|format(h.envelopes.default.delta_p) }} | {{ "%.3f"|format(h.envelopes.default.e_bar) }} | {{ "%.3f"|format(h.envelopes.default.delta_e) }} | {{ "%.3f"|format(h.envelopes.default.epsilon) }} | {{ "%.2f"|format(h.profit_realized) }} € |
+{% endif %}
+{% endfor %}
+{% else %}
+No previous epochs recorded (this is the first CEO call).
+{% endif %}
+
+---
+
+### 3. Rival chains (public information only)
+
+| Chain | Type | Stores | Last mean price | Price trend |
+|-------|------|--------|----------------|-------------|
+{% for r in rivals %}
+| {{ r.id }} | {{ r.type }} | {{ r.n_stores }} | {{ "%.3f"|format(r.last_published_price) }} € | {{ "%+.1f"|format(r.price_trend_pct) }}% |
+{% endfor %}
+
+*Note: only rivals' published prices are observable. Their profits, effort levels, and internal strategies are not visible to you.*
+
+---
+
+### 4. Consumer market (aggregated zone summary)
+
+Total market population: {{ "{:,.0f}".format(consumers.total_population) }}
+High-status consumer share (ring-wide): {{ "%.1f"|format(consumers.high_status_share_pct) }}%
+
+| Zone | Population | High-status share | Dominant chain type | Notes |
+|------|-----------|-------------------|-------------------|-------|
+{% for z in consumers.zones %}
+| {{ z.label }} | {{ "{:,.0f}".format(z.population) }} | {{ "%.0f"|format(z.high_status_pct) }}% | {{ z.dominant_rival_type }} | {{ z.notes }} |
+{% endfor %}
+
+---
+
+### 5. Constraints reminder
+
+- Your marginal cost: **{{ marginal_cost }} €** — all `p_bar` values must strictly exceed this.
+- Minimum envelope half-width: **delta_p ≥ {{ min_delta_p }}**, **delta_e ≥ {{ min_delta_e }}**.
+- Exploration rate: **epsilon ∈ (0.0, 0.5)** per group.
+
+---
+
+Think step by step. Then output your JSON envelope decision.

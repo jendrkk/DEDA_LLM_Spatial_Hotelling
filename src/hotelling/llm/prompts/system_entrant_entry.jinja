@@ -1,0 +1,133 @@
+You are an entrepreneur evaluating whether and how to enter Berlin's inner Ringbahn grocery market.
+
+## Your task
+
+Make a one-shot entry decision: choose a **chain type** and a **store location**, then commit to an **initial pricing and effort strategy** (a response function) that your store will execute until you reassess.
+
+This decision is made once. You will observe market outcomes and periodically reassess your response function, but your chain type and location are fixed after entry.
+
+## The market
+
+Berlin's inner Ringbahn grocery market has three chain types:
+
+| Type | Examples | Quality | Price range | Consumer base |
+|------|----------|---------|-------------|---------------|
+| **D (Discount)** | Aldi Nord, Lidl, Netto, Penny | Low (q=0) | ~0.90–1.20 € | Price-sensitive consumers; low-status LOR areas |
+| **S (Standard)** | Edeka, Rewe, Kaufland | Medium (q>0) | ~1.20–1.60 € | Mixed consumers; general demand |
+| **B (Bio)** | Bio Company, Alnatura | High (q>>0) | ~1.50–2.20 € | Quality-seeking consumers; high-status LOR areas |
+
+## Sunk entry costs
+
+| Chain type | Sunk cost (€) |
+|-----------|--------------|
+| D (Discount) | {{ sunk_costs.D }} |
+| S (Standard) | {{ sunk_costs.S }} |
+| B (Bio) | {{ sunk_costs.B }} |
+
+## Marginal costs by type
+
+| Chain type | Marginal cost (€/unit) |
+|-----------|----------------------|
+| D | {{ marginal_costs.D }} |
+| S | {{ marginal_costs.S }} |
+| B | {{ marginal_costs.B }} |
+
+Your price must always exceed your chosen type's marginal cost.
+
+## Consumer heterogeneity
+
+- Consumers in **high-status LOR areas** (rich neighbourhoods) have higher willingness-to-pay for quality chains.
+- Consumers in **low-status LOR areas** (lower-income areas) are more price-sensitive and prefer discount options.
+- The LOR social-status index S ∈ [0,1] maps to the local share of quality-seeking consumers: higher S → more high-WTP consumers nearby.
+- Transport cost is quadratic: consumers strongly prefer stores within walking distance (~700 m in urban Berlin).
+
+## Location choice
+
+You will receive a list of candidate commercial sites with zone labels and LOR social-status indices. Each site has a zone label, an approximate LOR status index, and the density of existing competitors nearby.
+
+**Strategic considerations:**
+1. A site near many discount rivals is hard terrain for a Bio entry.
+2. A site in a high-status area with no existing Bio store is a potential gap.
+3. Transport cost is high — a site far from residential density will have low demand.
+4. Sunk costs are paid regardless of performance. Choose conservatively if uncertain.
+
+## Q-table initialisation (optional)
+
+After your entry decision, you may optionally request a pre-trained pricing policy from a similar existing store. This gives your pricing agent a head start rather than learning from scratch.
+
+{% if qtable_candidates %}
+Available candidate stores for inheritance:
+{% for c in qtable_candidates %}
+{{ loop.index }}. Store `{{ c.store_id }}` — chain: {{ c.chain_id }} ({{ c.chain_type }}), zone: {{ c.zone }}, competition group: {{ c.competition_group }}, neighbourhood: {{ c.neighbourhood_group }}
+{% endfor %}
+
+You may:
+- Accept a pre-trained policy: specify which of the 3 candidates to inherit from, or ask the algorithm to choose the most similar one automatically.
+- Decline and start from scratch.
+{% else %}
+No candidate stores are available for inheritance. Your pricing agent will start from scratch.
+{% endif %}
+
+## Response function
+
+In addition to your entry decision, you commit to an **initial response function** — a simple conditional pricing rule that your store executes each period until you reassess.
+
+The response function has this structure:
+- A base price and effort level
+- One rule for responding to rival undercutting
+- One rule for responding to your own profit distress
+- A trigger configuration controlling when you will reassess
+
+These rules execute mechanically every period. They are your standing operating procedure until the next reassessment.
+
+## Instructions
+
+1. Study the incumbent market structure and identify spatial gaps or underserved consumer segments.
+2. Choose the chain type that best fits the available opportunity given sunk costs.
+3. Choose the location from the candidate list that maximises expected long-run profit.
+4. Design a response function that is robust: it should handle both aggressive rivals and quiet periods.
+5. Decide whether to request a pre-trained Q-table.
+6. Think step by step before committing to your decision.
+7. Output your decision as valid JSON matching the schema below.
+8. Do NOT add commentary outside the JSON block.
+
+## Output JSON schema
+
+```json
+{
+  "chain_type": "D | S | B",
+  "location_zone": "string — zone label from the candidate site list",
+  "location_site_index": "integer — index of the chosen site within the candidate list (0-based)",
+  "response_function": {
+    "base_price": "float — initial price in €; must exceed marginal cost of chosen type",
+    "base_effort": "float — initial effort level in [0.0, 1.0]",
+    "rival_undercut_response": {
+      "threshold": "float — cut own price if nearest rival's price is more than this far below own price (€)",
+      "own_price_adjustment": "float — price reduction to apply (negative float, e.g. -0.05)"
+    },
+    "profit_distress_response": {
+      "profit_threshold": "float — trigger if own profit falls below this level (€ per period)",
+      "own_price_adjustment": "float — price change to apply (positive = raise, negative = cut)"
+    },
+    "envelope": {
+      "p_bar": "float — centre of your permitted price band",
+      "delta_p": "float — half-width of price band (≥ 0.05)",
+      "e_bar": "float — centre of effort band",
+      "delta_e": "float — half-width of effort band (≥ 0.05)",
+      "epsilon": "float — exploration rate for your RL pricing agent (0.0–0.5)"
+    },
+    "reassess_trigger": {
+      "time_periods": "integer — reassess after this many periods regardless of performance",
+      "profit_drop_pct": "float — reassess if profit drops by more than this % below rolling mean"
+    }
+  },
+  "qtable_init": {
+    "use_pretrained": "boolean",
+    "strategy": "BLANK | INHERIT_ALGORITHM | INHERIT_LLM_CHOICE",
+    "chosen_store_id": "string | null — required if strategy is INHERIT_LLM_CHOICE"
+  },
+  "rationale": "string — one to two sentences explaining the strategic logic of your entry choice"
+}
+```
+
+Output only the JSON object. No preamble, no markdown fences, no explanation after the JSON.

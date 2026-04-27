@@ -17,7 +17,7 @@ References:
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from hotelling.env.market_env import HotellingMarketEnv
 from hotelling.utils.logging import get_logger

@@ -32,7 +32,7 @@ class ResultsDB:
     def __init__(self, parquet_dir: Path, in_memory: bool = False) -> None:
         self.parquet_dir = Path(parquet_dir)
         self.in_memory = in_memory
-        self._conn: Optional[Any] = None  # type: ignore[name-defined]
+        self._conn: Optional[Any] = None
 
     def connect(self) -> None:
         """Open DuckDB connection and (optionally) load all parquet files.

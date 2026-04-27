@@ -6,6 +6,16 @@ __pycache__/
 # C extensions
 *.so
 
+# System-specific files
+.DS_Store
+
+# Claude-specific files
+.claude/
+**/CLAUDE.md
+CLAUDE.local.md
+**/*.local.md
+CLAUDE.md
+
 # Distribution / packaging
 .Python
 build/

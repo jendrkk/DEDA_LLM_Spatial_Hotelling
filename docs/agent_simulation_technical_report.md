@@ -498,6 +498,7 @@ The following implementation decisions were made in the design process and must 
 | Event triggers extensible via interface | Anticipated need to add new trigger types without refactoring entrant agent |
 | Group membership assigned once at startup | Groups reflect structural store characteristics (location, neighbourhood); not a dynamic state variable |
 | At most 2 simultaneous group divisions | Beyond 2 divisions, CEO action space grows to 32+ parameters; identification of effects becomes impossible |
+| Group divisions extensible via registry | Anticipated need for new divisions (e.g., rival-type based) without touching envelope or CEO logic |
 
 ---
 
@@ -519,4 +520,3 @@ Full ADR documents are in `docs/decisions/`. Each record covers context, decisio
 | ADR-010 | [ADR-010-entrant-qtable-initialisation.md](decisions/ADR-010-entrant-qtable-initialisation.md) | Four Q-table init strategies for entrant; LLM meta-choice option |
 | ADR-011 | [ADR-011-entrant-response-function.md](decisions/ADR-011-entrant-response-function.md) | Entrant commits to response function; not per-period LLM |
 | ADR-012 | [ADR-012-inner-ring-not-pankow.md](decisions/ADR-012-inner-ring-not-pankow.md) | Geographic scope: inner-Ringbahn, not Pankow |
-| Group divisions extensible via registry | Anticipated need for new divisions (e.g., rival-type based) without touching envelope or CEO logic |

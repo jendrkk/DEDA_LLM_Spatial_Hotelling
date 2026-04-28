@@ -1,0 +1,3 @@
+# groups/no_groups.yaml - no active group divisions; all stores share one envelope
+
+active_divisions: []

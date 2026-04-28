@@ -80,6 +80,17 @@ def train(
 
 
 @app.command()
+def simulate(
+    config_name: str = typer.Argument(
+        "baseline",
+        help="Hydra config name under configs/ (without .yaml extension).",
+    ),
+) -> None:
+    """Run the full 3-phase simulation (burn-in → entry → strategic game)."""
+    raise NotImplementedError
+
+
+@app.command()
 def sweep(
     config: Path = typer.Option(
         Path("configs/sweep/alpha_beta.yaml"),

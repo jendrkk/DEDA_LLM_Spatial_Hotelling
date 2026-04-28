@@ -1,0 +1,7 @@
+# simulation/triggers.yaml - entrant reassessment trigger thresholds
+
+profit_drop_threshold_pct: 15.0   # ProfitDropTrigger: fire if profit falls >15% vs prior window
+profit_drop_window: 100           # ProfitDropTrigger: rolling window length in periods
+
+rival_price_change_threshold_pct: 10.0  # RivalEventTrigger: price change magnitude (%) that fires
+rival_event_radius_m: 500.0             # RivalEventTrigger: search radius (metres, EPSG:25833)

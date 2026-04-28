@@ -1,0 +1,7 @@
+# groups/competition_only.yaml - single division by competitive pressure (HEAVY vs EASY)
+
+active_divisions:
+  - DIVISION_COMPETITION
+
+competition_radius_m: 500.0           # radius (metres) for counting rival stores
+competition_threshold_n_rivals: 3     # stores with >= this many rivals are HEAVY

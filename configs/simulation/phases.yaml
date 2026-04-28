@@ -1,0 +1,9 @@
+# simulation/phases.yaml - three-phase simulation timing parameters
+
+T_burnin: 50000             # Phase 0: minimum periods before convergence check
+convergence_threshold: 1.0e-4  # Phase 0: max Q-value delta to declare convergence
+convergence_window: 500     # Phase 0: window length (periods) for convergence check
+
+T_game: 5000                # Phase 2: total strategic game periods
+T_CEO: 100                  # Phase 2: CEO envelope update frequency (periods)
+T_entrant: 50               # Phase 2: entrant time-trigger reassessment interval

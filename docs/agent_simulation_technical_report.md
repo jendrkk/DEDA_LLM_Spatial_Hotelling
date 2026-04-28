@@ -498,4 +498,25 @@ The following implementation decisions were made in the design process and must 
 | Event triggers extensible via interface | Anticipated need to add new trigger types without refactoring entrant agent |
 | Group membership assigned once at startup | Groups reflect structural store characteristics (location, neighbourhood); not a dynamic state variable |
 | At most 2 simultaneous group divisions | Beyond 2 divisions, CEO action space grows to 32+ parameters; identification of effects becomes impossible |
+
+---
+
+## 11. Architecture Decision Records
+
+Full ADR documents are in `docs/decisions/`. Each record covers context, decision, rationale, consequences, and alternatives rejected.
+
+| ADR | File | Decision |
+|-----|------|----------|
+| ADR-001 | [ADR-001-src-layout.md](decisions/ADR-001-src-layout.md) | src layout for the Python package |
+| ADR-002 | [ADR-002-llm-litellm-instructor.md](decisions/ADR-002-llm-litellm-instructor.md) | LiteLLM + Instructor for LLM integration |
+| ADR-003 | [ADR-003-pettingzoo-env.md](decisions/ADR-003-pettingzoo-env.md) | PettingZoo ParallelEnv as simulation wrapper |
+| ADR-004 | [ADR-004-per-store-independent-qtables.md](decisions/ADR-004-per-store-independent-qtables.md) | Per-store independent Q-tables; no sharing within chain |
+| ADR-005 | [ADR-005-relative-action-space.md](decisions/ADR-005-relative-action-space.md) | Relative action space; Q-tables survive CEO epoch changes |
+| ADR-006 | [ADR-006-three-phase-simulation.md](decisions/ADR-006-three-phase-simulation.md) | Three-phase structure; burn-in before CEO activation |
+| ADR-007 | [ADR-007-llm-calls-not-batched.md](decisions/ADR-007-llm-calls-not-batched.md) | CEO calls never batched; information isolation argument |
+| ADR-008 | [ADR-008-gamma-fixed-globally.md](decisions/ADR-008-gamma-fixed-globally.md) | Gamma fixed globally; not a CEO parameter |
+| ADR-009 | [ADR-009-group-division-extensibility.md](decisions/ADR-009-group-division-extensibility.md) | Group divisions extensible via registry; at most 2 active |
+| ADR-010 | [ADR-010-entrant-qtable-initialisation.md](decisions/ADR-010-entrant-qtable-initialisation.md) | Four Q-table init strategies for entrant; LLM meta-choice option |
+| ADR-011 | [ADR-011-entrant-response-function.md](decisions/ADR-011-entrant-response-function.md) | Entrant commits to response function; not per-period LLM |
+| ADR-012 | [ADR-012-inner-ring-not-pankow.md](decisions/ADR-012-inner-ring-not-pankow.md) | Geographic scope: inner-Ringbahn, not Pankow |
 | Group divisions extensible via registry | Anticipated need for new divisions (e.g., rival-type based) without touching envelope or CEO logic |

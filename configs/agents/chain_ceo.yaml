@@ -1,0 +1,9 @@
+# agents/chain_ceo.yaml - LLM chain CEO agent parameters
+# IMPORTANT: model must be pinned to a full snapshot string before any experiment
+# run (e.g. "gemma-3-27b-it-20250401"). Never use aliases. See ADR-002.
+
+model: "gemma-3-27b-it-YYYYMMDD"  # placeholder — pin to snapshot before first run
+temperature: 0                     # deterministic output; do not raise above 0 for experiments
+max_retries: 3                     # LiteLLM retry attempts on API error
+retry_delay_s: 5.0                 # seconds between retry attempts
+log_path: "results/llm_calls.jsonl"  # JSONL log for all CEO LLM calls

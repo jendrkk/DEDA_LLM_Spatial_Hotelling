@@ -166,6 +166,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+!src/hotelling/env/
 
 # Spyder project settings
 .spyderproject

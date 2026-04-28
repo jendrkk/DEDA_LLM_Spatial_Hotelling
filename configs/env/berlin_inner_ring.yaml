@@ -1,0 +1,18 @@
+# env/berlin_inner_ring.yaml - Berlin inner S-Bahn Ringbahn environment
+# Scope: inner S-Bahn Ringbahn (S41/S42). NOT Pankow. See ADR-012.
+
+name: "berlin_inner_ring"
+epsg: 25833                        # EPSG projection for all coordinates and distances
+
+demand_grid_resolution_m: 100      # Zensus 2022 population raster cell size (metres)
+site_grid_resolution_m: 250        # candidate entry site grid resolution (metres)
+
+transport_cost: 0.5                # t: quadratic transport disutility (€/km²)
+logit_scale: 0.25                  # μ: logit scale parameter
+outside_option: -1.0               # a0: outside-option utility (normalised)
+
+bounding_box:
+  lat_min: 52.46   # southern edge of inner ring (WGS84)
+  lat_max: 52.55   # northern edge of inner ring (WGS84); 55.55 would be Hamburg
+  lon_min: 13.32   # western edge
+  lon_max: 13.49   # eastern edge

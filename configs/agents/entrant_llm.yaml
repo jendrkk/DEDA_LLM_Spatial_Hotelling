@@ -1,0 +1,17 @@
+# agents/entrant_llm.yaml - LLM entrant agent parameters
+# IMPORTANT: model must be pinned to a full snapshot string before any experiment
+# run (e.g. "gemma-3-27b-it-20250401"). Never use aliases. See ADR-002.
+
+model: "gemma-3-27b-it-YYYYMMDD"  # placeholder — pin to snapshot before first run
+temperature: 0                     # deterministic output; do not raise above 0 for experiments
+max_retries: 3                     # LiteLLM retry attempts on API error
+retry_delay_s: 5.0                 # seconds between retry attempts
+
+# Q-table initialisation strategy for the entrant store. Allowed values (ADR-010):
+#   BLANK               - start from zero Q-values
+#   INHERIT_ALGORITHM   - copy Q-table from most-similar incumbent (by cosine similarity)
+#   INHERIT_LLM_CHOICE  - LLM selects from 3 candidate incumbent stores
+#   INHERIT_LLM_AUTO    - LLM decides whether to inherit; algorithm selects source
+qtable_init_strategy: "INHERIT_ALGORITHM"
+
+log_path: "results/llm_calls.jsonl"  # JSONL log for all entrant LLM calls

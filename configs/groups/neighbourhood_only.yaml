@@ -1,0 +1,8 @@
+# groups/neighbourhood_only.yaml - single division by neighbourhood income (RICH vs POOR)
+
+active_divisions:
+  - DIVISION_NEIGHBOURHOOD
+
+# Median split of the standardised LOR Planungsraum social-status index S_r in [0, 1].
+# Stores with S_r >= threshold are RICH; below are POOR.
+neighbourhood_status_threshold: 0.5

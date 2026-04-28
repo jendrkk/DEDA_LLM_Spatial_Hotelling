@@ -6,6 +6,8 @@ defaults:
   - city: unit_square
   - env: base
   - agents: qlearning_duopoly
+  - simulation: phases
+  - groups: no_groups
   - _self_
 
 # Session settings

@@ -43,8 +43,8 @@ class City:
     # model parameters (from Hydra config, attached at env init):
     alpha: np.ndarray            # (2,) — [α_L, α_H]
     beta: float
-    a0: float
-    mu: float
+    mu: float = 0.25
+    a0: float = 0.0
     
     @property
     def width(self) -> float:

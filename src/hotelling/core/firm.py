@@ -32,7 +32,7 @@ class Firm:
     location: Tuple[float, float]
     marginal_cost: float
     quality: float
-    chain: Optional[str]
     kappa0: float
     size: float
     rent: float
+    chain: Optional[str] = None

@@ -102,7 +102,6 @@ def market_clearing(
     efforts: np.ndarray,  # (N,)
     city: City,
     transport_cost: float,
-    mu: float,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Compute equilibrium demands and profits for all firms.
 
@@ -112,8 +111,6 @@ def market_clearing(
     efforts : shape (N,) array of store efforts for each firm in city.firms
     city : City instance with firms and population_grid
     transport_cost : transport cost parameter t
-    mu : logit scale mu
-
     Returns
     -------
     demands : np.ndarray shape (N,) market demands
@@ -132,7 +129,7 @@ def market_clearing(
         prices = prices, efforts=efforts,
         dist2_km2 = city.dist2_km2, cell_pop = city.cell_pop,
         lambda_phi = city.lambda_phi, pi_H = city.pi_H, pi_H_lambda_phi = city.pi_H_lambda_phi,
-        alpha = city.alpha, quality = qualities, beta = city.beta, transport_cost = transport_cost, mu = mu, a0 = city.a0
+        alpha = city.alpha, quality = qualities, beta = city.beta, transport_cost = transport_cost, mu = city.mu, a0 = city.a0
     )
     
     profits = profit(

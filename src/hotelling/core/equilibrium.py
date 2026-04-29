@@ -25,7 +25,6 @@ from hotelling.core.market import market_clearing
 def bertrand_nash(
     city: City,
     transport_cost: float = 1.0,
-    mu: float = 0.25,
     tol: float = 1e-6,
     max_iter: int = 500,
 ) -> Tuple[np.ndarray, np.ndarray]:
@@ -55,27 +54,30 @@ def bertrand_nash(
         # Compute demands and profits
         demands, profits = market_clearing(
             prices = prices, efforts = efforts,
-            city = city, transport_cost = transport_cost, mu = mu
+            city = city, transport_cost = transport_cost
         )
         
         # Closed-from best response update
         shares = demands / total_pop
-        new_prices = costs + mu / np.clip(1-shares, 1e-9, None)
+        new_prices = costs + city.mu / np.clip(1-shares, 1e-9, None)
         new_efforts = beta * demands / kappa0
+              
+        prices, efforts = new_prices, new_efforts
         
-        if np.max(np.abs(new_prices - prices)) < tol and np.max(np.abs(new_efforts - efforts)) < tol:
-            prices, efforts = new_prices, new_efforts
+        converged = np.max(np.abs(new_prices - prices)) < tol and np.max(np.abs(new_efforts - efforts)) < tol   
+        if converged:
             break
         
-        prices, efforts = new_prices, new_efforts
-    
+    if not converged:
+        import warnings
+        warnings.warn(f"Bertrand-Nash equilibrium not found after max_iter {max_iter} iterations")
+            
     return prices, efforts # (N,), (N,)
 
 
 def joint_monopoly(
     city: City,
     transport_cost: float = 1.0,
-    mu: float = 0.25,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Find joint-monopoly (cartel) prices maximising total profit.
 
@@ -95,20 +97,25 @@ def joint_monopoly(
         prices, efforts = x[:N], x[N:]
         demands, profits = market_clearing(
             prices = prices, efforts = efforts,
-            city = city, transport_cost = transport_cost, mu = mu
+            city = city, transport_cost = transport_cost
         )
         return -profits.sum()
     
-    x0     = np.concatenate([costs + 2*mu, np.zeros(N)])      # initial guess: 2*mu above marginal cost, 0 effort
-    bounds = [(c, c * 10) for c in costs] + [(0, None)] * N   # bounds: prices ≥ cost, efforts ≥ 0
+    x0     = np.concatenate([costs + 2*city.mu, np.zeros(N)])                # initial guess: 2*mu above marginal cost, 0 effort
+    bounds = [(c, c + 20 * city.mu) for c in costs] + [(0, 10.0)] * N        # bounds: prices ≥ cost, efforts ≥ 0
     
     res = minimize(
         neg_total_profit, x0, bounds = bounds, method = 'L-BFGS-B',
         options = {
-            'tol': 1e-10,
+            'ftol': 1e-10,
+            'gtol': 1e-8,
             'maxiter': 2000
         }
     )
+    
+    if not res.success:
+        import warnings
+        warnings.warn(f"Joint-monopoly optimizer did not converge: {res.message}", RuntimeWarning)
     
     prices = res.x[:N]
     efforts = res.x[N:]
@@ -129,6 +136,12 @@ def tabuchi_2d_benchmark(
     # Symmetric logit duopoly markup: p* - c = μ/(1 - 1/N) = Nμ/(N-1)
     # Spatial term: expected quadratic transport cost for uniform consumers
     # For N equidistant firms on unit square ≈ t/(4N) (Tabuchi 1994 approx.)
+    
+    if n == 1:
+        import warnings
+        warnings.warn("Tabuchi (1994) symmetric 2-D benchmark is undefined for n=1 (monopoly markup unbounded in pure logit)", RuntimeWarning)
+        return np.inf, np.inf
+    
     markup   = n * mu / (n - 1)          # logit markup
     avg_dist = t / (4 * n)              # spatial differentiation term (approx)
     price    = markup + avg_dist

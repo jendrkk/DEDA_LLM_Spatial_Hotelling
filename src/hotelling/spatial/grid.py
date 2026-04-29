@@ -47,14 +47,14 @@ class Grid:
         """Download the population grid from the Zensus 2022 dataset."""
         
         link = "https://www.destatis.de/static/DE/zensus/gitterdaten/Zensus2022_Bevoelkerungszahl.zip"
-        save_path = "data/raw/zensus2022_population_grid.zip"
+        save_path = "data/raw/zensus2022_grid.zip"
         
         urllib.request.urlretrieve(link, save_path)
         with zipfile.ZipFile(save_path, 'r') as zip_ref:
-            zip_ref.extractall("data/raw/zensus2022_population_grid")
+            zip_ref.extractall("data/raw/zensus2022_grid")
         os.remove(save_path)
         
-        data = pd.read_csv("data/raw/zensus2022_population_grid/Zensus2022_Bevoelkerungszahl_100m-Gitter.csv")
+        data = pd.read_csv("data/raw/zensus2022_grid/Zensus2022_Bevoelkerungszahl_100m-Gitter.csv")
         
         from pyproj import Transformer
         

@@ -29,10 +29,23 @@ class City:
     firms: List[Firm] - firms currently in the market
     """
 
-    boundary: Tuple[float, float, float, float] = (0.0, 0.0, 1.0, 1.0)
-    population_grid: Optional[np.ndarray] = field(default=None, repr=False)
-    firms: List[Firm] = field(default_factory=list)
-
+    boundary: Tuple[float, float, float, float]
+    population_grid: Optional[np.ndarray]
+    firms: List[Firm]
+    
+    # precomputed once from population_grid + firms:
+    dist2_km2: np.ndarray        # (M, N) — squared network distances, Parquet-cached
+    cell_pop: np.ndarray         # (M,)
+    lambda_phi: np.ndarray       # (M,)
+    pi_H: np.ndarray             # (M,)
+    pi_H_lambda_phi: np.ndarray  # (M,)
+    
+    # model parameters (from Hydra config, attached at env init):
+    alpha: np.ndarray            # (2,) — [α_L, α_H]
+    beta: float
+    a0: float
+    mu: float
+    
     @property
     def width(self) -> float:
         """Horizontal extent of the market space."""
@@ -52,3 +65,4 @@ class City:
     def area(self) -> float:
         """Area of the city."""
         return self.width * self.height
+

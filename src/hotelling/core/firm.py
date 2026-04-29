@@ -29,7 +29,10 @@ class Firm:
     """
 
     id: str
-    location: Tuple[float, float] = (0.5, 0.5)
-    marginal_cost: float = 0.0
-    quality: float = 1.0
-    chain: Optional[str] = None
+    location: Tuple[float, float]
+    marginal_cost: float
+    quality: float
+    chain: Optional[str]
+    kappa0: float
+    size: float
+    rent: float

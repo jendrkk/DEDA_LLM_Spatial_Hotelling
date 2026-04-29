@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from hotelling.spatial.grid import SquareGrid
+from hotelling.spatial import SquareGrid
 
 
 class TestSquareGrid:

@@ -41,6 +41,9 @@ spatial = [
     "shapely>=2.0",
     "pyproj>=3.6",
     "osmnx>=1.9",
+    "requests>=2.31",
+    "pyarrow>=14.0",
+    "py7zr>=0.20",
 ]
 viz = [
     "matplotlib>=3.8",

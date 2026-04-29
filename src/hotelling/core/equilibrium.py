@@ -61,10 +61,11 @@ def bertrand_nash(
         shares = demands / total_pop
         new_prices = costs + city.mu / np.clip(1-shares, 1e-9, None)
         new_efforts = beta * demands / kappa0
-              
-        prices, efforts = new_prices, new_efforts
         
         converged = np.max(np.abs(new_prices - prices)) < tol and np.max(np.abs(new_efforts - efforts)) < tol   
+        
+        prices, efforts = new_prices, new_efforts
+
         if converged:
             break
         

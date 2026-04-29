@@ -14,6 +14,7 @@ References:
 from __future__ import annotations
 
 from pathlib import Path
+from shapely.geometry.polygon import Polygon
 from typing import Optional
 
 import urllib.request
@@ -44,13 +45,16 @@ def _find_first_existing_column(df: pd.DataFrame, candidates: list[str]) -> str:
             return normalized_map[key]
     raise KeyError(f"None of the candidate columns found: {candidates}")
 
+def _boundary_is_closed(boundary: gpd.GeoDataFrame) -> bool:
+    """Check if the boundary is closed."""
+    return boundary.geometry.iloc[0].is_closed
 
-def download_zensus_2022(crs: str = 'EPSG:4326'):
+def download_zensus_2022() -> None:
     """Download the Zensus 2022 100m population raster from the Destatis portal."""
     logger.info("Starting Zensus 2022 download and conversion.")
     link = "https://www.destatis.de/static/DE/zensus/gitterdaten/Zensus2022_Bevoelkerungszahl.zip"
-    save_path = "data/raw/zensus2022_population_grid.zip"
-    extract_dir = Path("data/raw/zensus2022_population_grid")
+    save_path = "data/raw/zensus2022_grid.zip"
+    extract_dir = Path("data/raw/zensus2022_grid")
     urllib.request.urlretrieve(link, save_path)
     logger.info("Downloaded Zensus archive to %s.", save_path)
     with zipfile.ZipFile(save_path, 'r') as zip_ref:
@@ -74,36 +78,24 @@ def download_zensus_2022(crs: str = 'EPSG:4326'):
 
     data = pd.read_csv(selected_csv, sep=";")
     
-    from pyproj import Transformer
-    transformer = Transformer.from_crs(crs_from = "EPSG:3035", crs_to = crs, always_xy=True)
     x_col = _find_first_existing_column(data, ["x_mp_100m", "x_mp", "x"])
     y_col = _find_first_existing_column(data, ["y_mp_100m", "y_mp", "y"])
-    population_col = _find_first_existing_column(data, ["Einwohner", "einwohner", "population"])
-    data["lon"], data["lat"] = transformer.transform(data[x_col].to_numpy(), data[y_col].to_numpy())
-    pop = data[["lon", "lat", population_col]].rename(columns={population_col: "Einwohner"})
-    save_path = "data/raw/zensus2022_population_grid.parquet"
-    pop.to_parquet(save_path)
+    
+    gdf = gpd.GeoDataFrame(data, geometry=gpd.points_from_xy(data[x_col], data[y_col]), crs="EPSG:3035")
+    
+    save_path = "data/raw/zensus2022_grid.parquet"
+    gdf.to_parquet(save_path)
     logger.info("Saved processed Zensus population parquet to %s.", save_path)
     shutil.rmtree(extract_dir)
     logger.info("Removed extracted Zensus folder %s after parquet conversion.", extract_dir)
 
-def load_zensus_2022(
-    path: Path,
-    clip_city_boundary: Optional[shapely.geometry.Polygon] = None,  # shapely.geometry.Polygon
-) -> pd.DataFrame:
-    """Load Zensus 2022 100m population raster, optionally clipped to a polygon."""
-    logger.info("Loading Zensus parquet from %s.", path)
-    pop = pd.read_parquet(path)
-    # lon lat inside city boundary
-    if clip_city_boundary is not None:
-        logger.info("Applying boundary bbox clip to loaded Zensus data.")
-        pop = pop[pop.lon.between(clip_city_boundary.bounds[0], clip_city_boundary.bounds[2]) & pop.lat.between(clip_city_boundary.bounds[1], clip_city_boundary.bounds[3])]
-    logger.info("Loaded %s population grid rows.", len(pop))
-    return pop
+def load_zensus_2022() -> gpd.GeoDataFrame:
+    """Load Zensus 2022 100m population raster and reproject to EPSG:3035."""
+    logger.info("Loading Zensus parquet from data/raw/zensus2022_grid.parquet.")
+    return gpd.read_parquet(Path("data/raw/zensus2022_grid.parquet")).to_crs("EPSG:3035")
 
 def download_city_boundary(
-    city_name: str,
-    crs: str = 'EPSG:4326',
+    city_name: str
 ) -> None:
     """Download German city boundary relation from Overpass and save as GeoJSON."""
     output_path = Path("data/raw") / f"city_boundary_{city_name.replace(' ', '_')}.geojson"
@@ -200,30 +192,92 @@ def download_city_boundary(
     logger.info("Saved city boundary for '%s' to %s.", city_name, output_path)
 
 
-def load_city_boundary(
+def download_relation_boundary(relation_id: int) -> None:
+    """Download the boundary of a relation from Overpass.
+    
+    Args:
+        relation_id: ID of the relation
+    """
+    output_path = Path("data/raw") / f"relation_boundary_{relation_id}.geojson"
+
+    if output_path.exists():
+        logger.info("Relation boundary already exists at %s; skipping Overpass request.", output_path)
+        return
+
+    overpass_url = "https://overpass-api.de/api/interpreter"
+    overpass_query = f"""
+    [out:json][timeout:90];
+    relation({relation_id});
+    out geom;
+    """
+    headers = {
+        "User-Agent": "DEDA-LLM-Spatial-Hotelling/1.0 (research script)",
+        "Accept": "application/json",
+        "Content-Type": "text/plain; charset=utf-8",
+    }
+    response = requests.post(overpass_url, data=overpass_query, timeout=120, headers=headers)
+    response.raise_for_status()
+    elements = response.json().get("elements", [])
+    relations = [el for el in elements if el["type"] == "relation"]
+    if not relations:
+        raise ValueError(f"{relation_id} relation not found in Overpass response.")
+    
+    lines = []
+    for member in relations[0].get("members", []):
+        if member.get("type") != "way":
+            continue
+        coords = member.get("geometry", [])
+        if len(coords) < 2:
+            continue
+        lines.append(shapely.geometry.LineString(
+            [(pt["lon"], pt["lat"]) for pt in coords]
+        ))
+    
+    if not lines:
+        raise ValueError(f"No way geometry found in {relation_id} relation.")
+    
+    # Polygonize the ring — result is the interior of the Ringbahn
+    polygons = list(shapely.ops.polygonize(shapely.ops.unary_union(lines)))
+    if not polygons:
+        raise ValueError(f"Could not polygonize {relation_id} relation geometry.")
+    
+    # Take the largest polygon (the relation interior)
+    relation_polygon = max(polygons, key=lambda p: p.area)
+    
+    relation_gdf = gpd.GeoDataFrame(geometry=[relation_polygon], crs="EPSG:3035")
+    relation_polygon = relation_gdf.to_crs("EPSG:3035").geometry[0]
+    
+    feature = {
+        "type": "Feature",
+        "properties": {"source": f"OSM relation/{relation_id}", "crs": "EPSG:3035"},
+        "geometry": shapely.geometry.mapping(relation_polygon),
+    }
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8") as f:
+        json.dump(feature, f)
+    logger.info(f"Saved relation {relation_id} boundary to %s.", output_path)
+    logger.info(f"Relation {relation_id} boundary is {'closed' if _boundary_is_closed(relation_gdf) else 'open'}.")
+
+def load_boundary(
     path: Path,
-) -> shapely.geometry.Polygon:
-    """Load city boundary from a GeoJSON file."""
-    logger.info("Loading city boundary geometry from %s.", path)
+) -> gpd.GeoDataFrame:
+    """Load boundary from a GeoJSON file."""
+    logger.info("Loading boundary geometry from %s.", path)
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
     if data.get("type") == "Feature":
-        logger.info("Loaded city boundary from GeoJSON Feature.")
-        return shapely.geometry.shape(data["geometry"])
+        logger.info("Loaded boundary from GeoJSON Feature.")
+        return gpd.GeoDataFrame(geometry=[shapely.geometry.shape(data["geometry"])], crs="EPSG:3035")
     if data.get("type") == "FeatureCollection":
-        logger.info("Loaded city boundary from GeoJSON FeatureCollection.")
-        return shapely.geometry.shape(data["features"][0]["geometry"])
-    logger.info("Loaded city boundary from raw GeoJSON geometry object.")
-    return shapely.geometry.shape(data)
+        logger.info("Loaded boundary from GeoJSON FeatureCollection.")
+        return gpd.GeoDataFrame(geometry=[shapely.geometry.shape(data["features"][0]["geometry"])], crs="EPSG:3035")
+    logger.info("Loaded boundary from raw GeoJSON geometry object.")
+    return gpd.GeoDataFrame(geometry=[shapely.geometry.shape(data)], crs="EPSG:3035")
 
-def download_lor_shapes(crs: str = 'EPSG:4326'):
-    """Download LOR shapes from the Senatsverwaltung für Stadtentwicklung (SenStadt) Berlin.
-    
-    Args:
-        crs: Target coordinate reference system for the output file. Defaults to 'EPSG:4326' (WGS 84).
-             Examples: 'EPSG:3035' (ETRS89-extended / LAEA Europe), 'EPSG:3857' (Web Mercator).
+def download_lor_shapes() -> None:
+    """Download LOR shapes from the Senatsverwaltung für Stadtentwicklung (SenStadt) for Berlin.
     """
-    logger.info("Starting LOR shapes download and conversion to CRS %s.", crs)
+    logger.info("Starting LOR shapes download and conversion.")
     # url = "https://www.berlin.de/sen/sbw/_assets/stadtdaten/stadtwissen/lebensweltlich-orientierte-raeume/lor_2021-01-01_k3_shapefiles_nur_id.7z?ts=1770289259" new url
     url = "https://www.berlin.de/sen/sbw/_assets/stadtdaten/stadtwissen/lebensweltlich-orientierte-raeume/lor_2019-01-01_shapefiles_nur_id.7z?ts=1770289260"
     save_path = "data/raw/lor_shapes.7z"
@@ -259,8 +313,8 @@ def download_lor_shapes(crs: str = 'EPSG:4326'):
 
     logger.info("Selected LOR shapefile %s for conversion.", selected.name)
     data = gpd.read_file(selected)
-    data = data.to_crs(crs=crs)
-    logger.info("Reprojected to CRS %s.", crs)
+    data = data.to_crs(crs="EPSG:3035")
+    logger.info("Reprojected to CRS EPSG:3035.")
     
     parquet_path = Path("data/raw/lor_shapes.parquet")
     data.to_parquet(parquet_path)
@@ -268,35 +322,84 @@ def download_lor_shapes(crs: str = 'EPSG:4326'):
     shutil.rmtree(extract_dir)
     logger.info("Removed extracted LOR folder %s after parquet conversion.", extract_dir)
 
-def filter_zensus_2022(crs: str = 'EPSG:4326') -> pd.DataFrame:
+def download_local_shapes() -> None:
+    """Download the shapes of the local planning areas. This method can be implemented for other city if needed.
+    """
+    raise NotImplementedError("This method is not implemented yet.")
+
+def filter_zensus_2022(boundary_path: Path) -> None:
     """Filter Zensus 2022 population grid to a city boundary.
     
     Args:
-        crs: Target coordinate reference system for the output file. Defaults to 'EPSG:4326' (WGS 84).
-             Examples: 'EPSG:3035' (ETRS89-extended / LAEA Europe), 'EPSG:3857' (Web Mercator).
+        boundary_path: Path to the boundary geojson file
     """
-    zensus_path = Path("data/raw/zensus2022_population_grid.parquet")
-    zensus = pd.read_parquet(zensus_path)
+    zensus_path = Path("data/raw/zensus2022_grid.parquet")
+    zensus = gpd.read_parquet(zensus_path)
     # Geometry col from lon lat
-    zensus["geometry"] = zensus.apply(lambda row: shapely.geometry.Point(row["lon"], row["lat"]), axis=1)
-    zensus = gpd.GeoDataFrame(zensus, geometry="geometry", crs=crs)
+    zensus["geometry"] = gpd.points_from_xy(zensus.x_mp_100m, zensus.y_mp_100m)
+    zensus = gpd.GeoDataFrame(zensus, geometry="geometry", crs="EPSG:3035")
     
-    # Load geojson city boundary
-    city_boundary_path = Path("data/raw/city_boundary_Berlin.geojson")
-    city_boundary = load_city_boundary(city_boundary_path)
-    zensus = zensus[zensus.geometry.within(city_boundary)]
+    # Load geojson boundary
+    boundary = load_boundary(boundary_path)
+    # Extract the single boundary geometry (boundary is a 1-row GeoDataFrame)
+    boundary_geom = boundary.geometry.iloc[0]
+    zensus = zensus[zensus.geometry.within(boundary_geom)]
     logger.info("Filtered Zensus 2022 population grid to city boundary.")
     logger.info("Filtered %s population grid rows.", len(zensus))
-    parquet_path = Path("data/raw/zensus2022_population_grid_filtered.parquet")
+    parquet_path = Path("data/raw/zensus2022_grid_filtered.parquet")
     zensus.to_parquet(parquet_path)
     logger.info("Saved filtered Zensus 2022 population grid to %s.", parquet_path)
 
+def build_full_grid(
+    boundary: gpd.GeoDataFrame,  # must be in EPSG:3035
+    zensus: gpd.GeoDataFrame,
+    cell_size: float = 100.0,
+) -> gpd.GeoDataFrame:
+    """Return full INSPIRE 100m grid inside boundary, with 0 for unpopulated cells.
+    
+    The Zensus 2022 suppresses cells with 0 or very low population. This function
+    reconstructs the complete grid by generating all INSPIRE-aligned cell centres
+    within the boundary and left-joining the census data.
+    """
+    import numpy as np
+
+    minx, miny, maxx, maxy = boundary.bounds
+
+    # Snap to INSPIRE grid alignment (multiples of cell_size in EPSG:3035)
+    xs = np.arange(
+        int(np.floor(minx / cell_size) * cell_size),
+        int(np.ceil(maxx  / cell_size) * cell_size) + 1,
+        cell_size, dtype=np.int64
+    )
+    ys = np.arange(
+        int(np.floor(miny / cell_size) * cell_size),
+        int(np.ceil(maxy  / cell_size) * cell_size) + 1,
+        cell_size, dtype=np.int64
+    )
+    xx, yy = np.meshgrid(xs, ys)
+    full = gpd.GeoDataFrame(
+        {"x_mp_100m": xx.ravel(), "y_mp_100m": yy.ravel()},
+        geometry=gpd.points_from_xy(xx.ravel(), yy.ravel()),
+        crs="EPSG:3035",
+    )
+
+    # Spatial clip to boundary polygon
+    full_gdf = full[full.within(boundary)].copy()
+    logger.info("Full grid has %s cells inside boundary.", len(full_gdf))
+
+    # Merge census data — unmatched cells get Einwohner = 0
+    full_gdf = full_gdf.merge(zensus, on=["x_mp_100m", "y_mp_100m"], how="left")
+    full_gdf["Einwohner"] = full_gdf["Einwohner"].fillna(0).astype(np.int32)
+    logger.info("Populated: %s cells, Empty: %s cells.", (full_gdf["Einwohner"] > 0).sum(), (full_gdf["Einwohner"] == 0).sum())
+    return full_gdf
+
 def main():
     logger.info("Starting raster module main workflow.")
-    download_zensus_2022(crs = "EPSG:3035")
-    download_city_boundary("Berlin", crs = "EPSG:3035")
-    download_lor_shapes(crs = "EPSG:3035")
-    filter_zensus_2022(crs = "EPSG:3035")
+    download_zensus_2022()
+    download_city_boundary("Berlin")
+    download_relation_boundary(14983) # Berlin outer S-Bahn ring
+    download_lor_shapes()
+    filter_zensus_2022(Path("data/raw/city_boundary_Berlin.geojson"))
     logger.info("Completed raster module main workflow.")
 
 if __name__ == "__main__":

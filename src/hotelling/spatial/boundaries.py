@@ -23,7 +23,7 @@ def _boundary_is_closed(boundary: gpd.GeoDataFrame) -> bool:
 
 
 def download_city_boundary(city_name: str) -> None:
-    """Download German city boundary relation from Overpass and save as GeoJSON."""
+    """Download German city boundary from Overpass and save as GeoJSON in EPSG:3035."""
     output_path = Path("data/raw") / f"city_boundary_{city_name.replace(' ', '_')}.geojson"
     if output_path.exists():
         logger.info("City boundary already exists at %s; skipping Overpass request.", output_path)
@@ -100,6 +100,9 @@ def download_city_boundary(city_name: str) -> None:
         if inner_polygons:
             boundary = boundary.difference(shapely.ops.unary_union(inner_polygons))
 
+    boundary_gdf = gpd.GeoDataFrame(geometry=[boundary], crs="EPSG:4326")
+    boundary = boundary_gdf.to_crs("EPSG:3035").geometry.iloc[0]
+
     feature = {
         "type": "Feature",
         "properties": {
@@ -107,6 +110,7 @@ def download_city_boundary(city_name: str) -> None:
             "osm_relation_id": relation.get("id"),
             "admin_level": relation.get("tags", {}).get("admin_level"),
             "source": "OpenStreetMap Overpass",
+            "crs": "EPSG:3035",
         },
         "geometry": shapely.geometry.mapping(boundary),
     }
@@ -177,18 +181,26 @@ def download_relation_boundary(relation_id: int) -> None:
 
 
 def load_boundary(path: Path) -> gpd.GeoDataFrame:
-    """Load boundary geometry from a GeoJSON file (Feature, FeatureCollection, or raw geometry)."""
+    """Load boundary geometry from a GeoJSON file (Feature, FeatureCollection, or raw geometry).
+    
+    Reads CRS from the GeoJSON properties if available, otherwise defaults to EPSG:3035.
+    """
     logger.info("Loading boundary geometry from %s.", path)
     with path.open(encoding="utf-8") as f:
         data = json.load(f)
+    
+    # Extract CRS from properties if available
+    crs = "EPSG:3035"  # Default CRS
     if data.get("type") == "Feature":
-        logger.info("Loaded boundary from GeoJSON Feature.")
-        return gpd.GeoDataFrame(geometry=[shapely.geometry.shape(data["geometry"])], crs="EPSG:3035")
+        crs = data.get("properties", {}).get("crs", crs)
+        logger.info("Loaded boundary from GeoJSON Feature with CRS %s.", crs)
+        return gpd.GeoDataFrame(geometry=[shapely.geometry.shape(data["geometry"])], crs=crs)
     if data.get("type") == "FeatureCollection":
-        logger.info("Loaded boundary from GeoJSON FeatureCollection.")
+        crs = data.get("features", [{}])[0].get("properties", {}).get("crs", crs)
+        logger.info("Loaded boundary from GeoJSON FeatureCollection with CRS %s.", crs)
         return gpd.GeoDataFrame(
             geometry=[shapely.geometry.shape(data["features"][0]["geometry"])],
-            crs="EPSG:3035",
+            crs=crs,
         )
-    logger.info("Loaded boundary from raw GeoJSON geometry object.")
-    return gpd.GeoDataFrame(geometry=[shapely.geometry.shape(data)], crs="EPSG:3035")
+    logger.info("Loaded boundary from raw GeoJSON geometry object with CRS %s.", crs)
+    return gpd.GeoDataFrame(geometry=[shapely.geometry.shape(data)], crs=crs)

@@ -37,6 +37,8 @@ This segregation mirrors real retail delegation (Aghion–Tirole 1997) and is en
 
 ## 3. Simulation Phases
 
+**Phase index (0-based, canonical in this document):** **Phase 0** — incumbent burn-in (no LLM); **Phase 1** — entrant entry (entrant LLM); **Phase 2** — strategic game (incumbent CEOs and entrant reassessment). LLM API calls occur only in **Phase 1** and **Phase 2**. The short overview in §1 numbers phases starting at 1 for burn-in and refers to LLM-active phases as “Phase 2 and Phase 3”; the subsections below use the 0-based **Phase 0 / Phase 1 / Phase 2** scheme exclusively.
+
 ### Phase 0 — Incumbent Burn-in (no LLM)
 
 **Purpose:** Allow all incumbent store RL agents to populate their Q-tables and converge to stable policies before the CEO layer and entrant activate. This is necessary because tabular Q-learning requires many visits per state to yield reliable Q-values.
@@ -307,101 +309,163 @@ On reassessment, the entrant LLM receives its current performance since last cal
 
 ## 8. Repository Structure — Required Refactoring
 
-The current repository (`src/hotelling/`) was designed for a simpler agent architecture (flat Q-learners + single LLM agent, no CEO layer, no groups). The following restructuring is required. The package name `hotelling` is retained.
+The package name `hotelling` is retained. Subsections **8.1a** and **8.2a** summarise the layout as implemented in the repository; **8.1b** and **8.2b** list target artefacts from the original refactoring brief that are not yet present or remain stubbed.
 
-### 8.1 Module structure (target)
+### 8.1a — Implemented structure (current)
 
 ```
 src/hotelling/
-│
+├── __init__.py                # hotelling: LLM-Driven 2-D Spatial Hotelling Competition Toolkit.
+├── cli.py                     # Typer CLI for the hotelling package.
+├── core/
+│   ├── __init__.py            # Core economic primitives: Firm, City, Market, equilibrium solvers.
+│   ├── city.py                # 2-D city container with population grid and distance matrix.
+│   ├── firm.py                # Firm dataclass for 2-D Hotelling competition.
+│   ├── market.py              # Logit demand and market clearing.
+│   └── equilibrium.py         # Equilibrium solvers: Bertrand-Nash, joint monopoly, Tabuchi 2-D benchmark.
 ├── env/
-│   ├── market_env.py          # PettingZoo ParallelEnv; orchestrates per-period loop
-│   ├── market_clearing.py     # Logit demand, profit computation — unchanged
-│   ├── geography.py           # Grid, distance matrix, LOR assignment — unchanged
-│   └── state.py               # MarketState dataclass; StoreState dataclass — extend with group labels
-│
+│   ├── __init__.py            # PettingZoo environment package for the spatial Hotelling simulation.
+│   └── market_env.py          # PettingZoo ParallelEnv wrapper for the spatial Hotelling market.
 ├── agents/
-│   ├── base.py                # Abstract Agent interface — update signature for envelope input
-│   ├── store_rl.py            # Per-store Q-learning agent (NEW — extracted and extended from qlearner.py)
-│   ├── chain_ceo.py           # LLM-CEO per chain (NEW)
-│   └── entrant_llm.py         # Entrant LLM agent with response function (NEW)
-│
-├── envelope/                  # NEW module
-│   ├── envelope.py            # GroupEnvelope and ChainEnvelope dataclasses; validation logic
-│   ├── groups.py              # GroupDivision abstract base; group assignment logic; registry
-│   └── divisions/             # NEW subdirectory — one file per implemented division
-│       ├── competition.py     # DIVISION_COMPETITION (heavy/easy by rival count)
-│       └── neighbourhood.py   # DIVISION_NEIGHBOURHOOD (rich/poor by LOR status index)
-│
-├── simulation/                # NEW module
-│   ├── runner.py              # Top-level 3-phase simulation runner
-│   ├── phases.py              # Phase0BurnIn, Phase1Entry, Phase2StrategicGame classes
-│   └── triggers.py            # Trigger abstract base; TimeTrigger, ProfitDropTrigger, RivalEventTrigger
-│
+│   ├── base.py                # AgentProtocol: reset, act, update interface for all market agents.
+│   ├── chain_ceo.py           # LLM-backed chain CEO agent that sets strategy envelopes each epoch.
+│   ├── deep_q.py              # OPTIONAL: Stable-Baselines3 DQN wrapper for n>=5 firms.
+│   ├── entrant_llm.py         # LLM entrant agent: entry decision, response function, and reassessment.
+│   ├── llm.py                 # LLM agent via LiteLLM + Instructor for provider-agnostic structured outputs.
+│   ├── myopic.py              # Myopic best-response agent: computes Bertrand-Nash best response each period.
+│   ├── qlearning.py           # Tabular Q-learning agent.
+│   ├── random_agent.py        # Random agent: uniformly samples price index and location.
+│   └── store_rl.py            # Per-store tabular Q-learning agent with CEO-set strategy envelope.
+├── envelope/
+│   ├── envelope.py            # Group and chain strategy envelope dataclasses.
+│   ├── groups.py              # Group division abstract base class and store-group assignment logic.
+│   └── divisions/
+│       ├── competition.py     # Competition-based group division: HEAVY vs EASY by rival store count.
+│       └── neighbourhood.py   # Neighbourhood-based group division: RICH vs POOR by LOR social-status index.
+├── simulation/
+│   ├── engine.py              # SimulationEngine: orchestrate reset/step/log for Hotelling competition.
+│   ├── phases.py              # Three-phase simulation controller stubs.
+│   ├── recorder.py            # Per-step Parquet + MLflow simulation recorder.
+│   ├── runner.py              # Hydra-driven batch and sweep runner.
+│   └── triggers.py            # Entrant reassessment trigger system.
+├── spatial/
+│   ├── __init__.py            # Spatial building blocks: grids, distances, OSM POIs, census rasters, boundaries.
+│   ├── grid.py                # Regular lattice with an optional population density layer per cell.
+│   ├── distance.py            # Distance matrix computation: KDTree Euclidean + OSRM network distance.
+│   ├── osm.py                 # fetch_pois, normalize_chain_name, CHAIN_QID_MAP (Overpass / osmnx).
+│   ├── boundaries.py          # download_city_boundary, download_relation_boundary, load_boundary.
+│   ├── census.py              # download_zensus_2022, load_zensus_2022, filter_zensus_2022, build_full_grid, run_default_data_pipeline.
+│   ├── admin.py               # download_lor_shapes (Berlin SenStadt LOR).
+│   └── raster.py              # Backward-compat re-export façade (deprecated; prefer direct imports from census, boundaries, admin).
 ├── llm/
-│   ├── client.py              # LiteLLM wrapper; model snapshot pinning; per-call JSONL logging — unchanged
-│   ├── schemas.py             # Pydantic schemas: ChainEnvelopeOutput, EntrantEntryDecision,
-│   │                          #   ResponseFunction, QtableInitChoice — EXTEND significantly
+│   ├── client.py              # LiteLLM wrapper with model snapshot pinning and full call logging.
+│   ├── schemas.py             # Pydantic schemas for LLM structured outputs.
 │   └── prompts/
-│       ├── system_ceo.jinja           # CEO system prompt (NEW — replaces system_pricing.jinja)
-│       ├── system_entrant_entry.jinja # Entrant entry prompt (NEW)
-│       ├── system_entrant_reassess.jinja  # Entrant reassessment prompt (NEW)
-│       ├── state_ceo.jinja            # CEO market state serialiser (NEW — replaces state_template.jinja)
-│       └── state_entrant.jinja        # Entrant market state serialiser (NEW)
-│
-├── data/
-│   ├── osm_loader.py          # unchanged
-│   ├── zensus_loader.py       # unchanged
-│   └── distance.py            # unchanged
-│
+│       ├── system_ceo.jinja
+│       ├── system_entrant_entry.jinja
+│       ├── system_entrant_reassess.jinja
+│       ├── state_ceo.jinja
+│       └── state_entrant.jinja
 ├── analysis/
-│   ├── benchmarks.py          # Bertrand-Nash, joint monopoly — unchanged
-│   ├── metrics.py             # Delta, price dispersion, per-group metrics (EXTEND)
-│   └── animation.py           # unchanged
-│
+│   ├── irf.py                 # Impulse Response Function analysis.
+│   ├── metrics.py             # Post-simulation metrics: profit gain Δ, price gain, HHI, Gini, welfare proxy.
+│   └── results_db.py          # DuckDB query layer over simulation results Parquet files.
 ├── utils/
-│   ├── seeding.py             # unchanged
-│   └── logging.py             # unchanged
-│
-└── cli.py                     # Add `simulate` subcommand for 3-phase runner
+│   ├── logging.py             # Structured JSON logging using loguru (optional) with stdlib fallback.
+│   └── seeding.py             # Reproducible random number generation.
+└── viz/
+    ├── animation.py           # GIF animation of training trajectory.
+    ├── interactive.py         # Interactive visualizations: folium, plotly, pydeck.
+    └── static.py              # Static matplotlib visualizations.
 ```
 
-### 8.2 Config structure (target)
+### 8.1b — Pending additions
+
+The following entries from the original target layout are **not** implemented as separate modules under these paths, are superseded by another layout, or remain stubs:
+
+```
+src/hotelling/
+├── env/
+│   ├── market_clearing.py     # Not added; logit demand and clearing live in core/market.py.
+│   ├── geography.py           # Not added; grid/distance/LOR concerns are covered by spatial/* and core/city.py.
+│   └── state.py               # Not added; MarketState / StoreState as dedicated modules with group labels.
+├── data/
+│   ├── osm_loader.py          # Superseded by spatial/osm.py (flat data/ loaders not used).
+│   ├── zensus_loader.py       # Superseded by spatial/census.py.
+│   └── distance.py            # Superseded by spatial/distance.py.
+├── analysis/
+│   └── benchmarks.py          # Not added under this name; benchmarks live in core/equilibrium.py.
+├── simulation/
+│   └── phases.py              # Phase0BurnIn / Phase1Entry / Phase2StrategicGame classes exist, but run() raises NotImplementedError.
+└── cli.py                     # simulate subcommand exists but raises NotImplementedError (full 3-phase runner not wired).
+```
+
+### 8.2a — Implemented config structure (current)
 
 ```
 configs/
-├── config.yaml                    # Add `simulation` and `groups` to defaults list
-│
+├── config.yaml
+├── default.yaml
+├── llm_config.yaml
+├── qlearning_config.yaml
 ├── agents/
-│   ├── qlearning.yaml             # Rename/update: now store-level params only
-│   ├── chain_ceo.yaml             # NEW: T_CEO, model snapshot, temperature, max_retries
-│   ├── entrant_llm.yaml           # NEW: T_entrant, trigger thresholds, qtable_init_strategy
-│   ├── llm_openai.yaml            # unchanged
-│   └── llm_ollama.yaml            # unchanged
-│
-├── simulation/
-│   ├── phases.yaml                # NEW: T_burnin, T_game, T_CEO, T_entrant
-│   └── triggers.yaml              # NEW: profit_drop_threshold, rival_event_threshold, T_window
-│
-├── groups/
-│   ├── no_groups.yaml             # NEW: active_divisions: []
-│   ├── competition_only.yaml      # NEW: active_divisions: [DIVISION_COMPETITION]
-│   ├── neighbourhood_only.yaml    # NEW: active_divisions: [DIVISION_NEIGHBOURHOOD]
-│   └── competition_neighbourhood.yaml  # NEW: active_divisions: [DIVISION_COMPETITION, DIVISION_NEIGHBOURHOOD]
-│
+│   ├── chain_ceo.yaml
+│   ├── entrant_llm.yaml
+│   ├── llm_duopoly.yaml
+│   └── qlearning_duopoly.yaml
+├── city/
+│   ├── berlin_mitte.yaml
+│   └── unit_square.yaml
 ├── env/
-│   ├── hotelling_1d.yaml          # unchanged
-│   ├── uniform_2d.yaml            # unchanged
-│   └── berlin_inner_ring.yaml     # UPDATE: scope changed from Pankow to inner-Ringbahn Berlin
-│
+│   └── berlin_inner_ring.yaml
+├── groups/
+│   ├── competition_neighbourhood.yaml
+│   ├── competition_only.yaml
+│   ├── neighbourhood_only.yaml
+│   └── no_groups.yaml
+├── simulation/
+│   ├── phases.yaml
+│   └── triggers.yaml
 └── sweep/
-    ├── calvano_replication.yaml   # unchanged
-    ├── transport_dose_response.yaml  # unchanged
-    ├── llm_robustness.yaml        # unchanged
-    └── group_treatment.yaml       # NEW: group configuration as treatment variable
+    ├── alpha_beta.yaml
+    └── transport_cost.yaml
 ```
 
-### 8.3 Key schema changes (Pydantic)
+Top-level `config.yaml` composes defaults (including `simulation` and `groups` where configured); exact keys follow the Hydra composition in that file.
+
+### 8.2b — Pending config additions
+
+From the original target config map, the following files are **not yet added** (or were planned under different names):
+
+```
+configs/
+├── agents/
+│   ├── qlearning.yaml                 # Not yet added (target brief; store-level-only naming)
+│   ├── llm_openai.yaml                # Not yet added (provider split; current repo uses llm_config.yaml)
+│   └── llm_ollama.yaml                # Not yet added
+├── env/
+│   ├── hotelling_1d.yaml              # Not yet added
+│   └── uniform_2d.yaml                # Not yet added
+└── sweep/
+    ├── calvano_replication.yaml       # Not yet added
+    ├── transport_dose_response.yaml   # Not yet added
+    ├── llm_robustness.yaml            # Not yet added
+    └── group_treatment.yaml           # Not yet added
+```
+
+### 8.3 — Data files (generated)
+
+Raw spatial assets are produced by `run_default_data_pipeline()` in `hotelling.spatial.census`. The pipeline writes these files under `data/raw/`:
+
+| File | Description |
+|------|-------------|
+| `zensus2022_grid.parquet` | Full Zensus 2022 100 m grid, EPSG:3035, all Germany |
+| `zensus2022_grid_filtered.parquet` | Grid clipped to Berlin city boundary |
+| `city_boundary_Berlin.geojson` | Berlin admin boundary (OSM, WGS84) |
+| `relation_boundary_14983.geojson` | Inner-Ringbahn study area polygon (EPSG:3035) |
+| `lor_shapes.parquet` | Berlin LOR polygons (EPSG:3035) |
+
+### 8.4 Key schema changes (Pydantic)
 
 **Remove:**
 - `FirmDecision(price_index: int, rationale: str)` — too simple for the new architecture.
@@ -414,7 +478,7 @@ configs/
 - `QtableInitChoice(use_pretrained: bool, chosen_store_id: str | None)` — LLM Q-table initialisation choice.
 - `EntrantReassessOutput(response_function, rationale)` — reassessment output.
 
-### 8.4 Test additions required
+### 8.5 Test additions required
 
 | Test file | What it tests |
 |---|---|

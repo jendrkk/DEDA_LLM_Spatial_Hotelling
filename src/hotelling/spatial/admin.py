@@ -70,15 +70,23 @@ def download_local_shapes() -> None:
     raise NotImplementedError("This method is not implemented yet.")
 
 def equip_lor_with_population(
-    lor: gpd.GeoDataFrame, population_gird: gpd.GeoDataFrame
+    lor: gpd.GeoDataFrame, population_grid: gpd.GeoDataFrame
 ) -> gpd.GeoDataFrame:
     """Equip LOR with population."""
     
-    if "Einwohner" not in population_gird.columns:
-        raise KeyError("population_gird must contain an 'Einwohner' column.")
+    if lor.crs is None or population_grid.crs is None:
+        raise ValueError("Both 'lor' and 'population_grid' must have a defined CRS.")
+    if lor.crs != population_grid.crs:
+        raise ValueError(
+            f"CRS mismatch: lor has {lor.crs}, population_grid has {population_grid.crs}. "
+            "Reproject one to match the other before calling this function."
+        )
+
+    if "Einwohner" not in population_grid.columns:
+        raise KeyError("population_grid must contain an 'Einwohner' column.")
 
     lor_with_population = lor.copy()
-    population_points = population_gird.copy()
+    population_points = population_grid.copy()
     population_points["geometry"] = population_points.geometry.centroid
 
     # Match each centroid to the LOR polygon that contains it.
@@ -86,7 +94,7 @@ def equip_lor_with_population(
         population_points[["Einwohner", "geometry"]],
         lor_with_population[["PLR_ID", "geometry"]],
         how="left",
-        predicate="within",
+        predicate="intersects",
     )
 
     population_sum = joined.groupby("index_right")["Einwohner"].sum()
@@ -103,11 +111,11 @@ def shapes_around_boundary(
     return shapes[shapes.intersects(buffered_boundary)]
 
 def refine_shapes_selection(
-    shapes: gpd.GeoDataFrame, boundary: gpd.GeoSeries, population_gird: gpd.GeoDataFrame,
+    shapes: gpd.GeoDataFrame, boundary: gpd.GeoSeries, population_grid: gpd.GeoDataFrame,
     buffer_distance: float = 1000.0, extend_selection_by: int = 10
 ) -> gpd.GeoDataFrame:
     """Refine shape selection by including those intersecting with an extended buffer."""
-    shapes = equip_lor_with_population(shapes, population_gird).copy()
+    shapes = equip_lor_with_population(shapes, population_grid).copy()
     initial_selection = shapes_around_boundary(shapes, boundary, buffer_distance)
     if initial_selection.empty:
         logger.warning("No shapes found around the boundary with the initial buffer.")
@@ -132,7 +140,7 @@ def refine_shapes_selection(
         boundary_geom = boundary
     boundary_edge = boundary_geom.boundary
     shapes_with_population["distance_to_boundary"] = shapes_with_population["geometry"].centroid.distance(boundary_edge)
-    shapes_with_population["distance_to_boundary_squared"] = shapes_with_population["distance_to_boundary"].pow(4)
+    shapes_with_population["distance_to_boundary_squared"] = shapes_with_population["distance_to_boundary"].pow(2)
     shapes_with_population["distance_to_boundary_normalized"] = shapes_with_population["distance_to_boundary"] / shapes_with_population["distance_to_boundary"].max()
     shapes_with_population["distance_to_boundary_normalized_remaining"] = shapes_with_population["distance_to_boundary"] / shapes_with_population["distance_to_boundary"][~shapes_with_population["initially_selected"]].max()
     shapes_with_population["distance_to_boundary_normalized_squared"] = shapes_with_population["distance_to_boundary_squared"] / shapes_with_population["distance_to_boundary_squared"].max()

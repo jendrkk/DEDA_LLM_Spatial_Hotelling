@@ -35,9 +35,17 @@ DEDA_LLM_Spatial_Hotelling/
 ├── src/hotelling/              # Main installable package (src layout)
 │   ├── core/                   # City, Firm, market clearing, equilibrium solvers
 │   ├── agents/                 # AgentProtocol, Q-learning, deep-Q, myopic, random, LLM
-│   ├── env/                    # PettingZoo HotellingMarketEnv, EntryGame
-│   ├── spatial/                # SquareGrid, OSM loader, raster reader, distance utils
+│   ├── env/                    # PettingZoo HotellingMarketEnv
+│   ├── spatial/                # Spatial building blocks (EPSG:3035 throughout)
+│   │   ├── grid.py             # SquareGrid: 2-D cell grid with population weights
+│   │   ├── distance.py         # Euclidean and network distance matrix utils
+│   │   ├── osm.py              # OSM POI fetcher (Overpass / osmnx); chain QID map
+│   │   ├── boundaries.py       # City and OSM-relation boundary download + GeoJSON load
+│   │   ├── census.py           # Zensus 2022 download, load, clip, full-grid builder
+│   │   ├── admin.py            # LOR and sub-city admin shape download (Berlin SenStadt)
+│   │   └── raster.py           # Backward-compat re-exports (deprecated façade)
 │   ├── simulation/             # SimulationEngine, batch runner, Parquet recorder
+│   ├── envelope/               # GroupEnvelope, ChainEnvelope, group division registry
 │   ├── analysis/               # ResultsDB (DuckDB), metrics, IRF
 │   ├── viz/                    # Static (matplotlib), interactive (plotly/folium), animation
 │   ├── llm/                    # LiteLLM client, Pydantic schemas, Jinja2 prompts
@@ -47,8 +55,10 @@ DEDA_LLM_Spatial_Hotelling/
 ├── configs/                    # Hydra-style YAML configs
 │   ├── config.yaml             # Top-level defaults
 │   ├── city/                   # unit_square.yaml, berlin_mitte.yaml
-│   ├── env/                    # base.yaml
-│   ├── agents/                 # qlearning_duopoly.yaml, llm_duopoly.yaml
+│   ├── env/                    # berlin_inner_ring.yaml
+│   ├── agents/                 # qlearning_duopoly.yaml, llm_duopoly.yaml, chain_ceo.yaml, entrant_llm.yaml
+│   ├── groups/                 # no_groups.yaml, competition_only.yaml, neighbourhood_only.yaml, competition_neighbourhood.yaml
+│   ├── simulation/             # phases.yaml, triggers.yaml
 │   └── sweep/                  # alpha_beta.yaml, transport_cost.yaml
 │
 ├── apps/
@@ -56,12 +66,12 @@ DEDA_LLM_Spatial_Hotelling/
 │
 ├── tests/
 │   ├── conftest.py             # Shared fixtures
-│   ├── unit/                   # Unit tests (core, agents, utils, llm, recorder)
-│   └── integration/            # Integration tests (env construction, etc.)
+│   ├── unit/                   # Unit tests (core, agents, utils, llm, recorder, spatial)
+│   └── integration/            # Integration tests (env construction, 3-phase runner, etc.)
 │
 ├── notebooks/                  # Jupyter notebooks (01–05)
 ├── docs/
-│   ├── decisions/              # Architecture Decision Records (ADR-001 – ADR-003)
+│   ├── decisions/              # Architecture Decision Records (ADR-001 – ADR-012)
 │   └── theory/                 # Background notes on the Hotelling model
 │
 ├── report/
@@ -69,7 +79,7 @@ DEDA_LLM_Spatial_Hotelling/
 │   └── README.md               # Figure generation instructions
 │
 ├── data/
-│   ├── raw/                    # Raw spatial / business data (not committed)
+│   ├── raw/                    # Raw spatial data (not committed to git)
 │   ├── processed/              # Pre-processed datasets
 │   └── synthetic/              # Generated synthetic datasets
 │
@@ -202,15 +212,37 @@ pre-commit install
 
 ---
 
-## Spatial Data
+## Spatial Data Pipeline
 
-Place raw data files in `data/raw/`:
+All raw spatial data is downloaded programmatically — no manual file placement required.
+The canonical entry point is:
 
-| File | Description |
-|------|-------------|
-| `zensus2022_mitte_100m.tif` | Zensus 2022 population raster at 100 m resolution |
-| `boundary.geojson` | Geographic boundary of the study area (OSM admin polygon) |
-| `businesses.csv` | Business locations with `lon`/`lat` columns |
+```python
+from hotelling.spatial.census import run_default_data_pipeline
+
+run_default_data_pipeline()  # downloads and processes everything for Berlin
+```
+
+This produces the following files in `data/raw/`:
+
+| File | Description | Source |
+|------|-------------|--------|
+| `zensus2022_grid.parquet` | Full Zensus 2022 100 m population grid (EPSG:3035) | Destatis |
+| `zensus2022_grid_filtered.parquet` | Grid clipped to Berlin city boundary | derived |
+| `city_boundary_Berlin.geojson` | Berlin administrative boundary polygon | OSM Overpass |
+| `relation_boundary_14983.geojson` | Inner-Ringbahn study area polygon (EPSG:3035) | OSM Overpass |
+| `lor_shapes.parquet` | Berlin LOR planning-area polygons (EPSG:3035) | Berlin SenStadt |
+
+The geographic scope of the simulation is the **inner-Ringbahn Berlin** (S41/S42 ring),
+not the full city boundary. See [ADR-012](docs/decisions/ADR-012-inner-ring-not-pankow.md).
+
+Individual download functions are also available:
+
+```python
+from hotelling.spatial.boundaries import download_city_boundary, download_relation_boundary
+from hotelling.spatial.census import download_zensus_2022, filter_zensus_2022
+from hotelling.spatial.admin import download_lor_shapes
+```
 
 Large data files should be tracked with [DVC](https://dvc.org/) rather than
 committed directly to Git.
@@ -278,4 +310,3 @@ See [`docs/decisions/`](docs/decisions/) for Architecture Decision Records:
 ## License
 
 [MIT](LICENSE)
-

@@ -94,8 +94,6 @@ def filter_zensus_2022(boundary_path: Path) -> None:
     """Filter Zensus 2022 population grid to a city boundary and write filtered parquet."""
     zensus_path = Path("data/raw/zensus2022_grid.parquet")
     zensus = gpd.read_parquet(zensus_path)
-    zensus["geometry"] = gpd.points_from_xy(zensus.x_mp_100m, zensus.y_mp_100m)
-    zensus = gpd.GeoDataFrame(zensus, geometry="geometry", crs="EPSG:3035")
 
     boundary = load_boundary(boundary_path)
     boundary_geom = boundary.geometry.iloc[0]

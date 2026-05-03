@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pandas as pd
 import geopandas as gpd
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -160,3 +161,28 @@ def refine_shapes_selection(
     shapes_with_population["selected"] = shapes_with_population["initially_selected"] | shapes_with_population["additional_selected"]
     
     return shapes_with_population
+
+def join_lor_names():
+    logger.info("Starting LOR names download and processing.")
+    link = "https://www.berlin.de/sen/sbw/_assets/stadtdaten/stadtwissen/lebensweltlich-orientierte-raeume/lor_2019-01-01_uebersicht_id_namen.xlsx?ts=1770289266"
+    save_path = "data/raw/lor_names.xlsx"
+    urllib.request.urlretrieve(link, save_path)
+    logger.info("LOR names downloaded.")
+    # Read the sheet "LOR_2019_Übersicht"
+    df = pd.read_excel(save_path, sheet_name="LOR_2019_Übersicht")
+    # Load the LOR shapes
+    lor_shapes = gpd.read_file("data/raw/lor_shapes.parquet")
+    # Assign the LOR names to the GeoDataFrame of LOR shapes with the PLR_ID column
+    lor_shapes["PLR_NAME"] = np.nan
+    for _, row in df.iterrows():
+        lor_shapes.loc[lor_shapes["PLR_ID"] == row["PLR_ID"], "PLR_NAME"] = row["PLR_NAME"]
+    
+    logger.info("LOR names processed.")
+    # Save the file to the parquet file in processed folder
+    lor_shapes.to_parquet("data/processed/lor.parquet")
+    logger.info("LOR shapes with names saved to %s.", "data/processed/lor.parquet")
+    
+def join_lor_data(data: pd.DataFrame, id_column: str) -> gpd.GeoDataFrame:
+    """Join the LOR data with the data on the id column."""
+    lor_shapes = gpd.read_file("data/processed/lor.parquet")
+    return data.merge(lor_shapes, on=id_column, how="left")

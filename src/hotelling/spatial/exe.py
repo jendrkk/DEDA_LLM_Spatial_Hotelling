@@ -36,7 +36,7 @@ __all__ = [
 
 
 def main() -> None:
-    """Run the default spatial data pipeline (delegates to :func:`run_default_data_pipeline`)."""
+    """Execute the default spatial data pipeline (delegates to :func:`run_default_data_pipeline`)."""
     run_default_data_pipeline()
 
 

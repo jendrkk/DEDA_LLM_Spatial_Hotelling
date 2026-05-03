@@ -97,6 +97,18 @@ _HEADERS: Dict[str, str] = {
 _TRANSIENT_HTTP_CODES = frozenset({429, 502, 503, 504})
 
 # ---------------------------------------------------------------------------
+# Internal helpers — find repository root
+# ---------------------------------------------------------------------------
+
+def _find_repo_root() -> Path:
+    current_path = Path.cwd()
+    for parent in current_path.parents:
+        if (parent / '.git').exists():
+            return parent
+    raise FileNotFoundError("Could not find the repository root ('.git' directory).")
+
+
+# ---------------------------------------------------------------------------
 # Internal helpers — Overpass query construction
 # ---------------------------------------------------------------------------
 
@@ -534,7 +546,7 @@ def fetch_pois(
     >>> "point" in gdf.columns      # doctest: +SKIP
     True
     """
-    effective_cache_dir = cache_dir if cache_dir is not None else Path("data/raw")
+    effective_cache_dir = cache_dir if cache_dir is not None else _find_repo_root() / Path("data/raw")
     output_path = effective_cache_dir / f"OSM_POIs_{city}.parquet"
 
     if output_path.exists():

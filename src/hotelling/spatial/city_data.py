@@ -26,6 +26,5 @@ def download_gesix_data():
 def download_IHK_data():
     """Download the IHK data from the Berlin Chamber of Commerce."""
     
-    logger.info("Starting IHK data download and processing.")
-    
-    link_ihk = ...
+    raise NotImplementedError("This method is not implemented. IHK data should be downloaded manually.")
+

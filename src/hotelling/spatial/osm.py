@@ -83,7 +83,7 @@ CHAIN_QID_MAP: Dict[str, str] = {
 # Module-private constants
 # ---------------------------------------------------------------------------
 
-_DEFAULT_TAGS: Dict[str, object] = {"shop": ["supermarket", "convenience"]}
+_DEFAULT_TAGS: Dict[str, object] = {"shop": ["supermarket"]}
 _OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 _NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 _HEADERS: Dict[str, str] = {
@@ -474,6 +474,7 @@ def normalize_chain_name(
 def fetch_pois(
     city: str = "Berlin",
     tags: Optional[Dict[str, object]] = None,
+    name: Optional[str] = None,
     cache_dir: Optional[Path] = None,
     timeout: int = 180,
 ) -> gpd.GeoDataFrame:
@@ -547,8 +548,8 @@ def fetch_pois(
     True
     """
     effective_cache_dir = cache_dir if cache_dir is not None else _find_repo_root() / Path("data/raw")
-    output_path = effective_cache_dir / f"OSM_POIs_{city}.parquet"
-
+    output_path = effective_cache_dir / f"OSM_POIs_{city}.parquet" if name is None else effective_cache_dir / f"OSM_POIs_{city}_{name}.parquet"
+    
     if output_path.exists():
         logger.info("Loading cached OSM POIs from %s.", output_path)
         gdf = gpd.read_parquet(output_path)

@@ -1,1 +1,2 @@
 data/raw/2023_12_IHK_Berlin_Gewerbedaten.csv filter=lfs diff=lfs merge=lfs -text
+data/raw/Medianeinkommen_Berlin-2023.xlsx filter=lfs diff=lfs merge=lfs -text

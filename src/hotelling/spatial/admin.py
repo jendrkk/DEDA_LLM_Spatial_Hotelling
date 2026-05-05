@@ -21,7 +21,9 @@ __all__ = [
     "download_local_shapes",
     "equip_lor_with_population",
     "join_lor_names",
+    "load_lor",
     "refine_shapes_selection",
+    "select_ringbahn_lor",
     "shapes_around_boundary",
 ]
 

@@ -12,16 +12,19 @@ from pathlib import Path
 
 import geopandas as gpd
 import pandas as pd
-import pdfplumber
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "download_IHK_data",
     "download_index_data",
+    "download_medianeinkommen_data",
     "download_stadtstruktur",
     "download_station_data",
-    "download_IHK_data",
-    "download_medianeinkommen_data",
+    "identify_cbd",
+    "identify_transport_hubs",
+    "process_esix_mss_data",
+    "process_ihk_data",
 ]
 
 def download_index_data() -> None:
@@ -127,6 +130,13 @@ def download_stadtstruktur() -> None:
 
 def download_station_data() -> None:
     """Download the Station data from the DB InfraGo."""
+    try:
+        import pdfplumber  # noqa: PLC0415
+    except ImportError as exc:
+        raise ImportError(
+            "Missing optional dependency 'pdfplumber' required by download_station_data. "
+            "Install it with: pip install pdfplumber"
+        ) from exc
     
     link_db = "https://www.dbinfrago.com/resource/blob/13518698/1cd204bc2c7a98b2490822ee6fc200ad/Stationspreisliste-2026-data.pdf"
     save_db_path = "data/raw/db_station_data.pdf"

@@ -105,38 +105,88 @@ def filter_zensus_2022(boundary_path: Path) -> None:
     logger.info("Saved filtered Zensus 2022 population grid to %s.", parquet_path)
 
 
+def _infer_grid_offsets(series_x: pd.Series, series_y: pd.Series, step: int) -> tuple[int, int]:
+    """Return (x_mod, y_mod) such that official grid coordinates satisfy coord ≡ mod (mod step)."""
+    sx = (series_x.astype(np.int64) % step).mode()
+    sy = (series_y.astype(np.int64) % step).mode()
+    x_mod = int(sx.iloc[0]) if len(sx) else 0
+    y_mod = int(sy.iloc[0]) if len(sy) else 0
+    return x_mod, y_mod
+
+
+def _aligned_center_range(lo: float, hi: float, step: int, mod: int) -> np.ndarray:
+    """Sequence of lattice coordinates between ``lo`` and ``hi`` inclusive, congruent to ``mod`` mod ``step``."""
+    if hi < lo:
+        return np.array([], dtype=np.int64)
+    k0 = int(np.ceil((lo - mod) / step))
+    k1 = int(np.floor((hi - mod) / step))
+    if k1 < k0:
+        return np.array([], dtype=np.int64)
+    return (mod + step * np.arange(k0, k1 + 1, dtype=np.int64)).astype(np.int64)
+
+
 def build_full_grid(
     boundary: gpd.GeoDataFrame,
     zensus: gpd.GeoDataFrame,
     cell_size: float = 100.0,
 ) -> gpd.GeoDataFrame:
-    """Return full INSPIRE 100 m grid inside ``boundary``, with 0 for unpopulated cells."""
-    minx, miny, maxx, maxy = boundary.total_bounds
+    """Return full INSPIRE 100 m grid inside ``boundary``, with 0 for unpopulated cells.
 
-    xs = np.arange(
-        int(np.floor(minx / cell_size) * cell_size),
-        int(np.ceil(maxx / cell_size) * cell_size) + 1,
-        cell_size,
-        dtype=np.int64,
-    )
-    ys = np.arange(
-        int(np.floor(miny / cell_size) * cell_size),
-        int(np.ceil(maxy / cell_size) * cell_size) + 1,
-        cell_size,
-        dtype=np.int64,
-    )
+    Lattice alignment (offsets modulo ``cell_size``) is taken from ``zensus``, not from
+    ``boundary`` bounds alone, so merge keys match Destatis grid coordinates (e.g. cell
+    centres vs corners).
+    """
+    if zensus.empty:
+        raise ValueError("build_full_grid requires non-empty zensus to infer grid alignment.")
+
+    step = int(round(cell_size))
+    if step <= 0:
+        raise ValueError("cell_size must be positive.")
+
+    zensus = zensus.copy()
+    if zensus.crs != boundary.crs:
+        boundary = boundary.to_crs(zensus.crs)
+
+    x_col = _find_first_existing_column(zensus, ["x_mp_100m", "x_mp", "x"])
+    y_col = _find_first_existing_column(zensus, ["y_mp_100m", "y_mp", "y"])
+    zensus[x_col] = zensus[x_col].astype(np.int64)
+    zensus[y_col] = zensus[y_col].astype(np.int64)
+
+    x_mod, y_mod = _infer_grid_offsets(zensus[x_col], zensus[y_col], step)
+
+    minx, miny, maxx, maxy = boundary.total_bounds
+    xs = _aligned_center_range(minx, maxx, step, x_mod)
+    ys = _aligned_center_range(miny, maxy, step, y_mod)
+    if xs.size == 0 or ys.size == 0:
+        logger.warning("Aligned grid range empty for boundary bounds; falling back to zensus extent.")
+        zx1, zx2 = int(zensus[x_col].min()), int(zensus[x_col].max())
+        zy1, zy2 = int(zensus[y_col].min()), int(zensus[y_col].max())
+        xs = _aligned_center_range(min(zx1, minx), max(zx2, maxx), step, x_mod)
+        ys = _aligned_center_range(min(zy1, miny), max(zy2, maxy), step, y_mod)
+
     xx, yy = np.meshgrid(xs, ys)
-    full = gpd.GeoDataFrame(
-        {"x_mp_100m": xx.ravel(), "y_mp_100m": yy.ravel()},
+    skeleton = gpd.GeoDataFrame(
+        {x_col: xx.ravel(), y_col: yy.ravel()},
         geometry=gpd.points_from_xy(xx.ravel(), yy.ravel()),
-        crs="EPSG:3035",
+        crs=zensus.crs,
     )
 
     boundary_union = boundary.geometry.unary_union
-    full_gdf = full[full.geometry.within(boundary_union)].copy()
-    logger.info("Full grid has %s cells inside boundary.", len(full_gdf))
+    skeleton = skeleton[skeleton.geometry.within(boundary_union)].copy()
+    logger.info("Full grid has %s lattice cells inside boundary (aligned to Zensus).", len(skeleton))
 
-    full_gdf = full_gdf.merge(zensus, on=["x_mp_100m", "y_mp_100m"], how="left")
+    z_attrs = zensus.drop(columns=["geometry"])
+    if x_col != "x_mp_100m":
+        z_attrs = z_attrs.rename(columns={x_col: "x_mp_100m"})
+    if y_col != "y_mp_100m":
+        z_attrs = z_attrs.rename(columns={y_col: "y_mp_100m"})
+    sk = skeleton.rename(columns={x_col: "x_mp_100m", y_col: "y_mp_100m"})
+
+    full_gdf = sk.merge(z_attrs, on=["x_mp_100m", "y_mp_100m"], how="left")
+
+    if "Einwohner" not in full_gdf.columns:
+        raise KeyError("Zensus data must include an 'Einwohner' column for population.")
+
     full_gdf["Einwohner"] = full_gdf["Einwohner"].fillna(0).astype(np.int32)
     logger.info(
         "Populated: %s cells, Empty: %s cells.",
@@ -148,7 +198,7 @@ def build_full_grid(
 
 def run_default_data_pipeline() -> None:
     """Run the default Berlin-area data download and filter workflow (for scripts / demos)."""
-    from hotelling.spatial.admin import download_lor_shapes
+    from hotelling.spatial.admin import download_lor_shapes, join_lor_names
     from hotelling.spatial.boundaries import download_city_boundary, download_relation_boundary
 
     logger.info("Starting census module default data pipeline.")
@@ -156,7 +206,9 @@ def run_default_data_pipeline() -> None:
     download_city_boundary("Berlin")
     download_relation_boundary(14983)
     download_lor_shapes()
+    join_lor_names()
     filter_zensus_2022(Path("data/raw/city_boundary_Berlin.geojson"))
+    
     logger.info("Completed census module default data pipeline.")
 
 

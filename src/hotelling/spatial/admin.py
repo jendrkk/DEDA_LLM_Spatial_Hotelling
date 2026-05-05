@@ -17,15 +17,24 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
-def download_lor_shapes() -> None:
+def download_lor_shapes(if_old: bool = True) -> None:
     """Download Berlin LOR shapes from SenStadt, extract, reproject to EPSG:3035, save parquet."""
     logger.info("Starting LOR shapes download and conversion.")
-    url = (
-        "https://www.berlin.de/sen/sbw/_assets/stadtdaten/stadtwissen/"
-        "lebensweltlich-orientierte-raeume/lor_2019-01-01_shapefiles_nur_id.7z?ts=1770289260"
-    )
-    save_path = "data/raw/lor_shapes.7z"
-    extract_dir = Path("data/raw/lor_shapes")
+    
+    if if_old:
+        url = (
+            "https://www.berlin.de/sen/sbw/_assets/stadtdaten/stadtwissen/"
+            "lebensweltlich-orientierte-raeume/lor_2019-01-01_shapefiles_nur_id.7z?ts=1770289260"
+        )
+        file_name = "lor_shapes_2019.7z"
+    else:
+        url = ("https://www.berlin.de/sen/sbw/_assets/stadtdaten/stadtwissen/"
+               "lebensweltlich-orientierte-raeume/lor_2021-01-01_k3_shapefiles_nur_id.7z?ts=1770289259"
+        )
+        file_name = "lor_shapes_2021.7z"
+
+    save_path = Path(f"data/raw/{file_name}")
+    extract_dir = Path(f"data/raw/{file_name.split('.')[0]}")
     urllib.request.urlretrieve(url, save_path)
     logger.info("Downloaded LOR archive to %s.", save_path)
     try:
@@ -59,7 +68,7 @@ def download_lor_shapes() -> None:
     data = data.to_crs(crs="EPSG:3035")
     logger.info("Reprojected to CRS EPSG:3035.")
 
-    parquet_path = Path("data/raw/lor_shapes.parquet")
+    parquet_path = Path(f"data/raw/{file_name.split('.')[0]}.parquet")
     data.to_parquet(parquet_path)
     logger.info("Saved LOR parquet to %s.", parquet_path)
     shutil.rmtree(extract_dir)
@@ -186,21 +195,26 @@ def refine_shapes_selection(
 
     return shapes_with_population
 
-def join_lor_names():
+def join_lor_names(if_old: bool = True):
     logger.info("Starting LOR names download and processing.")
-    link = "https://www.berlin.de/sen/sbw/_assets/stadtdaten/stadtwissen/lebensweltlich-orientierte-raeume/lor_2019-01-01_uebersicht_id_namen.xlsx?ts=1770289266"
-    save_path = "data/raw/lor_names.xlsx"
+    if if_old:
+        link = "https://www.berlin.de/sen/sbw/_assets/stadtdaten/stadtwissen/lebensweltlich-orientierte-raeume/lor_2019-01-01_uebersicht_id_namen.xlsx?ts=1770289266"
+        valid_year = 2019
+    else:
+        link = "https://www.berlin.de/sen/sbw/_assets/stadtdaten/stadtwissen/lebensweltlich-orientierte-raeume/lor_2021-01-01_k3_uebersicht_id_namen.xlsx?ts=1770289269"
+        valid_year = 2021
+    save_path = Path(f"data/raw/lor_names_{valid_year}.xlsx")
     urllib.request.urlretrieve(link, save_path)
     logger.info("LOR names downloaded.")
     
     # Read the sheet "LOR_2019_Übersicht"
-    df = pd.read_excel(save_path, sheet_name="LOR_2019_Übersicht")
+    df = pd.read_excel(save_path, sheet_name=f"LOR_{valid_year}_Übersicht")
     
     # Make sure the PLR_ID column is of the same type as in the LOR shapes (e.g. string)
     df["PLR_ID"] = df['PLR_ID'].astype(str).str.zfill(8)
     
     # Load the LOR shapes
-    lor_shapes = gpd.read_parquet("data/raw/lor_shapes.parquet")
+    lor_shapes = gpd.read_parquet(f"data/raw/lor_shapes_{valid_year}.parquet")
     
     # Assign the LOR names to the GeoDataFrame of LOR shapes with the PLR_ID column
     lor_shapes["PLR_NAME"] = np.nan
@@ -210,10 +224,5 @@ def join_lor_names():
     logger.info("LOR names processed.")
     
     # Save the file to the parquet file in processed folder
-    lor_shapes.to_parquet("data/processed/lor.parquet")
-    logger.info("LOR shapes with names saved to %s.", "data/processed/lor.parquet")
-    
-def join_lor_data(data: pd.DataFrame, id_column: str) -> gpd.GeoDataFrame:
-    """Join the LOR data with the data on the id column."""
-    lor_shapes = gpd.read_file("data/processed/lor.parquet")
-    return data.merge(lor_shapes, on=id_column, how="left")
+    lor_shapes.to_parquet(f"data/processed/lor_{valid_year}.parquet")
+    logger.info("LOR shapes with names saved to %s.", f"data/processed/lor_{valid_year}.parquet")

@@ -1,0 +1,191 @@
+\documentclass[aspectratio=169]{beamer}
+
+% Package imports
+\usepackage[utf8]{inputenc}
+\usepackage{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{graphicx}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{natbib}
+\usepackage{dirtytalk}
+\usepackage{wrapfig}
+\usepackage{mathtools}
+\usepackage{booktabs}
+\usepackage[skip=8pt,font=footnotesize]{caption}
+
+
+\usetheme{Frankfurt}
+\usefonttheme{structurebold}
+
+\bibliographystyle{apalike}
+
+
+\AtBeginSection[] % Do nothing for \section*
+
+
+\definecolor{mycolor}{RGB}{90,90,90} % dimgrey color
+\definecolor{gray}{RGB}{220,220,220} % dimgrey color
+\definecolor{white}{RGB}{255,255,255} % white color
+
+\setbeamercolor{background canvas}{bg=mycolor} % Set background color
+\setbeamercolor{titlelike}{fg=white} % Set title color
+\setbeamercolor{author}{fg=white} % Set author color
+\setbeamercolor{institute}{fg=white} % Set institute color
+\setbeamercolor{date}{fg=white} % Set date color
+
+\setbeamercolor{palette primary}{bg=white, fg=black}
+\setbeamercolor{palette quaternary}{bg=mycolor, fg=white}
+
+\setbeamertemplate{enumerate items}[default]
+\setbeamercolor{enumerate item}{fg=black}
+
+\setbeamertemplate{itemize items}[default]
+\setbeamercolor{itemize item}{fg=black}
+\setbeamercolor{itemize subitem}{fg=black}
+
+% Chage the color of block titles
+\setbeamercolor{block title}{bg=mycolor, fg=white}
+\setbeamercolor{block body}{bg=gray, fg=black}
+
+% Title page
+\defbeamertemplate*{title page}{customized}[1][]{
+  \vbox{}
+  \vfill
+  \begingroup
+    \raggedright % Align to left margin
+    {\usebeamerfont{title}\usebeamercolor[fg]{title}\inserttitle\par}
+    \vskip0.5em
+    {\usebeamerfont{subtitle}\usebeamercolor[fg]{subtitle}\insertsubtitle\par}
+    \vskip1.5em
+    {\usebeamerfont{author}\usebeamercolor[fg]{author}\insertauthor\par}
+    \vskip1em
+    {\usebeamerfont{institute}\usebeamercolor[fg]{institute}\insertinstitute\par}
+    \vskip1em
+    {\usebeamerfont{date}\usebeamercolor[fg]{date}\insertdate\par}
+    \vskip1em
+    {\usebeamercolor[fg]{titlegraphic}\inserttitlegraphic\par}
+  \endgroup
+  \vfill
+  \vfill
+}
+
+% Activate the custom title page template
+\setbeamertemplate{title page}[customized]
+
+% Numbering of figures
+\setbeamertemplate{caption}[numbered]
+
+% Numbering of frames
+\setbeamertemplate{footline}[frame number]
+
+%Information to be included in the title page:
+\title{Agents in the City}
+\subtitle{Digital Economics and Decision Analytics}
+\author{Jędrzej Słowiński}
+\institute{Humboldt-Universität zu Berlin \\ Department of Economics}
+\date{}
+
+
+\begin{document}
+
+{
+\setbeamercolor{palette quaternary}{bg=mycolor, fg=mycolor}
+\begin{frame}
+    \titlepage
+\end{frame}
+}
+
+\setbeamercolor{background canvas}{bg=white} % Set background color
+\section*{Context}
+
+\begin{frame}
+    \frametitle{Historical Outline}
+    
+\end{frame}
+
+\graphicspath{ {graphics/} }
+
+\begin{frame}
+    \frametitle{The \emph{Sharp Cut}}
+    
+\end{frame}
+
+
+\section*{Introduction}
+\begin{frame}
+    \frametitle{What do we observe today?}
+    
+\end{frame}
+
+\begin{frame}
+    \frametitle{Research Question}
+    
+\end{frame}
+
+\begin{frame}
+    \frametitle{Existing Literature: Polish Case}
+    
+    
+\end{frame}
+
+\begin{frame}
+    \frametitle{Existing Literature: General I}
+    
+\end{frame}
+
+\begin{frame}
+    \frametitle{Existing Literature: General II}
+
+\end{frame}
+
+\section*{Data}
+\begin{frame}
+    \frametitle{Data Sources}
+    
+\end{frame}
+
+\begin{frame}
+    \frametitle{Data Extraction}
+    
+\end{frame}
+
+
+\section*{Methods}
+
+\begin{frame}
+    \frametitle{Identification strategies I}
+    
+\end{frame}
+
+\begin{frame}
+    \frametitle{Identification strategies -- alternatives}
+   
+    
+\end{frame}
+
+
+\begin{frame}
+    \frametitle{Key challanges}
+    
+\end{frame}
+
+
+\section*{Expected Results}
+\begin{frame}
+    \frametitle{Anticipated Findings}
+    
+\end{frame}
+
+
+\section*{References}
+\begin{frame}[allowframebreaks]
+    \frametitle{References}
+    \bibliography{lib}
+\end{frame}
+\begin{frame}[allowframebreaks]
+    \frametitle{Annotations}
+    Any statistics without a proper reference has been acquired from the databases of Statistics Poland (GUS).
+\end{frame}
+
+\end{document}

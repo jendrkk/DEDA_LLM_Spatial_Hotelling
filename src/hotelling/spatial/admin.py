@@ -152,14 +152,38 @@ def refine_shapes_selection(
     shapes_with_population["population_distance_density_remaining"] = shapes_with_population["population_density_normalized_remaining"] * (1 - shapes_with_population["distance_to_boundary_normalized_squared_remaining"])
     
     shapes_with_population = shapes_with_population.sort_values("population_distance_density_remaining", ascending=False)
-    
-    # Extend selection by including extend_selection_by most densely populated and closest to the boundary shapes that are not initially selected
-    additional_selection = shapes_with_population[~shapes_with_population["initially_selected"]].head(extend_selection_by)
-    shapes_with_population["additional_selected"] = shapes_with_population["PLR_ID"].isin(additional_selection["PLR_ID"])
-    
-    # Selected
+
+    # Greedy region-growing: at each step pick the highest-scoring shape that already
+    # borders the current selection, add it, and expand the frontier.  Repeating this
+    # guarantees the extended selection stays connected (monolithic, no holes).
+    #
+    # A 1 m buffer on the running union handles tiny floating-point edge gaps that can
+    # appear between otherwise-adjacent LOR polygons in EPSG:3035.
+    current_union = initial_selection.geometry.unary_union
+    remaining = shapes_with_population[~shapes_with_population["initially_selected"]].copy()
+    additional_ids: list[str] = []
+
+    for _ in range(extend_selection_by):
+        if remaining.empty:
+            break
+
+        candidates = remaining[remaining.geometry.intersects(current_union.buffer(1.0))]
+
+        if candidates.empty:
+            logger.warning(
+                "No bordering shapes remain after adding %d additional shapes. Stopping early.",
+                len(additional_ids),
+            )
+            break
+
+        best_idx = candidates["population_distance_density_remaining"].idxmax()
+        additional_ids.append(remaining.loc[best_idx, "PLR_ID"])
+        current_union = current_union.union(remaining.loc[best_idx, "geometry"])
+        remaining = remaining.drop(index=best_idx)
+
+    shapes_with_population["additional_selected"] = shapes_with_population["PLR_ID"].isin(additional_ids)
     shapes_with_population["selected"] = shapes_with_population["initially_selected"] | shapes_with_population["additional_selected"]
-    
+
     return shapes_with_population
 
 def join_lor_names():
@@ -168,16 +192,23 @@ def join_lor_names():
     save_path = "data/raw/lor_names.xlsx"
     urllib.request.urlretrieve(link, save_path)
     logger.info("LOR names downloaded.")
+    
     # Read the sheet "LOR_2019_Übersicht"
     df = pd.read_excel(save_path, sheet_name="LOR_2019_Übersicht")
+    
+    # Make sure the PLR_ID column is of the same type as in the LOR shapes (e.g. string)
+    df["PLR_ID"] = df['PLR_ID'].astype(str).str.zfill(8)
+    
     # Load the LOR shapes
-    lor_shapes = gpd.read_file("data/raw/lor_shapes.parquet")
+    lor_shapes = gpd.read_parquet("data/raw/lor_shapes.parquet")
+    
     # Assign the LOR names to the GeoDataFrame of LOR shapes with the PLR_ID column
     lor_shapes["PLR_NAME"] = np.nan
     for _, row in df.iterrows():
         lor_shapes.loc[lor_shapes["PLR_ID"] == row["PLR_ID"], "PLR_NAME"] = row["PLR_NAME"]
     
     logger.info("LOR names processed.")
+    
     # Save the file to the parquet file in processed folder
     lor_shapes.to_parquet("data/processed/lor.parquet")
     logger.info("LOR shapes with names saved to %s.", "data/processed/lor.parquet")

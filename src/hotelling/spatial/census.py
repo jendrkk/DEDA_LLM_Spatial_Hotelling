@@ -194,23 +194,3 @@ def build_full_grid(
         (full_gdf["Einwohner"] == 0).sum(),
     )
     return full_gdf
-
-
-def run_default_data_pipeline() -> None:
-    """Run the default Berlin-area data download and filter workflow (for scripts / demos)."""
-    from hotelling.spatial.admin import download_lor_shapes, join_lor_names
-    from hotelling.spatial.boundaries import download_city_boundary, download_relation_boundary
-
-    logger.info("Starting census module default data pipeline.")
-    download_zensus_2022()
-    download_city_boundary("Berlin")
-    download_relation_boundary(14983)
-    download_lor_shapes()
-    join_lor_names()
-    filter_zensus_2022(Path("data/raw/city_boundary_Berlin.geojson"))
-    
-    logger.info("Completed census module default data pipeline.")
-
-
-if __name__ == "__main__":
-    run_default_data_pipeline()

@@ -7,6 +7,9 @@ import logging
 import urllib.request
 import pandas as pd
 import geopandas as gpd
+import pdfplumber
+import zipfile
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -45,11 +48,6 @@ def download_index_data():
     save_path = "data/raw/mss.gpkg"
     gdf_mss.to_file(save_path, driver="GPKG", layer="mss")
     logger.info("MSS data saved to %s.", save_path)
-
-def download_IHK_data():
-    """Download the IHK data from the Berlin Chamber of Commerce."""
-    
-    raise NotImplementedError("This method is not implemented. IHK data should be downloaded manually.")
 
 def download_stadtstruktur():
     """Download the Stadtstruktur data from the Berlin GeoPortal."""
@@ -115,3 +113,57 @@ def download_stadtstruktur():
     save_path = "data/raw/zentren.gpkg"
     gdf_4.to_file(save_path, driver="GPKG", layer="zentren_zh")
     logger.info("Zentren ZH data saved to %s.", save_path)
+
+def download_station_data():
+    """Download the Station data from the DB InfraGo."""
+    
+    link_db = "https://www.dbinfrago.com/resource/blob/13518698/1cd204bc2c7a98b2490822ee6fc200ad/Stationspreisliste-2026-data.pdf"
+    save_db_path = "data/raw/db_station_data.pdf"
+    urllib.request.urlretrieve(link_db, save_db_path)
+    logger.info("Station data saved to %s.", save_db_path)
+    
+    # Load the pdf file
+    with pdfplumber.open(save_db_path) as pdf:
+        all_data = []
+        for page in pdf.pages:
+            # We crop the page to avoid the footer/header text if necessary
+            # page.crop((left, top, right, bottom))
+            
+            table = page.extract_table(table_settings={
+                "vertical_strategy": "text", 
+                "horizontal_strategy": "text",
+                "snap_y_tolerance": 5,
+            })
+            
+            if table:
+                all_data.extend(table)
+    # Convert to DataFrame
+    df = pd.DataFrame(all_data)
+    save_db_path = "data/raw/db_station_data.csv"
+    df.to_csv(save_db_path, index=False)
+    logger.info("Station data saved to %s.", save_db_path)
+
+    # Download the zip GTFS file and unpack
+    link_gtfs = "https://unternehmen.vbb.de/fileadmin/user_upload/VBB/Dokumente/API-Datensaetze/gtfs-2024.zip"
+    save_gtfs_path = "data/raw/gtfs-2024.zip"
+    urllib.request.urlretrieve(link_gtfs, save_gtfs_path)
+    logger.info("GTFS data saved to %s.", save_gtfs_path)
+    # Unpack the zip file
+    with zipfile.ZipFile(save_gtfs_path, 'r') as zip_ref:
+        zip_ref.extractall(save_gtfs_path.parent)
+    logger.info("GTFS data unpacked to %s.", save_gtfs_path.parent)
+    
+    # Remove the zip file
+    os.remove(save_gtfs_path)
+    logger.info("GTFS zip file removed.")
+    logger.info("Station data downloaded and processed.")
+    
+def download_IHK_data():
+    """Download the IHK data from the Berlin Chamber of Commerce."""
+    
+    raise NotImplementedError("This method is not implemented. IHK data should be downloaded manually.")
+
+def download_medianeinkommen_data():
+    """Download the Medianeinkommen data from the Berlin Senate of Finance."""
+    
+    raise NotImplementedError("This method is not implemented. Medianeinkommen data should be downloaded manually.")

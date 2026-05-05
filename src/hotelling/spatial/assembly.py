@@ -101,41 +101,50 @@ def assemble_simulation_grid(
     lor: gpd.GeoDataFrame,
     pois: gpd.GeoDataFrame,
 ) -> gpd.GeoDataFrame:
-    """Assemble the final simulation-ready grid from all spatial layers.
+    """Validate schema and finalise the simulation-ready grid.
 
-    Calls :func:`add_lor_attributes` and :func:`add_poi_layer` in sequence on
-    *pop_grid*, then ensures the output schema is consistent for consumption
-    by the simulation engine.
+    This function receives a *pop_grid* that has already been enriched by
+    the pipeline (LOR attributes, ESIx/MSS scores, IHK employment, transit
+    hub flags, CBD flags, and POI layer have all been joined in prior phases).
+    Its job is to:
 
-    The output GeoDataFrame is guaranteed to have the following columns:
+    1. Verify that all required columns are present, raising ``KeyError``
+       with a clear message for any that are missing.
+    2. Fill guaranteed-present columns with safe defaults where values are
+       ``NaN`` (e.g. ``poi_count`` → 0, ``Einwohner`` → 0).
+    3. Reset the index to a clean RangeIndex.
+    4. Return the final GeoDataFrame ready for the simulation engine.
 
-    ``x_mp_100m``, ``y_mp_100m``
-        INSPIRE grid coordinates (int64, EPSG:3035).
-    ``geometry``
-        100 m × 100 m square Polygon (EPSG:3035).
-    ``Einwohner``
-        Population count per cell (int32, 0 for uninhabited cells).
-    ``PLR_ID``, ``PLR_NAME``
-        LOR district identifier and name (str).
-    ``poi_count``
-        Number of supermarket POIs in cell (int, 0 if none).
+    Required output columns (will raise ``KeyError`` if absent):
+        ``x_mp_100m``, ``y_mp_100m``, ``geometry``, ``Einwohner``,
+        ``PLR_ID``, ``PLR_NAME``, ``poi_count``
 
     Parameters
     ----------
     pop_grid:
-        Population grid from :func:`~hotelling.spatial.census.build_full_grid`,
-        with polygon geometry (from :func:`~hotelling.spatial.census.build_grid_polygons`).
+        Fully-enriched grid GeoDataFrame produced by all prior pipeline
+        phases.  Must already contain the required columns listed above.
     lor:
-        Selected LOR districts from :func:`~hotelling.spatial.admin.select_ringbahn_lor`.
+        Selected LOR districts (passed for reference / logging only;
+        not used for spatial joins here).
     pois:
-        OSM POI GeoDataFrame from :func:`~hotelling.spatial.osm.fetch_pois`.
+        OSM POI GeoDataFrame (passed for reference / logging only;
+        not used for spatial joins here).
 
     Returns
     -------
     geopandas.GeoDataFrame
-        Simulation-ready grid in EPSG:3035.
+        Schema-validated simulation grid in EPSG:3035, clean RangeIndex.
+
+    Raises
+    ------
+    KeyError
+        If any required column is missing from *pop_grid*.
     """
     raise NotImplementedError(
-        "assemble_simulation_grid: call add_lor_attributes(pop_grid, lor), "
-        "then add_poi_layer(result, pois), verify required columns exist, return."
+        "assemble_simulation_grid: validate that required columns exist in pop_grid "
+        "(x_mp_100m, y_mp_100m, geometry, Einwohner, PLR_ID, PLR_NAME, poi_count), "
+        "fill NaN values with safe defaults (poi_count→0, Einwohner→0), "
+        "reset_index(drop=True), and return pop_grid. "
+        "Do NOT re-run add_lor_attributes or add_poi_layer — those are done upstream."
     )

@@ -16,6 +16,15 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+__all__ = [
+    "download_lor_shapes",
+    "download_local_shapes",
+    "equip_lor_with_population",
+    "join_lor_names",
+    "refine_shapes_selection",
+    "shapes_around_boundary",
+]
+
 
 def download_lor_shapes(if_old: bool = True) -> None:
     """Download Berlin LOR shapes from SenStadt, extract, reproject to EPSG:3035, save parquet."""
@@ -226,3 +235,76 @@ def join_lor_names(if_old: bool = True):
     # Save the file to the parquet file in processed folder
     lor_shapes.to_parquet(f"data/processed/lor_{valid_year}.parquet")
     logger.info("LOR shapes with names saved to %s.", f"data/processed/lor_{valid_year}.parquet")
+
+
+def load_lor(year: int = 2021) -> gpd.GeoDataFrame:
+    """Load the processed LOR shapes for *year* and save a canonical ``lor.parquet``.
+
+    Reads ``data/processed/lor_{year}.parquet`` (written by :func:`join_lor_names`),
+    copies it to ``data/processed/lor.parquet`` as the canonical file used by
+    notebooks and downstream pipeline steps, and returns the GeoDataFrame.
+
+    Parameters
+    ----------
+    year:
+        LOR version year: 2019 (legacy) or 2021 (current, default).
+
+    Returns
+    -------
+    geopandas.GeoDataFrame
+        LOR planning-area polygons in EPSG:3035 with ``PLR_ID`` and ``PLR_NAME``
+        columns.
+
+    Raises
+    ------
+    FileNotFoundError
+        If ``data/processed/lor_{year}.parquet`` does not exist (i.e.
+        :func:`join_lor_names` has not been run yet).
+    """
+    raise NotImplementedError(
+        "load_lor: read data/processed/lor_{year}.parquet, "
+        "copy/save to data/processed/lor.parquet, return the GeoDataFrame."
+    )
+
+
+def select_ringbahn_lor(
+    lor: gpd.GeoDataFrame,
+    boundary: gpd.GeoDataFrame,
+    population_grid: gpd.GeoDataFrame,
+    buffer_distance: float = 500.0,
+    extend_selection_by: int = 6,
+) -> gpd.GeoDataFrame:
+    """Select LOR districts that cover the inner-Ringbahn study area.
+
+    Convenience wrapper around :func:`refine_shapes_selection` that runs the
+    full selection algorithm and returns only the rows flagged as ``selected``.
+    The returned GeoDataFrame is the recommended input to
+    :func:`~hotelling.spatial.census.build_full_grid`.
+
+    Parameters
+    ----------
+    lor:
+        Full LOR GeoDataFrame in EPSG:3035 with ``PLR_ID`` column.
+    boundary:
+        GeoDataFrame of the inner-Ringbahn polygon (EPSG:3035).
+    population_grid:
+        Zensus polygon grid (from :func:`~hotelling.spatial.census.build_grid_polygons`)
+        in EPSG:3035 with an ``Einwohner`` column.
+    buffer_distance:
+        Buffer in metres around the Ringbahn boundary for the initial
+        candidate selection.  Default 500 m.
+    extend_selection_by:
+        Number of additional high-density adjacent LOR units to include
+        beyond the initial buffer selection.  Default 6.
+
+    Returns
+    -------
+    geopandas.GeoDataFrame
+        Subset of *lor* covering the Ringbahn study area, retaining all
+        original columns plus the scoring columns added by
+        :func:`refine_shapes_selection`.
+    """
+    raise NotImplementedError(
+        "select_ringbahn_lor: call refine_shapes_selection(...), "
+        "then return the subset where shapes['selected'] == True."
+    )

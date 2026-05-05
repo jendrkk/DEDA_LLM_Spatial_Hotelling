@@ -43,7 +43,8 @@ DEDA_LLM_Spatial_Hotelling/
 │   │   ├── boundaries.py       # City and OSM-relation boundary download + GeoJSON load
 │   │   ├── census.py           # Zensus 2022 download, load, clip, full-grid builder
 │   │   ├── admin.py            # LOR and sub-city admin shape download (Berlin SenStadt)
-│   │   └── raster.py           # Backward-compat re-exports (deprecated façade)
+│   │   └── exe.py              # Pipeline orchestrator: download → filter → grid → simulation-ready
+│   │   └── assembly.py         # Final grid assembly: merge all spatial layers
 │   ├── simulation/             # SimulationEngine, batch runner, Parquet recorder
 │   ├── envelope/               # GroupEnvelope, ChainEnvelope, group division registry
 │   ├── analysis/               # ResultsDB (DuckDB), metrics, IRF
@@ -218,20 +219,45 @@ All raw spatial data is downloaded programmatically — no manual file placement
 The canonical entry point is:
 
 ```python
-from hotelling.spatial.census import run_default_data_pipeline
+from hotelling.spatial import run_default_data_pipeline
 
 run_default_data_pipeline()  # downloads and processes everything for Berlin
 ```
 
-This produces the following files in `data/raw/`:
+**Raw data** (`data/raw/`):
 
 | File | Description | Source |
 |------|-------------|--------|
 | `zensus2022_grid.parquet` | Full Zensus 2022 100 m population grid (EPSG:3035) | Destatis |
 | `zensus2022_grid_filtered.parquet` | Grid clipped to Berlin city boundary | derived |
-| `city_boundary_Berlin.geojson` | Berlin administrative boundary polygon | OSM Overpass |
+| `city_boundary_Berlin.geojson` | Berlin administrative boundary polygon (EPSG:3035) | OSM Overpass |
 | `relation_boundary_14983.geojson` | Inner-Ringbahn study area polygon (EPSG:3035) | OSM Overpass |
-| `lor_shapes.parquet` | Berlin LOR planning-area polygons (EPSG:3035) | Berlin SenStadt |
+| `lor_shapes_2019.parquet` | LOR planning-area shapes, 2019 edition (EPSG:3035) | Berlin SenStadt |
+| `lor_shapes_2021.parquet` | LOR planning-area shapes, 2021 edition (EPSG:3035) | Berlin SenStadt |
+| `esix.gpkg` | ESIx 2022 social-structure index polygons (EPSG:25833) | Berlin GDI WFS |
+| `mss.gpkg` | MSS 2023 social-development index polygons (EPSG:25833) | Berlin GDI WFS |
+| `stadtstruktur.gpkg` | Urban structure, buildings, Zentren (EPSG:25833) | Berlin GDI WFS |
+| `db_station_data.csv` | DB InfraGo station price list | DB InfraGo |
+| `gtfs-2024/` | VBB GTFS transit timetable files | VBB |
+| `OSM_POIs_Berlin.parquet` | OpenStreetMap supermarket POIs (EPSG:4326) | OSM Overpass |
+
+**Processed data** (`data/processed/`):
+
+| File | Description |
+|------|-------------|
+| `lor_2019.parquet` | LOR 2019 shapes with names joined |
+| `lor_2021.parquet` | LOR 2021 shapes with names joined |
+| `lor.parquet` | Canonical LOR shapes (copy of the selected year) |
+| `lor_ringbahn.parquet` | LOR districts selected for the Ringbahn study area |
+| `pop_grid.parquet` | Population grid (100 m cells) within selected LORs |
+| `simulation_grid.parquet` | **Final simulation-ready grid** with all layers merged |
+
+```python
+from hotelling.spatial import run_default_data_pipeline
+
+# IHK data must be placed manually at data/raw/2023_12_IHK_Berlin_Gewerbedaten.csv
+run_default_data_pipeline(ihk_path="data/raw/2023_12_IHK_Berlin_Gewerbedaten.csv")
+```
 
 The geographic scope of the simulation is the **inner-Ringbahn Berlin** (S41/S42 ring),
 not the full city boundary. See [ADR-012](docs/decisions/ADR-012-inner-ring-not-pankow.md).

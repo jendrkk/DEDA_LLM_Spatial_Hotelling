@@ -24,6 +24,10 @@ handles the full data pipeline:
    and discrete spatial games.
 6. **Distances** (`distance.py`) — Euclidean and network (OSRM) distance
    matrix computation.
+7. **Pipeline orchestrator** (`exe.py`) — single entry point that chains all
+   seven phases from raw download to simulation-ready grid assembly.
+8. **Grid assembly** (`assembly.py`) — merges population, LOR, POI, and
+   socio-economic layers into the final simulation grid.
 
 All modules are imported lazily from `hotelling.spatial` so that only the
 `[spatial]` optional dependencies are required, and only when the relevant
@@ -45,6 +49,7 @@ from hotelling.spatial import (
     download_lor_shapes,
 )
 from pathlib import Path
+from hotelling.spatial import run_default_data_pipeline
 
 # 1. Administrative boundary
 download_city_boundary("Berlin")                 # saves data/raw/city_boundary_Berlin.geojson
@@ -59,11 +64,14 @@ zensus = load_zensus_2022()                      # EPSG:3035 GeoDataFrame
 grid_gdf = build_full_grid(boundary, zensus)
 
 # 4. LOR shapes (Berlin)
-download_lor_shapes()                            # saves data/raw/lor_shapes.parquet
+download_lor_shapes(if_old=False)                # saves data/raw/lor_shapes_2021.parquet
 
 # 5. OSM points-of-interest (supermarkets, convenience stores)
 pois = fetch_pois("Berlin")                      # EPSG:4326 GeoDataFrame
 pois_3035 = pois.to_crs("EPSG:3035")            # reproject for spatial joins
+
+# 6. Run full pipeline
+run_default_data_pipeline()
 ```
 
 ---
@@ -242,7 +250,7 @@ hotelling.spatial.download_lor_shapes() -> None
 
 Download Berlin LOR (Lebensweltlich Orientierte Räume) planning-area shapefiles
 from the Berlin Senate Department, extract, reproject to EPSG:3035, and save
-as `data/raw/lor_shapes.parquet`.
+as `data/raw/lor_shapes_2019.parquet` or `data/raw/lor_shapes_2021.parquet`.
 
 Requires the optional `py7zr` dependency for `.7z` extraction.
 
@@ -402,6 +410,107 @@ Pairwise network routing distance matrix via the OSRM table API.
 
 ---
 
+## Module: `exe.py` — Pipeline Orchestrator
+
+### `run_default_data_pipeline`
+hotelling.spatial.run_default_data_pipeline(
+lor_year: int = 2021,
+ringbahn_relation_id: int = 14983,
+buffer_distance: float = 500.0,
+extend_selection_by: int = 6,
+ihk_path: Path | None = None,
+) -> None
+
+Run the complete Berlin inner-Ringbahn spatial data pipeline in seven phases:
+
+| Phase | Description | Key output |
+|---|---|---|
+| 1 — Download | Census, boundaries, LOR, ESIx/MSS, GTFS, OSM POIs | `data/raw/` |
+| 2 — Filter | Clip Zensus to Berlin boundary | `zensus2022_grid_filtered.parquet` |
+| 3 — LOR selection | Select and extend Ringbahn-area LOR districts | `lor_ringbahn.parquet` |
+| 4 — Grid construction | INSPIRE 100 m lattice within selected LORs | `pop_grid.parquet` |
+| 5 — Enrichment | ESIx/MSS, IHK employment, transit hubs, CBDs | in-memory |
+| 6 — POI layer | OSM supermarket count / chain flags per cell | in-memory |
+| 7 — Assembly | Merge all layers, validate schema | `simulation_grid.parquet` |
+
+**IHK note:** IHK business microdata cannot be downloaded automatically.
+Place `2023_12_IHK_Berlin_Gewerbedaten.csv` in `data/raw/` before running,
+or pass its path via the `ihk_path` parameter.  The pipeline proceeds without
+it (employment columns will be absent) if the file is missing.
+
+---
+## Module: `assembly.py` — Grid Assembly
+
+### `add_lor_attributes`
+hotelling.spatial.add_lor_attributes(
+grid: geopandas.GeoDataFrame,
+lor: geopandas.GeoDataFrame,
+) -> geopandas.GeoDataFrame
+
+Spatial-join LOR planning-area identifiers (`PLR_ID`, `PLR_NAME`) to grid
+cells by matching each cell's centroid to the containing LOR polygon.
+*(Not yet implemented.)*
+
+---
+
+### `add_poi_layer`
+hotelling.spatial.add_poi_layer(
+grid: geopandas.GeoDataFrame,
+pois: geopandas.GeoDataFrame,
+chain_col: str = "chain",
+) -> geopandas.GeoDataFrame
+
+Count and classify OSM POIs per grid cell.  Adds `poi_count`, `poi_chains`,
+and per-chain boolean flags (e.g. `has_Rewe`, `has_Lidl`).
+*(Not yet implemented.)*
+
+---
+
+### `assemble_simulation_grid`
+hotelling.spatial.assemble_simulation_grid(
+pop_grid: geopandas.GeoDataFrame,
+lor: geopandas.GeoDataFrame,
+pois: geopandas.GeoDataFrame,
+) -> geopandas.GeoDataFrame
+
+Assemble the final simulation-ready grid from all spatial layers.
+Guarantees the output columns: `x_mp_100m`, `y_mp_100m`, `geometry`
+(100 m² Polygon, EPSG:3035), `Einwohner`, `PLR_ID`, `PLR_NAME`, `poi_count`.
+*(Not yet implemented.)*
+
+---
+## Module: `city_data.py` — City Data Downloads and Processing
+
+### Download functions
+
+| Function | Output file(s) | Source |
+|---|---|---|
+| `download_index_data()` | `esix.gpkg`, `mss.gpkg` | Berlin GDI WFS |
+| `download_stadtstruktur()` | `stadtstruktur.gpkg`, `gebaeude.gpkg`, `zentren.gpkg` | Berlin GDI WFS |
+| `download_station_data()` | `db_station_data.csv`, `gtfs-2024/` | DB InfraGo / VBB |
+
+### Processing functions (stubs — not yet implemented)
+
+**`process_ihk_data(grid, ihk_path)`**
+Load IHK Berlin business microdata CSV, parse employee-count ranges
+(e.g. `"1 - 3 Beschäftigte"` → midpoint 2), spatial-join to grid cells,
+and add an `empl` column (total employment per cell).
+Requires manually-placed file; skipped gracefully if absent.
+
+**`process_esix_mss_data(grid)`**
+Load `esix.gpkg` / `mss.gpkg`, reproject to EPSG:3035, spatial-join to
+grid, add `esix_score` and `mss_score` columns.
+
+**`identify_transport_hubs(grid, gtfs_dir=None)`**
+Parse VBB GTFS `stops.txt`, identify major S/U-Bahn interchange nodes,
+add `transit_stops` (int) and `is_transit_hub` (bool) columns.
+
+**`identify_cbd(grid, zentren_path=None)`**
+Load Zentren FMA layer, flag cells intersecting Hauptzentrum / CBD polygons
+via `is_cbd` (bool) column.
+
+---
+
 ## CRS Reference
 
 | Layer | CRS | Notes |
@@ -428,10 +537,17 @@ See `docs/crs-handling-and-known-issues.md` for full CRS inventory and known iss
 |---|---|---|---|---|
 | `data/raw/city_boundary_{city}.geojson` | GeoJSON (EPSG:3035, non-std) | `download_city_boundary` | `load_boundary` | EPSG:3035 |
 | `data/raw/relation_boundary_{id}.geojson` | GeoJSON (EPSG:3035, non-std) | `download_relation_boundary` | `load_boundary` | EPSG:3035 |
-| `data/raw/lor_shapes.parquet` | Parquet | `download_lor_shapes` | `gpd.read_parquet` | EPSG:3035 |
+| `data/raw/lor_shapes_2019.parquet` | Parquet | `download_lor_shapes(if_old=True)` | `gpd.read_parquet` | EPSG:3035 |
+| `data/raw/lor_shapes_2021.parquet` | Parquet | `download_lor_shapes(if_old=False)` | `gpd.read_parquet` | EPSG:3035 |
 | `data/raw/zensus2022_grid.parquet` | Parquet | `download_zensus_2022` | `load_zensus_2022` | EPSG:3035 |
 | `data/raw/zensus2022_grid_filtered.parquet` | Parquet | `filter_zensus_2022` | `gpd.read_parquet` | EPSG:3035 |
 | `data/raw/OSM_POIs_{city}.parquet` | Parquet | `fetch_pois` | `gpd.read_parquet` + `_add_point_column` | EPSG:4326 |
+| `data/processed/lor_2019.parquet` | Parquet | `join_lor_names(if_old=True)` | `gpd.read_parquet` | EPSG:3035 |
+| `data/processed/lor_2021.parquet` | Parquet | `join_lor_names(if_old=False)` | `gpd.read_parquet` | EPSG:3035 |
+| `data/processed/lor.parquet` | Parquet | `load_lor(year)` | `gpd.read_parquet` | EPSG:3035 |
+| `data/processed/lor_ringbahn.parquet` | Parquet | `select_ringbahn_lor` | `gpd.read_parquet` | EPSG:3035 |
+| `data/processed/pop_grid.parquet` | Parquet | `build_full_grid` + `build_grid_polygons` | `gpd.read_parquet` | EPSG:3035 |
+| `data/processed/simulation_grid.parquet` | Parquet | `assemble_simulation_grid` | `gpd.read_parquet` | EPSG:3035 |
 
 ---
 
@@ -456,6 +572,8 @@ All Overpass and Nominatim HTTP calls in `osm.py` and `boundaries.py` use:
 | `pyarrow` | 14.0 | Parquet read/write |
 | `rasterio` | 1.3 | Raster reprojection (notebooks) |
 | `py7zr` | 0.20 | LOR `.7z` archive extraction |
+| `pdfplumber` | 0.10 | `download_station_data` (DB PDF parsing) |
+| `openpyxl` | 3.1 | `join_lor_names` (LOR Excel files) |
 
 Install all at once:
 

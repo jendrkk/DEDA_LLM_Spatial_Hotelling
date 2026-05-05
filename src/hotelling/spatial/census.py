@@ -23,6 +23,16 @@ from hotelling.spatial.boundaries import load_boundary
 
 logger = logging.getLogger(__name__)
 
+__all__ = [
+    "download_zensus_2022",
+    "load_zensus_2022",
+    "load_ghs_pop_fallback",
+    "filter_zensus_2022",
+    "build_full_grid",
+    "build_grid_polygons",
+    "clip_grid_to_boundary",
+]
+
 
 def _find_first_existing_column(df: pd.DataFrame, candidates: list[str]) -> str:
     """Return the first existing column name from a prioritized candidate list."""
@@ -194,3 +204,63 @@ def build_full_grid(
         (full_gdf["Einwohner"] == 0).sum(),
     )
     return full_gdf
+
+
+def build_grid_polygons(
+    zensus: gpd.GeoDataFrame,
+    cell_size: float = 100.0,
+    boundary: gpd.GeoDataFrame | None = None,
+) -> gpd.GeoDataFrame:
+    """Convert Zensus midpoint geometries to square cell polygons.
+
+    Each point at ``(x_mp_100m, y_mp_100m)`` becomes a ``cell_size × cell_size``
+    metre square centred on that midpoint.  If *boundary* is supplied, polygons
+    are clipped to its union and degenerate results (points, empty) are dropped.
+
+    Parameters
+    ----------
+    zensus:
+        GeoDataFrame with point geometry in EPSG:3035 and columns
+        ``x_mp_100m``, ``y_mp_100m``.
+    cell_size:
+        Edge length in metres (default 100).
+    boundary:
+        Optional GeoDataFrame in EPSG:3035 to clip cell polygons against.
+
+    Returns
+    -------
+    geopandas.GeoDataFrame
+        Same schema as *zensus* but with square ``Polygon`` geometries.
+    """
+    raise NotImplementedError(
+        "build_grid_polygons: convert midpoint points to square polygons. "
+        "Use shapely.geometry.box(x - half, y - half, x + half, y + half) "
+        "for each row, then optionally clip to boundary union."
+    )
+
+
+def clip_grid_to_boundary(
+    grid: gpd.GeoDataFrame,
+    boundary: gpd.GeoDataFrame,
+) -> gpd.GeoDataFrame:
+    """Clip grid cell polygons to an exact boundary polygon.
+
+    Edge cells that extend beyond *boundary* are trimmed; degenerate results
+    (empty geometry, collapsed to point/line) are dropped.
+
+    Parameters
+    ----------
+    grid:
+        GeoDataFrame with polygon geometry, same CRS as *boundary*.
+    boundary:
+        GeoDataFrame whose union defines the clipping envelope.
+
+    Returns
+    -------
+    geopandas.GeoDataFrame
+        Clipped grid, same CRS as input.
+    """
+    raise NotImplementedError(
+        "clip_grid_to_boundary: intersect each grid polygon with boundary.geometry.unary_union, "
+        "then drop rows where geometry is empty or not Polygon/MultiPolygon."
+    )

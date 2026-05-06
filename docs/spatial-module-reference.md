@@ -1,6 +1,6 @@
 # `hotelling.spatial` — Module Reference
 
-> **Status:** authoritative reference — updated 2026-04-30  
+> **Status:** authoritative reference — updated 2026-05-06  
 > **Package:** `hotelling[spatial]`  
 > **Install:** `pip install hotelling[spatial]`
 
@@ -28,6 +28,9 @@ handles the full data pipeline:
    seven phases from raw download to simulation-ready grid assembly.
 8. **Grid assembly** (`assembly.py`) — merges population, LOR, POI, and
    socio-economic layers into the final simulation grid.
+9. **Building capacity** (`gebaeude_capacity.py`) — ALKIS GFK → floor-space
+   efficiency factors (NUF/BGF) and employee hard caps for ALKIS `Gebäude`
+   footprints; enforces physical capacity constraints against IHK headcounts.
 
 All modules are imported lazily from `hotelling.spatial` so that only the
 `[spatial]` optional dependencies are required, and only when the relevant
@@ -73,6 +76,141 @@ pois_3035 = pois.to_crs("EPSG:3035")            # reproject for spatial joins
 # 6. Run full pipeline
 run_default_data_pipeline()
 ```
+
+---
+
+---
+
+## Module: `gebaeude_capacity.py`
+
+> **Decision:** [[ADR-017-gebaeude-floor-space-efficiency-employee-cap]]
+
+Derives two quantities from the ALKIS `Gebäudefunktion` (GFK) code and the
+`hochhaus` flag for every building polygon in `gebaeude.gpkg`:
+
+1. **Efficiency factor (EF = NUF/BGF)** — the share of gross floor area
+   (footprint × floors) that constitutes net usable space after deducting
+   walls, staircases, elevator shafts, technical rooms, and corridors.
+2. **Employee hard cap H** — the physical maximum number of employees the
+   building can accommodate: `H = (footprint × floors × EF) / m²_per_employee`.
+
+### `get_efficiency_factor`
+
+```
+hotelling.spatial.gebaeude_capacity.get_efficiency_factor(
+    gfk: int | None,
+    hochhaus: bool = False,
+) -> float
+```
+
+Returns the NUF/BGF ratio for the given GFK code.  If `hochhaus=True` and
+the code is not in the exempt set, applies `HOCHHAUS_PENALTY = 0.07`.
+Falls back to group-level defaults (rounded GFK ÷ 1000) then to
+`EF_DEFAULT_UNKNOWN = 0.75` for unrecognised codes.
+
+### `get_m2_per_employee`
+
+```
+hotelling.spatial.gebaeude_capacity.get_m2_per_employee(
+    gfk: int | None,
+) -> float
+```
+
+Returns net usable floor area (m²) per employee position for the GFK type.
+Returns `999.0` for building types with no meaningful employee capacity
+(residential, unmanned infrastructure, parking), making the hard cap
+effectively infinite.
+
+### `compute_employee_hard_cap`
+
+```
+hotelling.spatial.gebaeude_capacity.compute_employee_hard_cap(
+    footprint_m2: float,
+    num_floors: int | None,
+    gfk: int | None,
+    hochhaus: bool = False,
+) -> float
+```
+
+Returns the physical hard cap H.  Returns `np.inf` for GFK types where
+`m²_per_employee ≥ 999`.  `num_floors = None / 0 / NaN` is treated as 1.
+
+### `apply_hard_cap_single`
+
+```
+hotelling.spatial.gebaeude_capacity.apply_hard_cap_single(
+    reported: float,
+    hard_cap: float,
+) -> float
+```
+
+Returns `min(reported, hard_cap)`.  NaN is passed through unchanged.
+
+### `apply_hard_cap_multi`
+
+```
+hotelling.spatial.gebaeude_capacity.apply_hard_cap_multi(
+    reported: pd.Series,
+    hard_cap: float,
+) -> pd.Series
+```
+
+Enforces the hard cap across multiple IHK registrations sharing the same
+building using **proportional scaling**:
+
+```
+X_i_capped = X_i × min(1.0,  H / Σ X_j)
+```
+
+Preserves relative firm sizes.  NaN entries are passed through.  Returns
+`reported` unchanged when `hard_cap = np.inf`.
+
+**Groupby pattern (GeoDataFrame workflow):**
+
+```python
+# 1. Spatial-join IHK points to building polygons
+ihk_joined = gpd.sjoin(ihk_gdf, gebaeude[["gfk", "hochhaus", "floors", "geometry"]],
+                       how="left", predicate="within")
+
+# 2. Compute hard cap per building
+ihk_joined["hard_cap"] = ihk_joined.apply(
+    lambda r: compute_employee_hard_cap(
+        gebaeude.loc[r["index_right"]].geometry.area,
+        r["floors"], r["gfk"], bool(r["hochhaus"])
+    ), axis=1
+)
+
+# 3. Apply multi-company cap
+ihk_joined["empl_capped"] = (
+    ihk_joined.groupby("index_right", group_keys=False)
+    .apply(lambda g: apply_hard_cap_multi(g["empl"], g["hard_cap"].iloc[0]))
+)
+```
+
+### `enrich_gebaeude`
+
+```
+hotelling.spatial.gebaeude_capacity.enrich_gebaeude(
+    gdf: gpd.GeoDataFrame,
+    gfk_col: str = "gfk",
+    hochhaus_col: str = "hochhaus",
+    floors_col: str = "anzahl_der_oberirdischen_geschosse",
+) -> gpd.GeoDataFrame
+```
+
+Convenience wrapper.  Adds `efficiency`, `usable_area_m2`, and
+`employee_hard_cap` columns to a building GeoDataFrame and returns the
+enriched copy.
+
+### Module constants
+
+| Constant | Value | Description |
+|---|---|---|
+| `HOCHHAUS_PENALTY` | 0.07 | EF deduction for high-rise buildings |
+| `EF_MIN` | 0.40 | Minimum EF after penalty |
+| `GFK_BASE_EFFICIENCY` | dict | Full GFK → EF lookup |
+| `GFK_M2_PER_EMPLOYEE` | dict | Full GFK → m²/employee lookup |
+| `GFK_LABEL` | dict | Full GFK → German label |
 
 ---
 

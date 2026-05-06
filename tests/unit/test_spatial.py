@@ -274,33 +274,6 @@ class TestStubsRaiseNotImplementedError:
         with pytest.raises(NotImplementedError):
             network_distance_matrix(np.zeros((2, 2)), np.zeros((2, 2)))
 
-    def test_build_grid_polygons(self):
-        import geopandas as gpd
-        from hotelling.spatial.census import build_grid_polygons
-
-        with pytest.raises(NotImplementedError):
-            build_grid_polygons(gpd.GeoDataFrame())
-
-    def test_clip_grid_to_boundary(self):
-        import geopandas as gpd
-        from hotelling.spatial.census import clip_grid_to_boundary
-
-        with pytest.raises(NotImplementedError):
-            clip_grid_to_boundary(gpd.GeoDataFrame(), gpd.GeoDataFrame())
-
-    def test_load_lor(self):
-        from hotelling.spatial.admin import load_lor
-
-        with pytest.raises(NotImplementedError):
-            load_lor()
-
-    def test_select_ringbahn_lor(self):
-        import geopandas as gpd
-        from hotelling.spatial.admin import select_ringbahn_lor
-
-        with pytest.raises(NotImplementedError):
-            select_ringbahn_lor(gpd.GeoDataFrame(), gpd.GeoDataFrame(), gpd.GeoDataFrame())
-
     def test_add_lor_attributes(self):
         import geopandas as gpd
         from hotelling.spatial.assembly import add_lor_attributes

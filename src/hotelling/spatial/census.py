@@ -18,6 +18,7 @@ from pathlib import Path
 import geopandas as gpd
 import numpy as np
 import pandas as pd
+from shapely.geometry import box
 
 from hotelling.spatial.boundaries import load_boundary
 
@@ -232,11 +233,27 @@ def build_grid_polygons(
     geopandas.GeoDataFrame
         Same schema as *zensus* but with square ``Polygon`` geometries.
     """
-    raise NotImplementedError(
-        "build_grid_polygons: convert midpoint points to square polygons. "
-        "Use shapely.geometry.box(x - half, y - half, x + half, y + half) "
-        "for each row, then optionally clip to boundary union."
-    )
+    if zensus.empty:
+        return zensus.copy()
+
+    out = zensus.copy()
+    x_col = _find_first_existing_column(out, ["x_mp_100m", "x_mp", "x"])
+    y_col = _find_first_existing_column(out, ["y_mp_100m", "y_mp", "y"])
+    half = float(cell_size) / 2.0
+    xs = out[x_col].astype(float)
+    ys = out[y_col].astype(float)
+    out["geometry"] = [box(x - half, y - half, x + half, y + half) for x, y in zip(xs, ys)]
+
+    if boundary is not None:
+        b = boundary
+        if out.crs is not None and b.crs is not None and out.crs != b.crs:
+            b = b.to_crs(out.crs)
+        clip_geom = b.geometry.unary_union
+        out["geometry"] = out.geometry.intersection(clip_geom)
+        keep = ~out.geometry.is_empty & out.geometry.geom_type.isin(["Polygon", "MultiPolygon"])
+        out = out.loc[keep].copy()
+
+    return out
 
 
 def clip_grid_to_boundary(
@@ -260,7 +277,11 @@ def clip_grid_to_boundary(
     geopandas.GeoDataFrame
         Clipped grid, same CRS as input.
     """
-    raise NotImplementedError(
-        "clip_grid_to_boundary: intersect each grid polygon with boundary.geometry.unary_union, "
-        "then drop rows where geometry is empty or not Polygon/MultiPolygon."
-    )
+    out = grid.copy()
+    b = boundary
+    if out.crs is not None and b.crs is not None and out.crs != b.crs:
+        b = b.to_crs(out.crs)
+    clip_geom = b.geometry.unary_union
+    out["geometry"] = out.geometry.intersection(clip_geom)
+    keep = ~out.geometry.is_empty & out.geometry.geom_type.isin(["Polygon", "MultiPolygon"])
+    return out.loc[keep].copy()

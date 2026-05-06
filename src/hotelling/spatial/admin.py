@@ -263,10 +263,17 @@ def load_lor(year: int = 2021) -> gpd.GeoDataFrame:
         If ``data/processed/lor_{year}.parquet`` does not exist (i.e.
         :func:`join_lor_names` has not been run yet).
     """
-    raise NotImplementedError(
-        "load_lor: read data/processed/lor_{year}.parquet, "
-        "copy/save to data/processed/lor.parquet, return the GeoDataFrame."
-    )
+    src = Path(f"data/processed/lor_{year}.parquet")
+    if not src.is_file():
+        raise FileNotFoundError(
+            f"LOR parquet not found: {src}. Run join_lor_names for year {year} first.",
+        )
+    gdf = gpd.read_parquet(src)
+    canonical = Path("data/processed/lor.parquet")
+    canonical.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, canonical)
+    logger.info("Canonical LOR copy saved to %s.", canonical)
+    return gdf
 
 
 def select_ringbahn_lor(
@@ -306,7 +313,13 @@ def select_ringbahn_lor(
         original columns plus the scoring columns added by
         :func:`refine_shapes_selection`.
     """
-    raise NotImplementedError(
-        "select_ringbahn_lor: call refine_shapes_selection(...), "
-        "then return the subset where shapes['selected'] == True."
+    refined = refine_shapes_selection(
+        lor,
+        boundary.geometry,
+        population_grid,
+        buffer_distance=buffer_distance,
+        extend_selection_by=extend_selection_by,
     )
+    if refined.empty or "selected" not in refined.columns:
+        return refined
+    return refined.loc[refined["selected"]].copy()

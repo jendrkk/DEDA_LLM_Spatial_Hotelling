@@ -968,7 +968,7 @@ def apply_hard_cap_single(reported: float, hard_cap: float) -> float:
 def apply_hard_cap_multi(
     reported: "pd.Series",
     hard_cap: float,
-) -> "pd.Series":
+) -> pd.Series:
     """Enforce the employee hard cap for multiple companies in the same building.
 
     When the aggregate reported headcount exceeds the hard cap H, a
@@ -1018,7 +1018,7 @@ def enrich_gebaeude(
     gfk_col: str = "gfk",
     hochhaus_col: str = "hochhaus",
     floors_col: str = "anzahl_der_oberirdischen_geschosse",
-) -> "gpd.GeoDataFrame":
+) -> gpd.GeoDataFrame:
     """Add efficiency, usable area, and employee hard cap columns to a building GDF.
 
     Adds three columns in-place and returns the GDF for chaining:

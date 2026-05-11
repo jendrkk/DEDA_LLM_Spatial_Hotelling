@@ -84,6 +84,32 @@ CHAIN_QID_MAP: Dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 _DEFAULT_TAGS: Dict[str, object] = {"shop": ["supermarket"]}
+
+# Large Commercial Centre (LCC) anchor stores — derived from a manually curated
+# Overpass Turbo query.  Each dict maps to one union block in the generated
+# Overpass QL query; entries with `"brand": True` restrict the result to named
+# chains and exclude tiny independent shops sharing the same primary tag.
+#
+# Equivalent Overpass Turbo blocks:
+#   ["shop"="mall"]
+#   ["shop"="department_store"]
+#   ["shop"="chemist"]["brand"]
+#   ["shop"="variety_store"]
+#   ["shop"="electronics"]["brand"]
+#   ["shop"="doityourself"]
+#   ["shop"="furniture"]["brand"]
+#   ["shop"="sports"]["brand"]
+_LCC_TAGS: List[Dict[str, object]] = [
+    {"shop": "mall"},
+    {"shop": "department_store"},
+    {"shop": "chemist", "brand": True},
+    {"shop": "variety_store"},
+    {"shop": "electronics", "brand": True},
+    {"shop": "doityourself"},
+    {"shop": "furniture", "brand": True},
+    {"shop": "sports", "brand": True},
+]
+
 _OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 _NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 _HEADERS: Dict[str, str] = {
@@ -184,21 +210,33 @@ def _build_tag_filters(tags: Dict[str, object]) -> str:
     return "".join(parts)
 
 
-def _build_overpass_query(area_id: int, tag_filters: str, timeout: int = 180) -> str:
+def _build_overpass_query(
+    area_id: int,
+    tag_filter_blocks: List[str],
+    timeout: int = 180,
+) -> str:
     """Build a complete Overpass QL query for nodes, ways, and relations.
+
+    *tag_filter_blocks* is a list of tag-filter strings (one per logical tag
+    dict).  Each block expands to ``node`` / ``way`` / ``relation`` lines;
+    all blocks are OR-unioned inside the same parenthesised query clause.
 
     Uses ``out geom tags;`` so that:
     * nodes carry ``lat`` / ``lon`` at the element root;
     * ways carry a ``geometry`` list of ``{lat, lon}`` node coordinates;
     * relations carry ``members`` with per-member ``geometry`` lists.
     """
+    union_lines = "".join(
+        f"  node{block}(area.searchArea);\n"
+        f"  way{block}(area.searchArea);\n"
+        f"  relation{block}(area.searchArea);\n"
+        for block in tag_filter_blocks
+    )
     return (
         f"[out:json][timeout:{timeout}];\n"
         f"area({area_id})->.searchArea;\n"
         f"(\n"
-        f"  node{tag_filters}(area.searchArea);\n"
-        f"  way{tag_filters}(area.searchArea);\n"
-        f"  relation{tag_filters}(area.searchArea);\n"
+        f"{union_lines}"
         f");\n"
         f"out geom tags;\n"
     )
@@ -472,18 +510,36 @@ def normalize_chain_name(
 
 
 def fetch_pois(
+    type: str = "supermarket",
     city: str = "Berlin",
-    tags: Optional[Dict[str, object]] = None,
+    tags: Optional[Union[Dict[str, object], List[Dict[str, object]]]] = None,
     name: Optional[str] = None,
     cache_dir: Optional[Path] = None,
     timeout: int = 180,
 ) -> gpd.GeoDataFrame:
     """Fetch points-of-interest from OpenStreetMap for a given city.
 
-    Elements of all three OSM types (node, way, relation) are returned.  All
-    OSM tags found in *any* element are preserved as GeoDataFrame columns; rows
-    that lack a given tag carry ``NaN``.  The column set therefore grows
-    automatically when new tags appear in the retrieved data.
+    Two built-in query profiles are available via *type*:
+
+    ``"supermarket"``
+        Fetches all ``shop=supermarket`` elements (the original behaviour).
+        A canonical ``chain`` column is added by mapping ``brand:wikidata``
+        QIDs through :data:`CHAIN_QID_MAP`.
+
+    ``"LCC"``
+        Fetches Large Commercial Centre anchor stores — shopping malls,
+        department stores, chemist chains, variety stores, electronics chains,
+        DIY/home-improvement stores, furniture retailers, and sports retail
+        chains.  The full tag set is defined in the module constant
+        ``_LCC_TAGS``.  No ``chain`` column is produced for this profile.
+
+    For any other *type* value, the *tags* parameter is used directly (or
+    ``_DEFAULT_TAGS`` when *tags* is ``None``); a ``chain`` column is not
+    added unless ``type == "supermarket"``.
+
+    All OSM tags found in *any* returned element are preserved as GeoDataFrame
+    columns; rows that lack a given tag carry ``NaN``.  The column set grows
+    automatically — no schema is pre-defined.
 
     Two geometry representations are provided per row:
 
@@ -492,41 +548,41 @@ def fetch_pois(
         ``Polygon`` / ``MultiPolygon`` for closed ways and relations.
     ``point``
         Representative ``Point`` (equals ``geometry`` for nodes; centroid of
-        the polygon for area elements).  Use this column for distance
-        calculations that require a single coordinate per POI.
+        the polygon for area elements).  Suitable for distance calculations.
 
-    Results are cached as a Parquet file so that repeated calls for the same
-    *city* are fast.  The ``point`` column is re-derived on every load (it is
-    not written to the cache file).
+    Results are cached as a Parquet file keyed by *city* and *type* (or
+    *name* when explicitly given).  The ``point`` column is re-derived on
+    every load and is not written to the Parquet file.
 
     Parameters
     ----------
+    type:
+        Query profile — ``"supermarket"`` or ``"LCC"`` for the built-in
+        profiles; any other string uses *tags* directly.
     city:
         Nominatim place name used to locate the Overpass search area
         (e.g. ``"Berlin"``, ``"Munich"``).
     tags:
-        OSM tag filter dict.  Keys are OSM tag keys; values may be:
-
-        * a single string — exact match (e.g. ``{"shop": "supermarket"}``)
-        * a list of strings — regex OR (e.g.
-          ``{"shop": ["supermarket", "convenience"]}``)
-        * ``True`` — any non-null value (e.g. ``{"healthcare": True}``)
-
-        Defaults to ``{"shop": ["supermarket", "convenience"]}``.
+        OSM tag filter(s) used when *type* is not a built-in profile.
+        Pass a **dict** for a single filter block or a **list of dicts** to
+        OR-union several independent blocks.  Ignored when
+        ``type in {"supermarket", "LCC"}``.
+    name:
+        Override the cache-file stem.  When provided, the Parquet file is
+        named ``OSM_POIs_{city}_{name}.parquet`` instead of the default
+        ``OSM_POIs_{city}_{type}.parquet``.
     cache_dir:
-        Directory in which the Parquet cache file is stored and looked up.
-        The filename is ``OSM_POIs_{city}.parquet``.  The directory is created
-        automatically if it does not exist.  Defaults to ``Path("data/raw")``.
+        Directory for the Parquet cache file (created if absent).
+        Defaults to ``<repo_root>/data/raw``.
     timeout:
-        Overpass API query timeout in seconds.  Increase for large areas or
-        many tag filters.
+        Overpass API query timeout in seconds.
 
     Returns
     -------
     geopandas.GeoDataFrame
-        CRS: EPSG:4326.  Always includes columns ``osm_id``, ``osm_type``,
-        ``geometry``, ``point``, and ``chain``.  Additional columns correspond
-        to OSM tag keys found in the data.
+        CRS: EPSG:4326.  Always includes ``osm_id``, ``osm_type``,
+        ``geometry``, ``point``, plus all OSM tag keys present in the data.
+        A ``chain`` column is added only when ``type == "supermarket"``.
 
     Raises
     ------
@@ -541,31 +597,48 @@ def fetch_pois(
 
     Examples
     --------
-    >>> gdf = fetch_pois("Berlin")  # doctest: +SKIP
-    >>> gdf.crs.to_epsg()           # doctest: +SKIP
+    >>> gdf = fetch_pois(type="supermarket", city="Berlin")  # doctest: +SKIP
+    >>> gdf.crs.to_epsg()                                     # doctest: +SKIP
     4326
-    >>> "point" in gdf.columns      # doctest: +SKIP
+    >>> "chain" in gdf.columns                                # doctest: +SKIP
     True
+    >>> lcc = fetch_pois(type="LCC", city="Berlin")           # doctest: +SKIP
+    >>> "chain" in lcc.columns                                # doctest: +SKIP
+    False
     """
-    effective_cache_dir = cache_dir if cache_dir is not None else _find_repo_root() / Path("data/raw")
-    output_path = effective_cache_dir / f"OSM_POIs_{city}.parquet" if name is None else effective_cache_dir / f"OSM_POIs_{city}_{name}.parquet"
-    
+    effective_cache_dir = (
+        cache_dir if cache_dir is not None else _find_repo_root() / Path("data/raw")
+    )
+    cache_stem = name if name is not None else type
+    output_path = effective_cache_dir / f"OSM_POIs_{city}_{cache_stem}.parquet"
+
     if output_path.exists():
         logger.info("Loading cached OSM POIs from %s.", output_path)
         gdf = gpd.read_parquet(output_path)
         return _add_point_column(gdf)
 
-    effective_tags = tags if tags is not None else _DEFAULT_TAGS
+    # ── Determine tag filters based on type ──────────────────────────────
+    if type == "LCC":
+        effective_tags: Union[Dict[str, object], List[Dict[str, object]]] = _LCC_TAGS
+    elif type == "supermarket":
+        effective_tags = tags if tags is not None else _DEFAULT_TAGS
+    else:
+        effective_tags = tags if tags is not None else _DEFAULT_TAGS
+
+    tag_list = [effective_tags] if isinstance(effective_tags, dict) else list(effective_tags)
+    tag_filter_blocks = [_build_tag_filters(t) for t in tag_list]
 
     logger.info("Resolving Overpass area ID for '%s' via Nominatim.", city)
     area_id = _get_area_id(city)
     logger.info("Area ID for '%s': %d.", city, area_id)
 
-    tag_filters = _build_tag_filters(effective_tags)
-    query = _build_overpass_query(area_id, tag_filters, timeout=timeout)
+    query = _build_overpass_query(area_id, tag_filter_blocks, timeout=timeout)
     logger.debug("Overpass query:\n%s", query)
 
-    logger.info("Fetching POIs for '%s' from Overpass (timeout=%ds).", city, timeout)
+    logger.info(
+        "Fetching POIs for '%s' (type=%r) from Overpass (timeout=%ds).",
+        city, type, timeout,
+    )
     response = _post_with_retry(
         _OVERPASS_URL,
         query.encode("utf-8"),
@@ -577,32 +650,43 @@ def fetch_pois(
     logger.info("Overpass returned %d raw elements.", len(elements))
 
     records = _parse_elements(elements)
-    logger.info("%d usable POI elements parsed (nodes, closed ways, relations).", len(records))
+    logger.info(
+        "%d usable POI elements parsed (nodes, closed ways, relations).",
+        len(records),
+    )
 
     if not records:
-        logger.warning("No usable POI elements found for '%s' with tags %s.", city, effective_tags)
+        logger.warning(
+            "No usable POI elements found for '%s' with type=%r.", city, type
+        )
+        base_cols = ["osm_id", "osm_type", "geometry"]
+        if type == "supermarket":
+            base_cols.append("chain")
         empty = gpd.GeoDataFrame(
-            columns=["osm_id", "osm_type", "geometry", "chain"],
+            columns=base_cols,
             geometry="geometry",
             crs="EPSG:4326",
         )
         empty["point"] = pd.Series(dtype=object)
         return empty
 
-    # pandas aligns columns across dicts and fills NaN for missing tag keys.
+    # pandas aligns columns across dicts and fills NaN for missing tag keys —
+    # the resulting GeoDataFrame therefore contains every attribute returned by
+    # the Overpass query, regardless of whether all rows carry that tag.
     gdf = gpd.GeoDataFrame(records, geometry="geometry", crs="EPSG:4326")
 
-    # Derive canonical chain name from brand:wikidata or brand fallback.
-    wikidata_col: pd.Series = gdf.get(  # type: ignore[assignment]
-        "brand:wikidata", pd.Series(dtype=object)
-    ).reindex(gdf.index)
-    brand_col: pd.Series = gdf.get(  # type: ignore[assignment]
-        "brand", pd.Series(dtype=object)
-    ).reindex(gdf.index)
-    gdf["chain"] = [
-        normalize_chain_name(qid, fallback_name=brand)
-        for qid, brand in zip(wikidata_col, brand_col)
-    ]
+    # ── Chain normalisation — supermarket only ───────────────────────────
+    if type == "supermarket":
+        wikidata_col: pd.Series = gdf.get(  # type: ignore[assignment]
+            "brand:wikidata", pd.Series(dtype=object)
+        ).reindex(gdf.index)
+        brand_col: pd.Series = gdf.get(  # type: ignore[assignment]
+            "brand", pd.Series(dtype=object)
+        ).reindex(gdf.index)
+        gdf["chain"] = [
+            normalize_chain_name(qid, fallback_name=brand)
+            for qid, brand in zip(wikidata_col, brand_col)
+        ]
 
     effective_cache_dir.mkdir(parents=True, exist_ok=True)
     gdf.to_parquet(output_path)

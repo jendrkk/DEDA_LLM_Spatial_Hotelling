@@ -110,6 +110,11 @@ _LCC_TAGS: List[Dict[str, object]] = [
     {"shop": "sports", "brand": True},
 ]
 
+# Railway stations — nodes, ways, and relations tagged railway=station.
+# Equivalent Overpass Turbo block:
+#   ["railway"="station"]
+_STATIONS_TAGS: Dict[str, object] = {"railway": "station"}
+
 _OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 _NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 _HEADERS: Dict[str, str] = {
@@ -519,7 +524,7 @@ def fetch_pois(
 ) -> gpd.GeoDataFrame:
     """Fetch points-of-interest from OpenStreetMap for a given city.
 
-    Two built-in query profiles are available via *type*:
+    Three built-in query profiles are available via *type*:
 
     ``"supermarket"``
         Fetches all ``shop=supermarket`` elements (the original behaviour).
@@ -532,6 +537,11 @@ def fetch_pois(
         DIY/home-improvement stores, furniture retailers, and sports retail
         chains.  The full tag set is defined in the module constant
         ``_LCC_TAGS``.  No ``chain`` column is produced for this profile.
+
+    ``"stations"``
+        Fetches all elements tagged ``railway=station`` (S-Bahn, U-Bahn,
+        regional, and long-distance rail stations).  The tag set is defined
+        in ``_STATIONS_TAGS``.  No ``chain`` column is produced.
 
     For any other *type* value, the *tags* parameter is used directly (or
     ``_DEFAULT_TAGS`` when *tags* is ``None``); a ``chain`` column is not
@@ -602,8 +612,11 @@ def fetch_pois(
     4326
     >>> "chain" in gdf.columns                                # doctest: +SKIP
     True
-    >>> lcc = fetch_pois(type="LCC", city="Berlin")           # doctest: +SKIP
-    >>> "chain" in lcc.columns                                # doctest: +SKIP
+    >>> lcc = fetch_pois(type="LCC", city="Berlin")            # doctest: +SKIP
+    >>> "chain" in lcc.columns                                 # doctest: +SKIP
+    False
+    >>> stn = fetch_pois(type="stations", city="Berlin")       # doctest: +SKIP
+    >>> "chain" in stn.columns                                 # doctest: +SKIP
     False
     """
     effective_cache_dir = (
@@ -620,6 +633,8 @@ def fetch_pois(
     # ── Determine tag filters based on type ──────────────────────────────
     if type == "LCC":
         effective_tags: Union[Dict[str, object], List[Dict[str, object]]] = _LCC_TAGS
+    elif type == "stations":
+        effective_tags = _STATIONS_TAGS
     elif type == "supermarket":
         effective_tags = tags if tags is not None else _DEFAULT_TAGS
     else:

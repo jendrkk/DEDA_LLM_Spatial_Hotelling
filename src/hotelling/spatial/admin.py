@@ -9,10 +9,12 @@ import os
 import shutil
 import urllib.request
 from pathlib import Path
+from typing import Sequence
 
 import pandas as pd
 import geopandas as gpd
 import numpy as np
+from shapely.geometry import box as shapely_box
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +22,7 @@ __all__ = [
     "download_lor_shapes",
     "download_local_shapes",
     "equip_lor_with_population",
+    "find_optimal_rectangle",
     "join_lor_names",
     "load_lor",
     "refine_shapes_selection",
@@ -205,6 +208,238 @@ def refine_shapes_selection(
     shapes_with_population["selected"] = shapes_with_population["initially_selected"] | shapes_with_population["additional_selected"]
 
     return shapes_with_population
+
+def find_optimal_rectangle(
+    boundary: gpd.GeoSeries | gpd.GeoDataFrame,
+    population_grid: gpd.GeoDataFrame,
+    buffer_distance: float = 0.0,
+    cell_size: float = 100.0,
+    augument_rectangle_by_additional_layers: Sequence[int] = (0, 0, 0, 0),
+    max_iterations: int = 10000,
+    tolerance: float = 0.01,
+) -> gpd.GeoDataFrame:
+    """Find the axis-aligned rectangle that optimally encloses a boundary.
+
+    The returned rectangle satisfies:
+
+    * The boundary (optionally expanded by *buffer_distance*) lies **completely
+      within** the rectangle.
+    * The centre of the rectangle equals the centroid of the **original**
+      (pre-buffer) boundary.
+    * Width and height are integer multiples of *cell_size*, so that the INSPIRE
+      population-grid lattice tiles perfectly without partial edge cells.
+    * Among all valid rectangles, the one with the **highest average population
+      density** (``population / area``) is chosen.  This naturally balances the
+      competing goals of maximising population coverage and minimising area.
+
+    After the optimal rectangle is found, it can be asymmetrically extended via
+    *augument_rectangle_by_additional_layers* = ``[top, right, bottom, left]``.
+
+    Parameters
+    ----------
+    boundary:
+        GeoSeries **or** GeoDataFrame that defines the study-area boundary.
+        Reprojected internally to EPSG:3035 (metric CRS).
+    population_grid:
+        GeoDataFrame with **point** geometry in EPSG:3035 and an ``Einwohner``
+        column (integer resident counts per 100 m cell).
+    buffer_distance:
+        Distance in metres by which the boundary is expanded before the
+        rectangle is fitted.  The centre is still taken from the original
+        (pre-buffer) boundary.  Default ``0.0``.
+    cell_size:
+        Side length of one grid cell in metres.  Both dimensions of the
+        returned rectangle are guaranteed to be integer multiples of this
+        value.  Default ``100.0``.
+    augument_rectangle_by_additional_layers:
+        ``[top, right, bottom, left]`` – number of extra *cell_size*-wide
+        layers appended to each side of the optimal rectangle **after**
+        optimisation.  Default ``(0, 0, 0, 0)``.
+    max_iterations:
+        Controls the size of the search grid: ``n_search_cols * n_search_rows
+        ≤ max_iterations``.  Both search dimensions are set to
+        ``floor(sqrt(max_iterations))``.  Default ``10_000``.
+    tolerance:
+        Minimum **relative** improvement in population density required to
+        prefer a larger rectangle over the current best candidate.  A value
+        of ``0.01`` means the challenger must be at least 1 % denser than the
+        incumbent.  This bias towards smaller rectangles acts as a soft
+        regulariser.  Default ``0.01``.
+
+    Returns
+    -------
+    geopandas.GeoDataFrame
+        Single-row GeoDataFrame (EPSG:3035) whose ``geometry`` is the final
+        rectangle (after augmentation).  Additional attribute columns:
+
+        * ``n_cols``, ``n_rows``      – number of grid cells in each direction
+        * ``width_m``, ``height_m``   – rectangle dimensions in metres
+        * ``center_x``, ``center_y``  – centroid coordinates (EPSG:3035)
+        * ``population``              – total ``Einwohner`` within rectangle
+        * ``population_density``      – ``population / area`` [residents / m²]
+
+    Raises
+    ------
+    ValueError
+        If *population_grid* is empty, *cell_size* ≤ 0, or
+        *augument_rectangle_by_additional_layers* does not have exactly 4
+        elements.
+    KeyError
+        If *population_grid* has no ``Einwohner`` column.
+    """
+    _CRS = "EPSG:3035"
+
+    # ── Input validation ──────────────────────────────────────────────────────
+    if cell_size <= 0:
+        raise ValueError(f"cell_size must be positive, got {cell_size}.")
+    if population_grid.empty:
+        raise ValueError("population_grid must not be empty.")
+    if "Einwohner" not in population_grid.columns:
+        raise KeyError("population_grid must contain an 'Einwohner' column.")
+    aug = list(augument_rectangle_by_additional_layers)
+    if len(aug) != 4:
+        raise ValueError(
+            f"augument_rectangle_by_additional_layers must have exactly 4 elements "
+            f"[top, right, bottom, left], got {len(aug)}."
+        )
+
+    # ── 1. Normalise CRS ──────────────────────────────────────────────────────
+    if isinstance(boundary, gpd.GeoDataFrame):
+        boundary = boundary.geometry
+    boundary = boundary.to_crs(_CRS)
+    if population_grid.crs is None or population_grid.crs.to_epsg() != 3035:
+        population_grid = population_grid.to_crs(_CRS)
+
+    # ── 2. Derive containment envelope (optionally buffered) ──────────────────
+    boundary_geom = boundary.unary_union
+    containment_geom = (
+        boundary_geom.buffer(buffer_distance) if buffer_distance > 0.0 else boundary_geom
+    )
+
+    # ── 3. Fixed centre = centroid of ORIGINAL (pre-buffer) boundary ──────────
+    centroid = boundary_geom.centroid
+    cx: float = centroid.x
+    cy: float = centroid.y
+
+    # ── 4. Minimum rectangle dimensions that enclose the containment envelope ─
+    # Because the rectangle is centred at (cx, cy), each half-dimension must
+    # cover the farther of the two opposing extremes of the envelope.
+    bminx, bminy, bmaxx, bmaxy = containment_geom.bounds
+    hw_min: float = max(cx - bminx, bmaxx - cx)
+    hh_min: float = max(cy - bminy, bmaxy - cy)
+
+    # Round up so that full_width = n_cols * cell_size and full_height = n_rows * cell_size.
+    # half_width  = n_cols * cell_size / 2  ≥ hw_min  →  n_cols ≥ 2 * hw_min / cell_size
+    n_cols_min: int = max(1, int(np.ceil(2.0 * hw_min / cell_size)))
+    n_rows_min: int = max(1, int(np.ceil(2.0 * hh_min / cell_size)))
+
+    logger.info(
+        "Minimum enclosing rectangle: %d cols × %d rows "
+        "(%.0f m × %.0f m), centre (%.1f, %.1f).",
+        n_cols_min, n_rows_min,
+        n_cols_min * cell_size, n_rows_min * cell_size,
+        cx, cy,
+    )
+
+    # ── 5. Flat numpy arrays for fast population queries ──────────────────────
+    pop_x: np.ndarray = population_grid.geometry.x.to_numpy(dtype=np.float64)
+    pop_y: np.ndarray = population_grid.geometry.y.to_numpy(dtype=np.float64)
+    pop_val: np.ndarray = population_grid["Einwohner"].to_numpy(dtype=np.float64)
+
+    # ── 6. Grid search over (n_cols, n_rows) ──────────────────────────────────
+    # We try rectangles of size (n_cols * cell_size) × (n_rows * cell_size) for
+    # n_cols ∈ [n_cols_min, n_cols_min + search_side) and similarly for n_rows.
+    # The search is structured so that total evaluations ≤ max_iterations.
+    search_side: int = max(1, int(np.floor(np.sqrt(max_iterations))))
+
+    best_score: float = -np.inf
+    best_n_cols: int = n_cols_min
+    best_n_rows: int = n_rows_min
+
+    for n_cols in range(n_cols_min, n_cols_min + search_side):
+        hw = n_cols * cell_size * 0.5
+        # Boolean mask for the x-strip of this column count
+        x_mask: np.ndarray = (pop_x >= cx - hw) & (pop_x <= cx + hw)
+        sub_y: np.ndarray = pop_y[x_mask]
+        sub_val: np.ndarray = pop_val[x_mask]
+
+        if sub_val.size == 0:
+            # Zero population in this x-band; score = 0 for all n_rows here.
+            # The current best (≥ 0) cannot be beaten; skip the inner loop.
+            continue
+
+        for n_rows in range(n_rows_min, n_rows_min + search_side):
+            hh = n_rows * cell_size * 0.5
+            y_mask: np.ndarray = (sub_y >= cy - hh) & (sub_y <= cy + hh)
+            total_pop: float = sub_val[y_mask].sum()
+
+            area: float = float(n_cols) * float(n_rows) * cell_size * cell_size
+            score: float = total_pop / area  # population density [residents / m²]
+
+            # Update only if the challenger is strictly better by more than
+            # `tolerance`, so that a marginally denser but much larger rectangle
+            # does not win over a compact one (bias towards small area).
+            threshold = best_score * (1.0 + tolerance) if best_score > 0.0 else best_score
+            if score > threshold:
+                best_score = score
+                best_n_cols = n_cols
+                best_n_rows = n_rows
+
+    logger.info(
+        "Optimal rectangle (before augmentation): %d cols × %d rows, "
+        "density = %.4e residents/m².",
+        best_n_cols, best_n_rows, best_score,
+    )
+
+    # ── 7. Apply asymmetric augmentation ──────────────────────────────────────
+    aug_top, aug_right, aug_bottom, aug_left = aug
+
+    # Optimal rectangle edges (centred at (cx, cy))
+    opt_hw = best_n_cols * cell_size * 0.5
+    opt_hh = best_n_rows * cell_size * 0.5
+
+    # Extend each edge independently
+    final_minx: float = cx - opt_hw - aug_left   * cell_size
+    final_maxx: float = cx + opt_hw + aug_right  * cell_size
+    final_miny: float = cy - opt_hh - aug_bottom * cell_size
+    final_maxy: float = cy + opt_hh + aug_top    * cell_size
+
+    final_n_cols: int = best_n_cols + aug_left + aug_right
+    final_n_rows: int = best_n_rows + aug_top  + aug_bottom
+
+    # ── 8. Final population count inside the augmented rectangle ─────────────
+    final_mask: np.ndarray = (
+        (pop_x >= final_minx) & (pop_x <= final_maxx)
+        & (pop_y >= final_miny) & (pop_y <= final_maxy)
+    )
+    final_pop: int = int(pop_val[final_mask].sum())
+    final_area: float = (final_maxx - final_minx) * (final_maxy - final_miny)
+    final_density: float = final_pop / final_area if final_area > 0 else 0.0
+
+    logger.info(
+        "Final rectangle (after augmentation): %d cols × %d rows "
+        "(%.0f m × %.0f m), population = %d, density = %.4e residents/m².",
+        final_n_cols, final_n_rows,
+        final_maxx - final_minx, final_maxy - final_miny,
+        final_pop, final_density,
+    )
+
+    # ── 9. Build and return GeoDataFrame ──────────────────────────────────────
+    rect_geom = shapely_box(final_minx, final_miny, final_maxx, final_maxy)
+    return gpd.GeoDataFrame(
+        {
+            "n_cols":              [final_n_cols],
+            "n_rows":              [final_n_rows],
+            "width_m":             [float(final_maxx - final_minx)],
+            "height_m":            [float(final_maxy - final_miny)],
+            "center_x":            [cx],
+            "center_y":            [cy],
+            "population":          [final_pop],
+            "population_density":  [final_density],
+        },
+        geometry=[rect_geom],
+        crs=_CRS,
+    )
 
 def join_lor_names(if_old: bool = True):
     logger.info("Starting LOR names download and processing.")

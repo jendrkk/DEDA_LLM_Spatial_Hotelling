@@ -151,7 +151,7 @@ def refine_shapes_selection(
     shapes_with_population["population_density"] = shapes_with_population["Einwohner"] / shapes_with_population["geometry"].area
     shapes_with_population["population_density_normalized"] = shapes_with_population["population_density"] / shapes_with_population["population_density"].max()
     shapes_with_population["population_density_normalized_remaining"] = shapes_with_population["population_density"] / shapes_with_population["population_density"][~shapes_with_population["initially_selected"]].max()
-    
+
     # Compute centroid-to-boundary-edge distance (not polygon-to-polygon distance).
     if isinstance(boundary, gpd.GeoDataFrame):
         boundary_geom = boundary.geometry.unary_union

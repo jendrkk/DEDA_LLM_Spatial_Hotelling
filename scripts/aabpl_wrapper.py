@@ -38,7 +38,7 @@ If ``out_dir`` is provided, both DataFrames are written as CSV files:
 
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path    
 
 import geopandas as gpd
 import numpy as np

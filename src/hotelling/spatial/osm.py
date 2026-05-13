@@ -65,23 +65,92 @@ logger = logging.getLogger(__name__)
 # Public constants
 # ---------------------------------------------------------------------------
 
-#: ``brand:wikidata`` QID → canonical chain name (Berlin grocery / drugstore chains).
+#: ``brand:wikidata`` QID → canonical chain name.
+#: QIDs verified against actual Berlin OSM data (overpass query, May 2026).
 CHAIN_QID_MAP: Dict[str, str] = {
-    "Q151954": "Rewe",
-    "Q11462860": "Penny",
-    "Q700965": "Lidl",
-    "Q41187": "Aldi Süd",
-    "Q125054261": "Aldi Nord",
-    "Q685967": "Edeka",
-    "Q459358": "Netto",
-    "Q2662792": "Kaufland",
-    "Q1145968": "dm",
-    "Q183538": "Rossmann",
+    # --- Major grocery chains ---
+    "Q701755": "Edeka",                  # Edeka / EDEKA (incl. E-Center, nah und gut)
+    "Q16968817": "Rewe",                 # Rewe / REWE / REWE City / REWE Center
+    "Q151954": "Lidl",                   # Lidl
+    "Q41171373": "Aldi Nord",            # Aldi Nord / ALDI Nord  (Berlin = Aldi Nord territory)
+    "Q879858": "Netto Marken-Discount",  # Netto Marken-Discount / Netto City
+    "Q284688": "Penny",                  # Penny / PENNY
+    "Q552652": "Netto",                  # Netto (Edeka group, distinct from Netto Marken-Discount)
+    "Q685967": "Kaufland",               # Kaufland
+    "Q450180": "Norma",                  # Norma / NORMA
+    "Q1548713": "HIT",                   # HIT / HIT Ullrich
+    "Q15836148": "NP",                   # NP (Netto-brand discount, Edeka group)
+    "Q1022827": "CAP",                   # CAP / CAP-Markt
+    "Q1963643": "Nah & Frisch",          # Nah & Frisch
+    "Q327854": "Mix Markt",              # Mix Markt
+    # --- Rewe subsidiaries ---
+    "Q57515238": "Rewe",                 # Nahkauf — operated by Rewe Group
+    # --- Bio / organic chains ---
+    "Q48883773": "Denns BioMarkt",       # Denns BioMarkt
+    "Q864179": "Bio Company",            # Bio Company
+    "Q876811": "Alnatura",               # Alnatura / Alnatura Super Natur Markt
+    "Q107983669": "LPG BioMarkt",        # LPG BioMarkt (formerly LPG Naturkost)
+    # --- Speciality chains ---
+    "Q102381911": "Go Asia",             # Go Asia
 }
 
 # ---------------------------------------------------------------------------
 # Module-private constants
 # ---------------------------------------------------------------------------
+
+# Secondary normalization map: lowercase brand/name string → canonical chain name.
+# Applied when brand:wikidata is absent or not found in CHAIN_QID_MAP.
+# All keys must be lowercase; lookup uses ``str.strip().lower()``.
+_BRAND_NAME_MAP: Dict[str, str] = {
+    # Edeka group
+    "edeka": "Edeka",
+    "e-center": "Edeka",        # Edeka E-Center large-format stores
+    "nah und gut": "Edeka",     # Edeka Nah und gut franchise
+    "nah & gut": "Edeka",
+    # Rewe group
+    "rewe": "Rewe",
+    "rewe city": "Rewe",
+    "rewe center": "Rewe",
+    "nahkauf": "Rewe",          # Nahkauf is a Rewe Group subsidiary
+    # Lidl
+    "lidl": "Lidl",
+    # Aldi Nord — Berlin lies entirely within Aldi Nord territory
+    "aldi nord": "Aldi Nord",
+    "aldi": "Aldi Nord",
+    # Netto Marken-Discount (Schwarz Gruppe, sibling of Lidl/Kaufland)
+    "netto marken-discount": "Netto Marken-Discount",
+    "netto city": "Netto Marken-Discount",   # former sub-format of Netto MD
+    # Netto (Edeka group — distinct chain, not to be confused with Netto MD)
+    "netto": "Netto",
+    # Penny
+    "penny": "Penny",
+    # Kaufland (Schwarz Gruppe)
+    "kaufland": "Kaufland",
+    # Norma
+    "norma": "Norma",
+    # HIT
+    "hit": "HIT",
+    # NP
+    "np": "NP",
+    # CAP
+    "cap": "CAP",
+    "cap-markt": "CAP",
+    # Nah & Frisch
+    "nah & frisch": "Nah & Frisch",
+    "nah und frisch": "Nah & Frisch",
+    # Mix Markt
+    "mix markt": "Mix Markt",
+    # Bio / organic chains
+    "denns biomarkt": "Denns BioMarkt",
+    "denns bioladen": "Denns BioMarkt",
+    "alnatura": "Alnatura",
+    "alnatura super natur markt": "Alnatura",
+    "bio company": "Bio Company",
+    "lpg biomarkt": "LPG BioMarkt",
+    "lpg naturkost": "LPG BioMarkt",   # rebranded to LPG BioMarkt
+    # Speciality chains
+    "go asia": "Go Asia",
+}
 
 _DEFAULT_TAGS: Dict[str, object] = {"shop": ["supermarket"]}
 
@@ -481,37 +550,87 @@ def _post_with_retry(
 
 def normalize_chain_name(
     wikidata_qid: Optional[str],
-    fallback_name: Optional[str] = None,
+    brand: Optional[str] = None,
+    *,
+    name: Optional[str] = None,
 ) -> Optional[str]:
-    """Map a ``brand:wikidata`` QID to a canonical chain name.
+    """Map OSM supermarket tags to a canonical chain name.
+
+    Resolution priority (first match wins):
+
+    1. **brand:wikidata QID** — looked up in :data:`CHAIN_QID_MAP`.
+       Most reliable; handles inconsistent brand-name spellings automatically.
+    2. **brand field** — case-insensitive lookup in ``_BRAND_NAME_MAP``.
+       Canonicalises variant spellings (e.g. ``"REWE"`` / ``"Rewe"``,
+       ``"ALDI Nord"`` / ``"Aldi Nord"``).
+    3. **name field** — same case-insensitive lookup in ``_BRAND_NAME_MAP``.
+       Catches the minority of stores that lack a ``brand`` tag but carry the
+       chain name as the element name (e.g. ``name="Aldi Nord"`` without
+       ``brand:wikidata``).
+    4. **raw brand field** — returned as-is for any unrecognised chain so that
+       minor/independent stores keep their identity rather than collapsing to
+       ``None``.
+    5. ``None`` — when all four sources are unavailable.
 
     Parameters
     ----------
     wikidata_qid:
-        Wikidata QID string (e.g. ``"Q151954"``).  Pass ``None`` to skip the
-        lookup and fall back to *fallback_name*.
-    fallback_name:
-        Raw brand or name string returned when *wikidata_qid* is ``None`` or
-        absent from :data:`CHAIN_QID_MAP`.
+        Value of the ``brand:wikidata`` OSM tag (e.g. ``"Q151954"``), or
+        ``None`` when absent.
+    brand:
+        Value of the ``brand`` OSM tag, or ``None`` when absent.
+    name:
+        Value of the ``name`` OSM tag, used only as a tertiary fallback.
 
     Returns
     -------
     str | None
-        Canonical chain name from :data:`CHAIN_QID_MAP`, *fallback_name*, or
-        ``None`` when both are unavailable.
+        Canonical chain name, or ``None`` when the store cannot be identified.
 
     Examples
     --------
     >>> normalize_chain_name("Q151954")
+    'Lidl'
+    >>> normalize_chain_name("Q16968817")
     'Rewe'
-    >>> normalize_chain_name("Q999999", fallback_name="MyStore")
+    >>> normalize_chain_name(None, brand="REWE City")
+    'Rewe'
+    >>> normalize_chain_name(None, brand=None, name="Aldi Nord")
+    'Aldi Nord'
+    >>> normalize_chain_name(None, brand="MyStore")
     'MyStore'
     >>> normalize_chain_name(None) is None
     True
     """
+    # Pandas serialises missing tag values as float NaN; normalise to None.
+    if not isinstance(wikidata_qid, str):
+        wikidata_qid = None
+    if not isinstance(brand, str):
+        brand = None
+    if not isinstance(name, str):
+        name = None
+
+    # 1. Wikidata QID lookup
     if wikidata_qid and wikidata_qid in CHAIN_QID_MAP:
         return CHAIN_QID_MAP[wikidata_qid]
-    return fallback_name
+
+    # 2. Brand-name normalisation
+    if brand:
+        canonical = _BRAND_NAME_MAP.get(brand.strip().lower())
+        if canonical is not None:
+            return canonical
+
+    # 3. Name-field fallback normalisation
+    if name:
+        canonical = _BRAND_NAME_MAP.get(name.strip().lower())
+        if canonical is not None:
+            return canonical
+
+    # 4. Raw brand as-is (unrecognised / independent chains)
+    if brand:
+        return brand
+
+    return None
 
 
 def fetch_pois(
@@ -698,9 +817,12 @@ def fetch_pois(
         brand_col: pd.Series = gdf.get(  # type: ignore[assignment]
             "brand", pd.Series(dtype=object)
         ).reindex(gdf.index)
+        name_col: pd.Series = gdf.get(  # type: ignore[assignment]
+            "name", pd.Series(dtype=object)
+        ).reindex(gdf.index)
         gdf["chain"] = [
-            normalize_chain_name(qid, fallback_name=brand)
-            for qid, brand in zip(wikidata_col, brand_col)
+            normalize_chain_name(qid, brand=brand, name=nm)
+            for qid, brand, nm in zip(wikidata_col, brand_col, name_col)
         ]
 
     effective_cache_dir.mkdir(parents=True, exist_ok=True)

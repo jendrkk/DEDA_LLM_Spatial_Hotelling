@@ -49,8 +49,8 @@ def download_zensus_2022() -> None:
     """Download the Zensus 2022 100 m population grid from the Destatis portal and save parquet."""
     logger.info("Starting Zensus 2022 download and conversion.")
     link = "https://www.destatis.de/static/DE/zensus/gitterdaten/Zensus2022_Bevoelkerungszahl.zip"
-    save_path = "data/raw/zensus2022_grid.zip"
-    extract_dir = Path("data/raw/zensus2022_grid")
+    save_path = Path(__file__).resolve().parents[3] / "data" / "raw" / "zensus2022_grid.zip"
+    extract_dir = Path(__file__).resolve().parents[3] / "data" / "raw" / "zensus2022_grid"
     urllib.request.urlretrieve(link, save_path)
     logger.info("Downloaded Zensus archive to %s.", save_path)
     with zipfile.ZipFile(save_path, "r") as zip_ref:
@@ -83,7 +83,7 @@ def download_zensus_2022() -> None:
         crs="EPSG:3035",
     )
 
-    save_path_parquet = "data/raw/zensus2022_grid.parquet"
+    save_path_parquet = Path(__file__).resolve().parents[3] / "data" / "raw" / "zensus2022_grid.parquet"
     gdf.to_parquet(save_path_parquet)
     logger.info("Saved processed Zensus population parquet to %s.", save_path_parquet)
     shutil.rmtree(extract_dir)
@@ -92,7 +92,7 @@ def download_zensus_2022() -> None:
 
 def load_zensus_2022() -> gpd.GeoDataFrame:
     """Load Zensus 2022 100 m population points from parquet (EPSG:3035)."""
-    logger.info("Loading Zensus parquet from data/raw/zensus2022_grid.parquet.")
+    logger.info("Loading Zensus parquet from %s.", Path(__file__).resolve().parents[3] / "data" / "raw" / "zensus2022_grid.parquet")
     return gpd.read_parquet(Path("data/raw/zensus2022_grid.parquet")).to_crs("EPSG:3035")
 
 

@@ -65,11 +65,13 @@ import geopandas as gpd
 from hotelling.spatial.admin import (
     download_lor_shapes,
     download_local_shapes,
+    find_optimal_rectangle,
     join_lor_names,
     load_lor,
     select_ringbahn_lor,
 )
 from hotelling.spatial.assembly import (
+    add_lcc_layer,
     add_lor_attributes,
     add_poi_layer,
     assemble_simulation_grid,
@@ -90,16 +92,17 @@ from hotelling.spatial.city_data import (
     download_index_data,
     download_stadtstruktur,
     download_station_data,
-    identify_cbd,
     identify_transport_hubs,
     process_esix_mss_data,
+    process_gebaeude_stadtstruktur,
     process_ihk_data,
+    run_prime_location_clustering,
 )
-from hotelling.spatial.osm import fetch_pois
+from hotelling.spatial.osm import fetch_pois, process_supermarkets
 
 
 __all__ = [
-    # Re-exported for convenience — import from here or from the sub-modules
+    "add_lcc_layer",
     "add_lor_attributes",
     "add_poi_layer",
     "assemble_simulation_grid",
@@ -115,15 +118,18 @@ __all__ = [
     "download_zensus_2022",
     "fetch_pois",
     "filter_zensus_2022",
-    "identify_cbd",
+    "find_optimal_rectangle",
     "identify_transport_hubs",
     "join_lor_names",
     "load_boundary",
     "load_lor",
     "load_zensus_2022",
     "process_esix_mss_data",
+    "process_gebaeude_stadtstruktur",
     "process_ihk_data",
+    "process_supermarkets",
     "run_default_data_pipeline",
+    "run_prime_location_clustering",
     "select_ringbahn_lor",
 ]
 
@@ -135,6 +141,9 @@ def run_default_data_pipeline(
     buffer_distance: float = 500.0,
     extend_selection_by: int = 6,
     ihk_path: Path | None = None,
+    rect_buffer_distance: float = 350.0,
+    rect_augment_layers: tuple[int, int, int, int] = (2, 0, 4, 2),
+    rect_tolerance: float = 0.01,
 ) -> None:
     """Run the complete Berlin inner-Ringbahn spatial data pipeline.
 
@@ -160,6 +169,17 @@ def run_default_data_pipeline(
         Path to the IHK Berlin business microdata CSV.  If ``None`` or the
         file does not exist, the employment-enrichment step is skipped with
         a warning.  Default path checked: ``data/raw/2023_12_IHK_Berlin_Gewerbedaten.csv``.
+    rect_buffer_distance:
+        Buffer in metres by which the Ringbahn boundary is expanded before
+        fitting the optimal rectangular grid boundary.  Default 350.0 m.
+    rect_augment_layers:
+        ``[top, right, bottom, left]`` extra 100 m grid-cell layers added to
+        each side of the optimal rectangle after optimisation.
+        Default ``(2, 0, 4, 2)`` matches GEO_01 notebook parameters.
+    rect_tolerance:
+        Minimum relative improvement in population density to prefer a
+        larger rectangle.  Default 0.01 (1%).  See
+        :func:`~hotelling.spatial.admin.find_optimal_rectangle`.
     """
     # Resolve default IHK path
     _ihk_path = ihk_path or Path("data/raw/2023_12_IHK_Berlin_Gewerbedaten.csv")
@@ -196,7 +216,7 @@ def run_default_data_pipeline(
     logger.info("Phase 2 complete.")
 
     # ------------------------------------------------------------------
-    # PHASE 3 — LOR SELECTION
+    # PHASE 3 — LOR SELECTION (used for study-area scoping, not grid boundary)
     # ------------------------------------------------------------------
     logger.info("=== PHASE 3: Selecting LOR districts for Ringbahn study area ===")
 
@@ -204,7 +224,6 @@ def run_default_data_pipeline(
     boundary = load_boundary(Path(f"data/raw/relation_boundary_{ringbahn_relation_id}.geojson"))
     lor = load_lor(year=lor_year)
 
-    # Convert Zensus midpoints → square polygon cells for population join
     zensus_polygons = build_grid_polygons(zensus_filtered)
 
     lor_ringbahn = select_ringbahn_lor(
@@ -216,23 +235,46 @@ def run_default_data_pipeline(
     )
     lor_ringbahn.to_parquet("data/processed/lor_ringbahn.parquet")
     logger.info(
-        "Phase 3 complete: %d LOR districts selected for Ringbahn area.",
-        len(lor_ringbahn),
+        "Phase 3 complete: %d LOR districts selected.", len(lor_ringbahn)
     )
 
     # ------------------------------------------------------------------
     # PHASE 4 — BUILD POPULATION GRID
     # ------------------------------------------------------------------
+    # IMPORTANT: The grid boundary is an optimal RECTANGLE fitted to the
+    # Ringbahn boundary using find_optimal_rectangle, NOT the irregular
+    # LOR polygon union. A rectangular boundary guarantees a regular
+    # INSPIRE 100 m lattice with no jagged edges — required by the
+    # simulation engine. Parameters match GEO_01_lor.ipynb.
+    # ------------------------------------------------------------------
     logger.info("=== PHASE 4: Building population grid ===")
 
-    zensus_full = load_zensus_2022()
-    pop_grid = build_full_grid(boundary=lor_ringbahn, zensus=zensus_full)
+    optimal_rect = find_optimal_rectangle(
+        boundary=boundary.geometry,
+        population_grid=zensus_filtered,
+        buffer_distance=rect_buffer_distance,
+        cell_size=100.0,
+        augument_rectangle_by_additional_layers=list(rect_augment_layers),
+        max_iterations=10_000,
+        tolerance=rect_tolerance,
+    )
+    logger.info(
+        "Optimal rectangle: %d cols × %d rows (%.0f m × %.0f m).",
+        int(optimal_rect["n_cols"].iloc[0]),
+        int(optimal_rect["n_rows"].iloc[0]),
+        float(optimal_rect["width_m"].iloc[0]),
+        float(optimal_rect["height_m"].iloc[0]),
+    )
 
-    # Convert midpoint grid to polygon grid (100m squares) for spatial joins
+    zensus_full = load_zensus_2022()
+    pop_grid = build_full_grid(boundary=optimal_rect, zensus=zensus_full)
+
+    # build_full_grid returns point geometry (midpoints).
+    # Convert to 100 m square polygons for spatial joins in later phases.
     pop_grid = build_grid_polygons(pop_grid)
 
     pop_grid.to_parquet("data/processed/pop_grid.parquet")
-    logger.info("Phase 4 complete: %d grid cells built.", len(pop_grid))
+    logger.info("Phase 4 complete: %d grid cells.", len(pop_grid))
 
     # ------------------------------------------------------------------
     # PHASE 5 — ENRICH GRID WITH CITY DATA
@@ -241,38 +283,65 @@ def run_default_data_pipeline(
 
     grid = pop_grid.copy()
 
+    # 5a. LOR attributes (PLR_ID, PLR_NAME, etc.)
     grid = add_lor_attributes(grid, lor_ringbahn)
     logger.info("LOR attributes joined.")
 
+    # 5b. ESIx / MSS social-status indices
     grid = process_esix_mss_data(grid)
-    logger.info("ESIx / MSS social-status indices joined.")
+    logger.info("ESIx/MSS indices joined.")
 
+    # 5c. IHK employment per grid cell (simple cell-level aggregation)
     if _ihk_path.exists():
         grid = process_ihk_data(grid, _ihk_path)
-        logger.info("IHK employment data joined from %s.", _ihk_path)
+        logger.info("IHK cell employment joined from %s.", _ihk_path)
     else:
+        logger.warning("IHK file not found at %s — skipping cell employment.", _ihk_path)
+
+    # 5d. Building-level enrichment + IHK-to-building matching
+    #     Produces data/processed/gebaeude_stadtstruktur.parquet
+    gebaeude_stadtstruktur = process_gebaeude_stadtstruktur(ihk_path=_ihk_path)
+    logger.info("gebaeude_stadtstruktur built (%d buildings).", len(gebaeude_stadtstruktur))
+
+    # 5e. AABPL prime-location clustering
+    #     Produces data/processed/prime_location_clusters.parquet
+    try:
+        run_prime_location_clustering(gebaeude_stadtstruktur)
+        logger.info("Prime-location clusters computed.")
+    except ImportError:
         logger.warning(
-            "IHK data not found at %s — skipping employment enrichment. "
-            "Place the file there and re-run to include it.",
-            _ihk_path,
+            "aabpl package not installed — skipping prime-location clustering. "
+            "Install 'aabpl' and re-run to generate prime_location_clusters.parquet."
         )
 
+    # 5f. Transport hubs (station_count, station_class per cell)
+    #     Produces data/processed/grid_with_stations.parquet
     grid = identify_transport_hubs(grid)
-    logger.info("Transit hub flags added.")
-
-    grid = identify_cbd(grid)
-    logger.info("CBD flags added.")
+    logger.info("Transport hub flags added.")
 
     logger.info("Phase 5 complete.")
 
     # ------------------------------------------------------------------
-    # PHASE 6 — ADD POI LAYER
+    # PHASE 6 — ADD OSM POI LAYERS
     # ------------------------------------------------------------------
-    logger.info("=== PHASE 6: Adding OSM POI layer ===")
+    logger.info("=== PHASE 6: Adding OSM POI layers ===")
 
-    pois = fetch_pois("Berlin")
-    grid = add_poi_layer(grid, pois)
-    logger.info("POI layer added: %d POIs assigned to grid.", len(pois))
+    # 6a. Supermarkets: fetch → normalize → clip to grid → produce supermarkets.parquet
+    pois_raw = fetch_pois(type="supermarket", city="Berlin")
+    supermarkets = process_supermarkets(pois_raw, grid)
+    supermarkets.to_parquet("data/processed/supermarkets.parquet", index=False)
+    logger.info("Supermarkets: %d in grid after normalisation.", len(supermarkets))
+
+    # 6b. POI layer: count and chain flags per grid cell
+    grid = add_poi_layer(grid, supermarkets)
+    logger.info("POI layer added.")
+
+    # 6c. LCC malls: produces data/processed/grid_malls.parquet
+    lcc_gdf = fetch_pois(type="LCC", city="Berlin")
+    grid = add_lcc_layer(grid, lcc_gdf)
+    logger.info("LCC mall layer added.")
+
+    logger.info("Phase 6 complete.")
 
     # ------------------------------------------------------------------
     # PHASE 7 — ASSEMBLE & SAVE FINAL GRID
@@ -283,7 +352,7 @@ def run_default_data_pipeline(
     simulation_grid = assemble_simulation_grid(
         pop_grid=grid,
         lor=lor_ringbahn,
-        pois=pois,
+        pois=supermarkets,
     )
     simulation_grid.to_parquet("data/processed/simulation_grid.parquet")
 

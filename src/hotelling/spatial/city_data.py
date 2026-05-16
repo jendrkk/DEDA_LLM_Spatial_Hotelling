@@ -22,6 +22,7 @@ from pathlib import Path
 import geopandas as gpd
 import numpy as np
 import pandas as pd
+from shapely import STRtree
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,9 @@ __all__ = [
     "identify_cbd",
     "identify_transport_hubs",
     "process_esix_mss_data",
+    "process_gebaeude_stadtstruktur",
     "process_ihk_data",
+    "run_prime_location_clustering",
 ]
 
 # ---------------------------------------------------------------------------
@@ -759,8 +762,7 @@ def process_ihk_data(
     Returns
     -------
     geopandas.GeoDataFrame
-        *grid* with an additional ``empl`` column (float, 0 for cells with no
-        businesses).
+        ``grid`` with an ``empl`` column (float, 0 for cells with no businesses).
 
     Notes
     -----
@@ -768,11 +770,36 @@ def process_ihk_data(
     ``data/raw/2023_12_IHK_Berlin_Gewerbedaten.csv`` before calling this
     function.
     """
-    raise NotImplementedError(
-        "process_ihk_data: load CSV, parse employee ranges via midpoint formula, "
-        "gpd.points_from_xy → to_crs(3035), gpd.sjoin(grid, predicate='within'), "
-        "groupby cell index and sum, merge empl back to grid."
+    logger.info("Loading IHK data from %s.", ihk_path)
+    ihk = pd.read_csv(ihk_path)
+
+    ihk_gdf = gpd.GeoDataFrame(
+        ihk,
+        geometry=gpd.points_from_xy(ihk["longitude"], ihk["latitude"]),
+        crs="EPSG:4326",
+    ).to_crs("EPSG:3035")
+    ihk_gdf["empl"] = ihk_gdf["employees_range"].apply(_parse_employees_range)
+
+    grid_indexed = grid.copy()
+    grid_indexed["_grid_idx"] = grid_indexed.index
+    joined = gpd.sjoin(
+        ihk_gdf[["geometry", "empl"]],
+        grid_indexed[["_grid_idx", "geometry"]],
+        how="left",
+        predicate="within",
     )
+    empl_by_cell = joined.groupby("_grid_idx")["empl"].sum().rename("empl").reset_index()
+
+    out = grid.copy()
+    out["_grid_idx"] = out.index
+    out = out.merge(empl_by_cell, on="_grid_idx", how="left")
+    out["empl"] = out["empl"].fillna(0.0)
+    out = out.drop(columns=["_grid_idx"])
+    logger.info(
+        "IHK employment joined: total=%.0f, cells with empl>0=%d.",
+        out["empl"].sum(), (out["empl"] > 0).sum(),
+    )
+    return out
 
 
 def process_esix_mss_data(
@@ -800,11 +827,65 @@ def process_esix_mss_data(
         *grid* with ``esix_score`` and ``mss_score`` columns added.
         Cells that do not intersect any index polygon receive ``NaN``.
     """
-    raise NotImplementedError(
-        "process_esix_mss_data: gpd.read_file('data/raw/esix.gpkg'), to_crs(3035), "
-        "gpd.sjoin(grid, predicate='intersects'), mean-aggregate the index columns "
-        "per grid cell, merge back."
-    )
+    esix_path = Path("data/raw/esix.gpkg")
+    mss_path  = Path("data/raw/mss.gpkg")
+    if not esix_path.exists():
+        raise FileNotFoundError(
+            f"ESIx GeoPackage not found at {esix_path}. "
+            "Run download_index_data() first."
+        )
+    if not mss_path.exists():
+        raise FileNotFoundError(
+            f"MSS GeoPackage not found at {mss_path}. "
+            "Run download_index_data() first."
+        )
+    esix = gpd.read_file(esix_path).to_crs("EPSG:3035")
+    mss  = gpd.read_file(mss_path).to_crs("EPSG:3035")
+
+    def _first_numeric_col(gdf: gpd.GeoDataFrame) -> str | None:
+        for col in gdf.columns:
+            if col == "geometry":
+                continue
+            if pd.api.types.is_numeric_dtype(gdf[col]):
+                return col
+        return None
+
+    out = grid.copy()
+    out["_idx"] = out.index
+
+    esix_col = _first_numeric_col(esix)
+    if esix_col:
+        j = gpd.sjoin(
+            out[["_idx", "geometry"]],
+            esix[["geometry", esix_col]],
+            how="left", predicate="intersects",
+        )
+        out = out.join(
+            j.groupby("_idx")[esix_col].mean().rename("esix_score"),
+            on="_idx", how="left",
+        )
+        logger.info("ESIx joined (col=%s).", esix_col)
+    else:
+        out["esix_score"] = float("nan")
+        logger.warning("No numeric column in ESIx layer; esix_score=NaN.")
+
+    mss_col = _first_numeric_col(mss)
+    if mss_col:
+        j = gpd.sjoin(
+            out[["_idx", "geometry"]],
+            mss[["geometry", mss_col]],
+            how="left", predicate="intersects",
+        )
+        out = out.join(
+            j.groupby("_idx")[mss_col].mean().rename("mss_score"),
+            on="_idx", how="left",
+        )
+        logger.info("MSS joined (col=%s).", mss_col)
+    else:
+        out["mss_score"] = float("nan")
+        logger.warning("No numeric column in MSS layer; mss_score=NaN.")
+
+    return out.drop(columns=["_idx"])
 
 
 def identify_transport_hubs(
@@ -836,11 +917,101 @@ def identify_transport_hubs(
     geopandas.GeoDataFrame
         *grid* with ``transit_stops`` and ``is_transit_hub`` columns.
     """
-    raise NotImplementedError(
-        "identify_transport_hubs: read stops.txt from GTFS, create GeoDataFrame "
-        "from stop_lat/stop_lon, to_crs(3035), sjoin to grid, count stops per cell, "
-        "flag major S/U-Bahn interchanges."
+    import re
+    import unicodedata
+    from hotelling.spatial.osm import fetch_pois  # lazy import
+
+    db_csv_path = Path("data/raw/db_station_data.csv")
+
+    # ── OSM stations ──────────────────────────────────────────────────────────
+    logger.info("Loading OSM station POIs.")
+    osm_stations = fetch_pois(type="stations", city="Berlin").to_crs(grid.crs)
+    osm_stations = osm_stations.copy()
+    osm_stations["geometry"] = osm_stations.geometry.centroid
+
+    # ── Spatial join stations → grid ─────────────────────────────────────────
+    grid_indexed = grid.copy()
+    grid_indexed["_grid_idx"] = grid_indexed.index
+
+    joined = gpd.sjoin(
+        osm_stations[["geometry", "name"]],
+        grid_indexed[["_grid_idx", "geometry"]],
+        how="left", predicate="within",
     )
+    station_counts = joined.groupby("_grid_idx").size().rename("station_count")
+    station_names  = joined.groupby("_grid_idx")["name"].apply(list).rename("station_names")
+
+    out = grid.copy()
+    out["_grid_idx"] = out.index
+    out = out.merge(station_counts, left_on="_grid_idx", right_index=True, how="left")
+    out = out.merge(station_names,  left_on="_grid_idx", right_index=True, how="left")
+    out["station_count"]  = out["station_count"].fillna(0).astype(int)
+    out["station_names"]  = out["station_names"].apply(lambda x: x if isinstance(x, list) else [])
+    out["station_class"]  = float("nan")
+    out["matched_db_station"] = None
+    out = out.drop(columns=["_grid_idx"])
+
+    # ── DB station class matching ─────────────────────────────────────────────
+    if not db_csv_path.exists():
+        logger.warning(
+            "DB station CSV not found at %s — station_class will be NaN.", db_csv_path
+        )
+        return out
+
+    def _norm(s: str) -> str:
+        s = unicodedata.normalize("NFKD", s)
+        s = "".join(c for c in s if not unicodedata.combining(c))
+        s = s.lower()
+        s = re.sub(r"\(.*?\)", "", s)
+        s = re.sub(r"^(s|u)\s+", "", s)
+        s = re.sub(r"^berlin[\s\-]+", "", s)
+        s = s.replace("ß", "ss")
+        s = re.sub(r"[^a-z0-9]+", " ", s)
+        return re.sub(r"\s+", " ", s).strip()
+
+    _OVERRIDES: dict[str, str] = {
+        "Schöneweide":        "Berlin-Schöneweide Pbf",
+        "Berlin-Schöneweide": "Berlin-Schöneweide Pbf",
+        "Wittenau":           "Berlin-Wittenau (Wilhelmsruher Damm)",
+    }
+
+    db_stations = pd.read_csv(db_csv_path)
+    db_stations = db_stations[db_stations["Bundesland"] == "Berlin"].copy()
+    db_stations["Bahnhof"] = db_stations["Bahnhof"].apply(
+        lambda n: n[4:] if isinstance(n, str) and n.startswith("lin ") else n
+    )
+
+    db_lookup: dict[str, str] = {}
+    for name in db_stations["Bahnhof"].dropna().unique():
+        db_lookup.setdefault(_norm(name), name)
+
+    osm_names = osm_stations["name"].dropna().unique()
+    osm_to_db: dict[str, str | None] = {
+        n: _OVERRIDES.get(n, db_lookup.get(_norm(n))) for n in osm_names
+    }
+
+    for idx, row in out.iterrows():
+        if row["station_count"] > 0:
+            db_names: set[str] = set()
+            for osm_name in row["station_names"]:
+                db_name = osm_to_db.get(osm_name)
+                if db_name:
+                    db_names.add(db_name)
+            if len(db_names) == 1:
+                db_name = next(iter(db_names))
+                out.at[idx, "matched_db_station"] = db_name
+                db_info = db_stations[db_stations["Bahnhof"] == db_name]
+                if not db_info.empty:
+                    out.at[idx, "station_class"] = int(db_info["klasse"].iloc[0])
+
+    out_path = Path("data/processed/grid_with_stations.parquet")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out.to_parquet(out_path, index=False)
+    logger.info(
+        "Transport hubs identified: %d cells with stations, %d with DB class. Saved to %s.",
+        (out["station_count"] > 0).sum(), out["station_class"].notna().sum(), out_path,
+    )
+    return out
 
 
 def identify_cbd(
@@ -869,11 +1040,313 @@ def identify_cbd(
     geopandas.GeoDataFrame
         *grid* with an ``is_cbd`` boolean column.
     """
-    raise NotImplementedError(
-        "identify_cbd: gpd.read_file('data/raw/zentren.gpkg', layer='zentren_fma'), "
-        "to_crs(3035), filter for 'Hauptzentrum' or equivalent CBD category, "
-        "sjoin to grid with predicate='intersects', flag cells."
+    import warnings
+    warnings.warn(
+        "identify_cbd() is deprecated and will be removed. "
+        "CBD concept retired in ADR-018. Use run_prime_location_clustering() "
+        "for employment-dense prime locations, and add_lcc_layer() for "
+        "local commercial centres (OSM-extracted).",
+        DeprecationWarning,
+        stacklevel=2,
     )
+    logger.warning("identify_cbd() called but is deprecated (ADR-018). Returning grid unchanged.")
+    return grid
+
+
+def process_gebaeude_stadtstruktur(
+    gebaeude_path: Path | None = None,
+    stadtstruktur_path: Path | None = None,
+    ihk_path: Path | None = None,
+) -> gpd.GeoDataFrame:
+    """Build the enriched building-level GeoDataFrame used by the AABPL pipeline.
+
+    Joins ALKIS building footprints (``gebaeude.gpkg``) with the urban-structure
+    classification layer (``stadtstruktur.gpkg``), applies ALKIS GFK-derived
+    floor-space efficiency factors and employee hard caps from
+    :mod:`hotelling.spatial.gebaeude_capacity`, then maps IHK business-microdata
+    geocoordinates to their nearest building via an STRtree query and enforces
+    the physical hard cap.
+
+    Saved output: ``data/processed/gebaeude_stadtstruktur.parquet``.
+
+    Parameters
+    ----------
+    gebaeude_path:
+        Path to ``gebaeude.gpkg``.  Default: ``data/raw/gebaeude.gpkg``.
+    stadtstruktur_path:
+        Path to ``stadtstruktur.gpkg``.  Default: ``data/raw/stadtstruktur.gpkg``.
+    ihk_path:
+        Path to the IHK CSV.  If ``None`` or absent, ``empl`` and
+        ``approx_empl`` default to 0.
+
+    Returns
+    -------
+    geopandas.GeoDataFrame
+        Building polygons enriched with columns: ``gfk``, ``aog``, ``hoh``,
+        ``nutzung``, ``efficiency``, ``usable_area_m2``, ``employee_hard_cap``,
+        ``empl``, ``approx_empl``.  CRS matches the source files.
+
+    Raises
+    ------
+    FileNotFoundError
+        If ``gebaeude_path`` or ``stadtstruktur_path`` do not exist.
+    """
+    from hotelling.spatial.gebaeude_capacity import (
+        compute_employee_hard_cap,
+        compute_usable_floor_area,
+        get_efficiency_factor,
+    )
+
+    _geb_path = gebaeude_path    or Path("data/raw/gebaeude.gpkg")
+    _ss_path  = stadtstruktur_path or Path("data/raw/stadtstruktur.gpkg")
+    _ihk      = ihk_path or Path("data/raw/2023_12_IHK_Berlin_Gewerbedaten.csv")
+
+    for p in (_geb_path, _ss_path):
+        if not p.exists():
+            raise FileNotFoundError(
+                f"{p} not found. Run download_stadtstruktur() first."
+            )
+
+    # ── 1. Load ───────────────────────────────────────────────────────────────
+    logger.info("Loading gebaeude and stadtstruktur.")
+    gebaeude      = gpd.read_file(_geb_path)
+    stadtstruktur = gpd.read_file(_ss_path)
+
+    filtered = (
+        gebaeude[gebaeude["bezeich"] == "AX_Gebaeude"]
+        .copy().reset_index(drop=True)
+    )
+    filtered["_bpos"] = filtered.index
+
+    ss = stadtstruktur.copy().reset_index(drop=True)
+    ss["_spos"] = ss.index
+
+    # ── 2. Intersects sjoin ───────────────────────────────────────────────────
+    logger.info("Joining %d buildings to stadtstruktur via intersects.", len(filtered))
+    sjoin_res = gpd.sjoin(
+        filtered[["_bpos", "geometry"]],
+        ss[["_spos", "geometry"]],
+        how="left", predicate="intersects",
+    )
+
+    # ── 3. Tie-break: keep the stadtstruktur polygon with largest intersection ─
+    matched = sjoin_res[sjoin_res["_spos"].notna()].copy()
+    if not matched.empty:
+        bgeoms = filtered.loc[matched.index, "geometry"].values
+        sgeoms = ss.loc[matched["_spos"].astype(int).values, "geometry"].values
+        matched["_iarea"] = np.array([b.intersection(s).area for b, s in zip(bgeoms, sgeoms)])
+        best = (
+            matched.sort_values("_iarea", ascending=False)
+            .drop_duplicates(subset=["_bpos"])
+        )
+    else:
+        best = matched
+
+    unmatched = sjoin_res[~sjoin_res["_bpos"].isin(best["_bpos"]) & sjoin_res["_spos"].isna()]
+    unmatched_dedup = unmatched.drop_duplicates(subset=["_bpos"])
+    combined = pd.concat([best, unmatched_dedup], ignore_index=True)
+
+    # ── 4. Merge stadtstruktur attributes onto buildings ──────────────────────
+    ss_attrs = ss.drop(columns=["geometry"])
+    enriched = filtered.merge(
+        combined[["_bpos", "_spos"]].merge(ss_attrs, left_on="_spos", right_on="_spos", how="left"),
+        on="_bpos", how="left",
+    ).drop(columns=["_bpos", "_spos"], errors="ignore")
+
+    # ── 5. AOG imputation for unmatched buildings ─────────────────────────────
+    _BEZGFK_TO_AOG: dict[str, int] = {
+        "Tiefgarage": 0, "Garage": 0, "Gebäude zum Parken": 0,
+        "Umformer": 1, "Schutzbunker": 0, "Heizwerk": 1,
+        "Gebäude zur Elektrizitätsversorgung": 1, "Parkdeck": 0,
+        "Speichergebäude": 1, "Gebäude für Vorratshaltung": 1,
+        "Pumpstation": 0, "Lagerhalle, Lagerschuppen, Lagerhaus": 1,
+        "Gebäude zum Sportplatz": 1, "Sport-, Turnhalle": 1,
+        "Gebäude für Sportzwecke": 1, "Wasserbehälter": 0,
+        "Pumpwerk (nicht für Wasserversorgung)": 0,
+        "Gebäude zur Wasserversorgung": 1, "Gebäude zur Abwasserbeseitigung": 1,
+        "Hallenbad": 1, "Schuppen": 1, "Gartenhaus": 1, "Wasserwerk": 1,
+        "Gebäude zur Abfallbehandlung": 1, "Gebäude für Land- und Forstwirtschaft": 1,
+        "Bootshaus": 1, "Tierschauhaus": 1, "Müllbunker": 1, "Parkhaus": 1,
+    }
+    if "aog" in enriched.columns and "bezgfk" in enriched.columns:
+        null_mask = enriched["aog"].isna()
+        enriched.loc[null_mask, "aog"] = enriched.loc[null_mask, "bezgfk"].map(_BEZGFK_TO_AOG)
+        enriched = enriched[~enriched["aog"].isna()].copy()
+
+    # ── 6. HOH bool conversion ────────────────────────────────────────────────
+    if "hoh" in enriched.columns:
+        enriched["hoh"] = enriched["hoh"].apply(
+            lambda x: False
+            if (x == "false" or x == "" or x is None
+                or (isinstance(x, float) and np.isnan(x)))
+            else True
+        )
+
+    # ── 7. Efficiency, usable area, hard cap ──────────────────────────────────
+    logger.info("Computing floor-space efficiency and employee hard caps.")
+    gfk_col  = "gfk"   if "gfk"   in enriched.columns else None
+    hoh_col  = "hoh"   if "hoh"   in enriched.columns else None
+    aog_col  = "aog"   if "aog"   in enriched.columns else None
+    area_col = "shape_area" if "shape_area" in enriched.columns else None
+
+    def _area(row: pd.Series) -> float:
+        return row[area_col] if area_col else row.geometry.area
+
+    if gfk_col:
+        enriched["efficiency"] = enriched.apply(
+            lambda r: get_efficiency_factor(r[gfk_col], bool(r[hoh_col]) if hoh_col else False), axis=1
+        )
+        enriched["usable_area_m2"] = enriched.apply(
+            lambda r: compute_usable_floor_area(
+                _area(r), r[aog_col] if aog_col else None,
+                r[gfk_col], bool(r[hoh_col]) if hoh_col else False,
+            ), axis=1
+        )
+        enriched["employee_hard_cap"] = enriched.apply(
+            lambda r: compute_employee_hard_cap(
+                _area(r), r[aog_col] if aog_col else None,
+                r[gfk_col], bool(r[hoh_col]) if hoh_col else False,
+            ), axis=1
+        )
+    else:
+        enriched["efficiency"] = float("nan")
+        enriched["usable_area_m2"] = float("nan")
+        enriched["employee_hard_cap"] = float("nan")
+
+    enriched = enriched.reset_index(drop=True)
+    enriched["empl"]       = 0.0
+    enriched["approx_empl"] = 0.0
+
+    # ── 8. IHK nearest-building matching ─────────────────────────────────────
+    if _ihk.exists():
+        logger.info("Matching IHK employment to buildings via STRtree nearest.")
+        ihk_raw = pd.read_csv(_ihk)
+        ihk_gdf = gpd.GeoDataFrame(
+            ihk_raw,
+            geometry=gpd.points_from_xy(ihk_raw["longitude"], ihk_raw["latitude"]),
+            crs="EPSG:4326",
+        ).to_crs(enriched.crs)
+        ihk_gdf["empl"] = ihk_gdf["employees_range"].apply(_parse_employees_range)
+
+        # Deduplicate by (lon, lat), sum employment per unique location
+        ihk_gdf["_ll"] = list(zip(ihk_raw["longitude"], ihk_raw["latitude"]))
+        empl_by_loc = (
+            ihk_gdf.groupby("_ll")
+            .agg(empl=("empl", "sum"), geometry=("geometry", "first"))
+            .reset_index(drop=True)
+        )
+        empl_by_loc = gpd.GeoDataFrame(empl_by_loc, geometry="geometry", crs=enriched.crs)
+
+        bldg_geoms   = enriched.geometry.values
+        tree         = STRtree(bldg_geoms)
+        pt_geoms     = empl_by_loc.geometry.values
+        nearest_idxs = tree.nearest(pt_geoms)
+        distances    = np.array([pt.distance(bldg_geoms[i]) for pt, i in zip(pt_geoms, nearest_idxs)])
+
+        empl_by_loc["_bldg_idx"] = nearest_idxs
+        empl_by_loc["_dist"]     = distances
+        empl_by_loc = empl_by_loc[empl_by_loc["_dist"] <= 500.0].copy()
+
+        empl_by_bldg = empl_by_loc.groupby("_bldg_idx")["empl"].sum()
+        enriched["empl"] = enriched.index.map(empl_by_bldg).fillna(0.0)
+
+        # Apply hard cap: approx_empl = min(empl, employee_hard_cap)
+        cap = enriched["employee_hard_cap"].values
+        enriched["approx_empl"] = np.minimum(
+            enriched["empl"].values,
+            np.where(np.isinf(cap), enriched["empl"].values, cap),
+        )
+        logger.info(
+            "IHK mapped: total approx_empl=%.0f, buildings>0=%d.",
+            enriched["approx_empl"].sum(), (enriched["approx_empl"] > 0).sum(),
+        )
+    else:
+        logger.warning("IHK path %s absent; empl/approx_empl=0.", _ihk)
+
+    # ── 9. Save and return ────────────────────────────────────────────────────
+    out_path = Path("data/processed/gebaeude_stadtstruktur.parquet")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    enriched.to_parquet(out_path, index=False)
+    logger.info("gebaeude_stadtstruktur saved → %s (%d rows).", out_path, len(enriched))
+    return enriched
+
+
+def run_prime_location_clustering(
+    gebaeude_stadtstruktur: gpd.GeoDataFrame,
+    k_percentile: float = 99.5,
+    min_empl: float = 10.0,
+    radius_m: int = 500,
+) -> gpd.GeoDataFrame:
+    """Detect employment-dense prime-location clusters using AABPL.
+
+    Wraps ``scripts/aabpl_wrapper.detect_employment_clusters``.
+    Output saved to ``data/processed/prime_location_clusters.parquet``.
+
+    Parameters
+    ----------
+    gebaeude_stadtstruktur:
+        Output of :func:`process_gebaeude_stadtstruktur`.
+        Must contain ``approx_empl`` column and polygon/point geometry.
+    k_percentile:
+        AABPL percentile threshold (default 99.5).
+    min_empl:
+        Buildings with ``approx_empl <= min_empl`` excluded from AABPL.
+        Default 10 (removes residential/vacant).
+    radius_m:
+        AABPL search radius in metres (default 500).
+
+    Returns
+    -------
+    geopandas.GeoDataFrame
+        Cluster centroids in EPSG:3035 with columns: ``cluster_id``, ``sum``,
+        ``n_cells``, ``centroid_x`` (lon), ``centroid_y`` (lat), ``geometry``.
+
+    Notes
+    -----
+    Requires the ``aabpl`` package (not in pyproject.toml — install separately).
+    The AABPL algorithm defines "prime locations" for the φ_i^prime demand
+    component, as per ADR-018.
+    """
+    import sys
+    _scripts = Path(__file__).resolve().parents[4] / "scripts"
+    if str(_scripts) not in sys.path:
+        sys.path.insert(0, str(_scripts))
+    try:
+        from aabpl_wrapper import detect_employment_clusters
+    except ImportError as exc:
+        raise ImportError(
+            "Cannot import aabpl_wrapper from scripts/. "
+            "Ensure 'aabpl' is installed and scripts/ is at the repo root."
+        ) from exc
+
+    logger.info(
+        "Running AABPL (k=%.1f, min_empl=%.0f, r=%dm).",
+        k_percentile, min_empl, radius_m,
+    )
+    scatter = gebaeude_stadtstruktur.copy()
+    scatter["geometry"] = scatter.geometry.centroid
+    scatter["approx_empl"] = scatter["approx_empl"].fillna(0).clip(lower=0)
+
+    clusters_df, summary = detect_employment_clusters(
+        scatter,
+        weight_col="approx_empl",
+        k_percentile=k_percentile,
+        min_empl=min_empl,
+        radius_m=radius_m,
+    )
+    logger.info("AABPL: %d cluster(s) found.", len(clusters_df))
+
+    cluster_gdf = gpd.GeoDataFrame(
+        clusters_df,
+        geometry=gpd.points_from_xy(clusters_df["centroid_x"], clusters_df["centroid_y"]),
+        crs="EPSG:4326",
+    ).to_crs("EPSG:3035")
+
+    out_path = Path("data/processed/prime_location_clusters.parquet")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    cluster_gdf.to_parquet(out_path, index=False)
+    logger.info("Prime-location clusters saved → %s.", out_path)
+    return cluster_gdf
 
 
 # ---------------------------------------------------------------------------

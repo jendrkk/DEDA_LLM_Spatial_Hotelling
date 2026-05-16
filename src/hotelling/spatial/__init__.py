@@ -14,7 +14,9 @@ from hotelling.spatial.grid import SquareGrid
 
 __all__ = [
     "CHAIN_QID_MAP",
+    "CHAIN_TYPE_MAP",
     "SquareGrid",
+    "add_lcc_layer",
     "add_lor_attributes",
     "add_poi_layer",
     "assemble_simulation_grid",
@@ -42,13 +44,19 @@ __all__ = [
     "network_distance_matrix",
     "normalize_chain_name",
     "process_esix_mss_data",
+    "process_gebaeude_stadtstruktur",
     "process_ihk_data",
+    "process_supermarkets",
     "run_default_data_pipeline",
+    "run_prime_location_clustering",
     "select_ringbahn_lor",
 ]
 
 _LAZY_GEO: dict[str, tuple[str, str]] = {
     "CHAIN_QID_MAP": ("hotelling.spatial.osm", "CHAIN_QID_MAP"),
+    "CHAIN_TYPE_MAP": ("hotelling.spatial.osm", "CHAIN_TYPE_MAP"),
+    "process_supermarkets": ("hotelling.spatial.osm", "process_supermarkets"),
+    "add_lcc_layer": ("hotelling.spatial.assembly", "add_lcc_layer"),
     "add_lor_attributes": ("hotelling.spatial.assembly", "add_lor_attributes"),
     "add_poi_layer": ("hotelling.spatial.assembly", "add_poi_layer"),
     "assemble_simulation_grid": ("hotelling.spatial.assembly", "assemble_simulation_grid"),
@@ -68,6 +76,8 @@ _LAZY_GEO: dict[str, tuple[str, str]] = {
     "download_station_data": ("hotelling.spatial.city_data", "download_station_data"),
     "process_ihk_data": ("hotelling.spatial.city_data", "process_ihk_data"),
     "process_esix_mss_data": ("hotelling.spatial.city_data", "process_esix_mss_data"),
+    "process_gebaeude_stadtstruktur": ("hotelling.spatial.city_data", "process_gebaeude_stadtstruktur"),
+    "run_prime_location_clustering": ("hotelling.spatial.city_data", "run_prime_location_clustering"),
     "identify_transport_hubs": ("hotelling.spatial.city_data", "identify_transport_hubs"),
     "identify_cbd": ("hotelling.spatial.city_data", "identify_cbd"),
     "download_lor_shapes": ("hotelling.spatial.admin", "download_lor_shapes"),

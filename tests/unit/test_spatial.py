@@ -77,12 +77,12 @@ class TestNormalizeChainName:
     def test_unknown_qid_returns_fallback(self):
         from hotelling.spatial.osm import normalize_chain_name
 
-        assert normalize_chain_name("Q999999", fallback_name="MyStore") == "MyStore"
+        assert normalize_chain_name("Q999999", brand="MyStore") == "MyStore"
 
     def test_none_qid_returns_fallback(self):
         from hotelling.spatial.osm import normalize_chain_name
 
-        assert normalize_chain_name(None, fallback_name="Aldi") == "Aldi"
+        assert normalize_chain_name(None, brand="Aldi") == "Aldi"
 
     def test_none_qid_no_fallback_returns_none(self):
         from hotelling.spatial.osm import normalize_chain_name
@@ -92,8 +92,41 @@ class TestNormalizeChainName:
     def test_all_qids_in_chain_map(self):
         from hotelling.spatial.osm import CHAIN_QID_MAP
 
-        assert len(CHAIN_QID_MAP) >= 10
+        assert len(CHAIN_QID_MAP) >= 15
         assert all(qid.startswith("Q") for qid in CHAIN_QID_MAP)
+
+
+class TestChainTypeMap:
+    """Tests for hotelling.spatial.osm.CHAIN_TYPE_MAP."""
+
+    def test_chain_type_map_exists(self):
+        from hotelling.spatial.osm import CHAIN_TYPE_MAP
+        assert isinstance(CHAIN_TYPE_MAP, dict)
+        assert len(CHAIN_TYPE_MAP) >= 10
+
+    def test_lidl_is_discount(self):
+        from hotelling.spatial.osm import CHAIN_TYPE_MAP
+        assert CHAIN_TYPE_MAP["Lidl"] == "discount"
+
+    def test_rewe_is_standard(self):
+        from hotelling.spatial.osm import CHAIN_TYPE_MAP
+        assert CHAIN_TYPE_MAP["Rewe"] == "standard"
+
+    def test_bio_company_is_bio(self):
+        from hotelling.spatial.osm import CHAIN_TYPE_MAP
+        assert CHAIN_TYPE_MAP["Bio Company"] == "bio"
+
+    def test_all_values_in_expected_set(self):
+        from hotelling.spatial.osm import CHAIN_TYPE_MAP
+        valid = {"discount", "standard", "bio"}
+        assert all(v in valid for v in CHAIN_TYPE_MAP.values())
+
+    def test_nahcity_maps_to_rewe_via_brand_map(self):
+        """nahcity should resolve to Rewe via _BRAND_NAME_MAP."""
+        from hotelling.spatial.osm import normalize_chain_name
+        # brand='NahCity' (any capitalisation) should map to 'Rewe'
+        result = normalize_chain_name(None, brand="nahcity")
+        assert result == "Rewe"
 
 
 class TestBuildTagFilters:
@@ -257,6 +290,195 @@ class TestBuildFullGrid:
         assert (result["Einwohner"] > 0).sum() == len(tiny_zensus)
 
 
+class TestAddLorAttributes:
+    """Unit tests for hotelling.spatial.assembly.add_lor_attributes."""
+
+    @pytest.fixture
+    def small_grid(self):
+        import geopandas as gpd
+        from shapely.geometry import box
+        cells = [
+            box(4500000, 3300000, 4500100, 3300100),
+            box(4500100, 3300000, 4500200, 3300100),
+            box(4500200, 3300000, 4500300, 3300100),
+        ]
+        return gpd.GeoDataFrame(
+            {"Einwohner": [10, 0, 5]},
+            geometry=cells,
+            crs="EPSG:3035",
+        )
+
+    @pytest.fixture
+    def small_lor(self):
+        import geopandas as gpd
+        from shapely.geometry import box
+        # Two LOR polygons covering the three grid cells
+        lor_polys = [
+            box(4499900, 3299900, 4500200, 3300200),  # covers cell 0 and 1
+            box(4500200, 3299900, 4500400, 3300200),  # covers cell 2
+        ]
+        return gpd.GeoDataFrame(
+            {"PLR_ID": ["01010101", "01010102"], "PLR_NAME": ["Alpha", "Beta"]},
+            geometry=lor_polys,
+            crs="EPSG:3035",
+        )
+
+    def test_returns_geodataframe(self, small_grid, small_lor):
+        import geopandas as gpd
+        from hotelling.spatial.assembly import add_lor_attributes
+        result = add_lor_attributes(small_grid, small_lor)
+        assert isinstance(result, gpd.GeoDataFrame)
+
+    def test_plr_id_column_added(self, small_grid, small_lor):
+        from hotelling.spatial.assembly import add_lor_attributes
+        result = add_lor_attributes(small_grid, small_lor)
+        assert "PLR_ID" in result.columns
+
+    def test_plr_name_column_added(self, small_grid, small_lor):
+        from hotelling.spatial.assembly import add_lor_attributes
+        result = add_lor_attributes(small_grid, small_lor)
+        assert "PLR_NAME" in result.columns
+
+    def test_row_count_preserved(self, small_grid, small_lor):
+        from hotelling.spatial.assembly import add_lor_attributes
+        result = add_lor_attributes(small_grid, small_lor)
+        assert len(result) == len(small_grid)
+
+    def test_empty_grid_returns_empty(self, small_lor):
+        import geopandas as gpd
+        from hotelling.spatial.assembly import add_lor_attributes
+        empty = gpd.GeoDataFrame(geometry=gpd.GeoSeries([], crs="EPSG:3035"))
+        result = add_lor_attributes(empty, small_lor)
+        assert len(result) == 0
+
+    def test_empty_lor_returns_grid_with_nan(self, small_grid):
+        import geopandas as gpd
+        from hotelling.spatial.assembly import add_lor_attributes
+        empty_lor = gpd.GeoDataFrame(
+            {"PLR_ID": [], "PLR_NAME": []},
+            geometry=gpd.GeoSeries([], crs="EPSG:3035"),
+        )
+        result = add_lor_attributes(small_grid, empty_lor)
+        assert len(result) == len(small_grid)
+
+
+class TestAddPoiLayer:
+    """Unit tests for hotelling.spatial.assembly.add_poi_layer."""
+
+    @pytest.fixture
+    def grid_3cells(self):
+        import geopandas as gpd
+        from shapely.geometry import box
+        cells = [
+            box(4500000, 3300000, 4500100, 3300100),
+            box(4500100, 3300000, 4500200, 3300100),
+            box(4500200, 3300000, 4500300, 3300100),
+        ]
+        return gpd.GeoDataFrame(geometry=cells, crs="EPSG:3035")
+
+    @pytest.fixture
+    def two_pois(self):
+        """Two POI points, both inside cell 0."""
+        import geopandas as gpd
+        from shapely.geometry import Point
+        pts = [Point(4500050, 3300050), Point(4500060, 3300060)]
+        return gpd.GeoDataFrame(
+            {"chain": ["Rewe", "Lidl"]},
+            geometry=pts,
+            crs="EPSG:3035",
+        )
+
+    def test_poi_count_column_added(self, grid_3cells, two_pois):
+        from hotelling.spatial.assembly import add_poi_layer
+        result = add_poi_layer(grid_3cells, two_pois)
+        assert "poi_count" in result.columns
+
+    def test_poi_count_correct(self, grid_3cells, two_pois):
+        from hotelling.spatial.assembly import add_poi_layer
+        result = add_poi_layer(grid_3cells, two_pois)
+        # Both POIs are in cell 0; cells 1 and 2 have no POIs
+        assert result["poi_count"].iloc[0] == 2
+        assert result["poi_count"].iloc[1] == 0
+        assert result["poi_count"].iloc[2] == 0
+
+    def test_chain_flag_columns_added(self, grid_3cells, two_pois):
+        from hotelling.spatial.assembly import add_poi_layer
+        result = add_poi_layer(grid_3cells, two_pois)
+        assert "has_Rewe" in result.columns or "has_Lidl" in result.columns
+
+    def test_row_count_preserved(self, grid_3cells, two_pois):
+        from hotelling.spatial.assembly import add_poi_layer
+        result = add_poi_layer(grid_3cells, two_pois)
+        assert len(result) == len(grid_3cells)
+
+    def test_empty_pois_gives_zero_counts(self, grid_3cells):
+        import geopandas as gpd
+        from hotelling.spatial.assembly import add_poi_layer
+        empty_pois = gpd.GeoDataFrame(
+            {"chain": []},
+            geometry=gpd.GeoSeries([], crs="EPSG:3035"),
+        )
+        result = add_poi_layer(grid_3cells, empty_pois)
+        assert (result["poi_count"] == 0).all()
+
+
+class TestAssembleSimulationGrid:
+    """Unit tests for hotelling.spatial.assembly.assemble_simulation_grid."""
+
+    @pytest.fixture
+    def valid_grid(self):
+        import geopandas as gpd
+        from shapely.geometry import box
+        cell = box(4500000, 3300000, 4500100, 3300100)
+        return gpd.GeoDataFrame(
+            {
+                "x_mp_100m":  [4500050],
+                "y_mp_100m":  [3300050],
+                "Einwohner":  [10],
+                "PLR_ID":     ["01010101"],
+                "PLR_NAME":   ["Alpha"],
+                "poi_count":  [2],
+            },
+            geometry=[cell],
+            crs="EPSG:3035",
+        )
+
+    def test_returns_geodataframe(self, valid_grid):
+        import geopandas as gpd
+        from hotelling.spatial.assembly import assemble_simulation_grid
+        result = assemble_simulation_grid(valid_grid, gpd.GeoDataFrame(), gpd.GeoDataFrame())
+        assert isinstance(result, gpd.GeoDataFrame)
+
+    def test_index_is_range(self, valid_grid):
+        import geopandas as gpd
+        from hotelling.spatial.assembly import assemble_simulation_grid
+        result = assemble_simulation_grid(valid_grid, gpd.GeoDataFrame(), gpd.GeoDataFrame())
+        import pandas as pd
+        assert isinstance(result.index, pd.RangeIndex)
+
+    def test_missing_required_column_raises_keyerror(self):
+        import geopandas as gpd
+        from hotelling.spatial.assembly import assemble_simulation_grid
+        # Grid missing PLR_ID, PLR_NAME, poi_count
+        from shapely.geometry import box
+        bad = gpd.GeoDataFrame(
+            {"Einwohner": [0], "x_mp_100m": [0], "y_mp_100m": [0]},
+            geometry=[box(0, 0, 1, 1)],
+            crs="EPSG:3035",
+        )
+        with pytest.raises(KeyError):
+            assemble_simulation_grid(bad, gpd.GeoDataFrame(), gpd.GeoDataFrame())
+
+    def test_nan_einwohner_filled_zero(self, valid_grid):
+        import geopandas as gpd
+        import numpy as np
+        from hotelling.spatial.assembly import assemble_simulation_grid
+        valid_grid = valid_grid.copy()
+        valid_grid.loc[0, "Einwohner"] = np.nan
+        result = assemble_simulation_grid(valid_grid, gpd.GeoDataFrame(), gpd.GeoDataFrame())
+        assert result["Einwohner"].iloc[0] == 0
+
+
 class TestStubsRaiseNotImplementedError:
     """All pipeline stubs must raise NotImplementedError, not fail silently."""
 
@@ -273,57 +495,6 @@ class TestStubsRaiseNotImplementedError:
 
         with pytest.raises(NotImplementedError):
             network_distance_matrix(np.zeros((2, 2)), np.zeros((2, 2)))
-
-    def test_add_lor_attributes(self):
-        import geopandas as gpd
-        from hotelling.spatial.assembly import add_lor_attributes
-
-        with pytest.raises(NotImplementedError):
-            add_lor_attributes(gpd.GeoDataFrame(), gpd.GeoDataFrame())
-
-    def test_add_poi_layer(self):
-        import geopandas as gpd
-        from hotelling.spatial.assembly import add_poi_layer
-
-        with pytest.raises(NotImplementedError):
-            add_poi_layer(gpd.GeoDataFrame(), gpd.GeoDataFrame())
-
-    def test_assemble_simulation_grid(self):
-        import geopandas as gpd
-        from hotelling.spatial.assembly import assemble_simulation_grid
-
-        with pytest.raises(NotImplementedError):
-            assemble_simulation_grid(gpd.GeoDataFrame(), gpd.GeoDataFrame(), gpd.GeoDataFrame())
-
-    def test_process_ihk_data(self):
-        from pathlib import Path
-
-        import geopandas as gpd
-        from hotelling.spatial.city_data import process_ihk_data
-
-        with pytest.raises(NotImplementedError):
-            process_ihk_data(gpd.GeoDataFrame(), Path("dummy.csv"))
-
-    def test_process_esix_mss_data(self):
-        import geopandas as gpd
-        from hotelling.spatial.city_data import process_esix_mss_data
-
-        with pytest.raises(NotImplementedError):
-            process_esix_mss_data(gpd.GeoDataFrame())
-
-    def test_identify_transport_hubs(self):
-        import geopandas as gpd
-        from hotelling.spatial.city_data import identify_transport_hubs
-
-        with pytest.raises(NotImplementedError):
-            identify_transport_hubs(gpd.GeoDataFrame())
-
-    def test_identify_cbd(self):
-        import geopandas as gpd
-        from hotelling.spatial.city_data import identify_cbd
-
-        with pytest.raises(NotImplementedError):
-            identify_cbd(gpd.GeoDataFrame())
 
     def test_squaregrid_sample_locations(self):
         from hotelling.spatial import SquareGrid

@@ -61,6 +61,14 @@ import shapely.ops
 
 logger = logging.getLogger(__name__)
 
+__all__ = [
+    "CHAIN_QID_MAP",
+    "CHAIN_TYPE_MAP",
+    "fetch_pois",
+    "normalize_chain_name",
+    "process_supermarkets",
+]
+
 # ---------------------------------------------------------------------------
 # Public constants
 # ---------------------------------------------------------------------------
@@ -94,6 +102,35 @@ CHAIN_QID_MAP: Dict[str, str] = {
     "Q102381911": "Go Asia",             # Go Asia
 }
 
+#: Vertical-differentiation tier for each canonical chain name returned by
+#: :func:`normalize_chain_name`.  Three tiers map to the demand model's
+#: consumer-type partition:
+#:   "discount"  → price-sensitive H-type consumers have higher WTP here
+#:   "standard"  → mainstream full-assortment chains
+#:   "bio"       → premium/organic chains attracting high-WTP L-type consumers
+CHAIN_TYPE_MAP: Dict[str, str] = {
+    # Discount tier
+    "Aldi Nord":              "discount",
+    "Lidl":                   "discount",
+    "Netto Marken-Discount":  "discount",
+    "Netto":                  "discount",
+    "Penny":                  "discount",
+    "Norma":                  "discount",
+    # Standard tier
+    "Edeka":                  "standard",
+    "Rewe":                   "standard",
+    "Kaufland":               "standard",
+    "HIT":                    "standard",
+    "CAP":                    "standard",
+    "Nah & Frisch":           "standard",
+    "Mix Markt":              "standard",
+    # Bio / premium tier
+    "Denns BioMarkt":         "bio",
+    "Bio Company":            "bio",
+    "Alnatura":               "bio",
+    "LPG BioMarkt":           "bio",
+}
+
 # ---------------------------------------------------------------------------
 # Module-private constants
 # ---------------------------------------------------------------------------
@@ -112,6 +149,7 @@ _BRAND_NAME_MAP: Dict[str, str] = {
     "rewe city": "Rewe",
     "rewe center": "Rewe",
     "nahkauf": "Rewe",          # Nahkauf is a Rewe Group subsidiary
+    "nahcity": "Rewe",          # NahCity was a Rewe Group convenience format
     # Lidl
     "lidl": "Lidl",
     # Aldi Nord — Berlin lies entirely within Aldi Nord territory
@@ -631,6 +669,55 @@ def normalize_chain_name(
         return brand
 
     return None
+
+
+def process_supermarkets(
+    pois_raw: gpd.GeoDataFrame,
+    grid: gpd.GeoDataFrame,
+) -> gpd.GeoDataFrame:
+    """Clean, normalise, and clip a raw supermarket POI GeoDataFrame.
+
+    Applies chain-type classification, clips to the simulation grid extent,
+    and retains only stores with a recognised canonical chain name.
+    Logic extracted from GEO_03_OSM.ipynb.
+
+    Steps:
+    1. Reproject to grid CRS (EPSG:3035).
+    2. Replace geometry with centroids (all features become Points).
+    3. Clip to the union of grid cell polygons.
+    4. Add ``chain_type`` column via :data:`CHAIN_TYPE_MAP`.
+    5. Drop rows where ``chain`` or ``chain_type`` is null (unrecognised
+       independents are excluded from the simulation).
+    6. Return columns: ``geometry``, ``name``, ``chain``, ``chain_type``.
+
+    Parameters
+    ----------
+    pois_raw:
+        Raw GeoDataFrame from :func:`fetch_pois` with ``type="supermarket"``.
+        Must contain a ``chain`` column.  CRS EPSG:4326 expected but any CRS
+        is handled via reprojection.
+    grid:
+        Simulation grid GeoDataFrame with polygon geometry in EPSG:3035.
+
+    Returns
+    -------
+    geopandas.GeoDataFrame
+        Cleaned supermarkets in the same CRS as ``grid``, with columns
+        ``geometry`` (Point), ``name``, ``chain``, ``chain_type``.
+    """
+    gdf = pois_raw.copy()
+    if gdf.crs is None or gdf.crs != grid.crs:
+        gdf = gdf.to_crs(grid.crs)
+    gdf["geometry"] = gdf.geometry.centroid
+
+    grid_union = grid.geometry.union_all()
+    gdf = gdf[gdf.geometry.within(grid_union)].copy()
+
+    gdf["chain_type"] = gdf["chain"].map(CHAIN_TYPE_MAP)
+    gdf = gdf[gdf["chain"].notna() & gdf["chain_type"].notna()].copy()
+
+    keep = [c for c in ["geometry", "name", "chain", "chain_type"] if c in gdf.columns]
+    return gdf[keep].reset_index(drop=True)
 
 
 def fetch_pois(

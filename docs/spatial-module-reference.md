@@ -26,11 +26,15 @@ handles the full data pipeline:
    matrix computation.
 7. **Pipeline orchestrator** (`exe.py`) — single entry point that chains all
    seven phases from raw download to simulation-ready grid assembly.
-8. **Grid assembly** (`assembly.py`) — merges population, LOR, POI, and
-   socio-economic layers into the final simulation grid.
+8. **Grid assembly** (`assembly.py`) — merges population, LOR, POI, LCC mall
+   layers (`add_lcc_layer`), and socio-economic layers into the final simulation
+   grid.
 9. **Building capacity** (`gebaeude_capacity.py`) — ALKIS GFK → floor-space
    efficiency factors (NUF/BGF) and employee hard caps for ALKIS `Gebäude`
    footprints; enforces physical capacity constraints against IHK headcounts.
+10. **Chain classification** (`osm.py`) — `CHAIN_TYPE_MAP` and
+    `process_supermarkets` for normalising and classifying supermarket POIs
+    into three vertical-differentiation tiers (discount / standard / bio).
 
 All modules are imported lazily from `hotelling.spatial` so that only the
 `[spatial]` optional dependencies are required, and only when the relevant
@@ -220,14 +224,25 @@ enriched copy.
 
 ```
 hotelling.spatial.fetch_pois(
+    type: str = "supermarket",
     city: str = "Berlin",
-    tags: dict | None = None,
+    tags: dict | list[dict] | None = None,
+    name: str | None = None,
     cache_dir: Path | None = None,
     timeout: int = 180,
 ) -> geopandas.GeoDataFrame
 ```
 
 Fetch points-of-interest from OpenStreetMap for any named city.
+
+> **Built-in type profiles:**
+> - `"supermarket"` — fetches `shop=supermarket` elements; adds `chain` column.
+>   Cache: `OSM_POIs_{city}_supermarket.parquet`
+> - `"LCC"` — fetches Large Commercial Centre anchor stores (malls, department stores,
+>   chemist chains, variety stores, electronics, DIY, furniture, sports chains).
+>   Cache: `OSM_POIs_{city}_LCC.parquet`. No `chain` column.
+> - `"stations"` — fetches `railway=station` elements (S-Bahn, U-Bahn, regional,
+>   long-distance). Cache: `OSM_POIs_{city}_stations.parquet`. No `chain` column.
 
 **Data flow:**
 
@@ -253,8 +268,10 @@ Fetch points-of-interest from OpenStreetMap for any named city.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
+| `type` | `str` | `"supermarket"` | Query profile: `"supermarket"`, `"LCC"`, `"stations"`, or any custom string |
 | `city` | `str` | `"Berlin"` | Nominatim place name |
-| `tags` | `dict \| None` | `{"shop": ["supermarket", "convenience"]}` | OSM tag filter (see below) |
+| `tags` | `dict \| list[dict] \| None` | see type | OSM tag filter(s). Ignored for built-in types. Pass a list of dicts for OR-union of multiple tag blocks. |
+| `name` | `str \| None` | `None` | Override cache file stem. File: `OSM_POIs_{city}_{name}.parquet` |
 | `cache_dir` | `Path \| None` | `Path("data/raw")` | Parquet cache directory |
 | `timeout` | `int` | `180` | Overpass query timeout (s) |
 
@@ -308,12 +325,21 @@ Additional columns: every OSM tag key found in the data.
 ```
 hotelling.spatial.normalize_chain_name(
     wikidata_qid: str | None,
-    fallback_name: str | None = None,
+    brand: str | None = None,
+    *,
+    name: str | None = None,
 ) -> str | None
 ```
 
-Map a `brand:wikidata` QID to a canonical chain name using `CHAIN_QID_MAP`.
-Returns `fallback_name` (or `None`) when the QID is absent from the map.
+Map OSM supermarket tags to a canonical chain name.  Resolution priority
+(first match wins):
+
+1. `brand:wikidata` QID → `CHAIN_QID_MAP`
+2. `brand` field → `_BRAND_NAME_MAP` (case-insensitive)
+3. `name` field → `_BRAND_NAME_MAP` (case-insensitive)
+4. Raw `brand` as-is for unrecognised chains (independents keep their identity)
+
+Returns `None` when all four sources are unavailable.
 
 ---
 
@@ -334,6 +360,37 @@ grocery and drugstore chains.
 | Q2662792 | Kaufland |
 | Q1145968 | dm |
 | Q183538 | Rossmann |
+
+---
+
+### `CHAIN_TYPE_MAP`
+
+`dict[str, str]` — Canonical chain name → vertical-differentiation tier.
+
+Three tiers used by the two-type demand model:
+
+| Tier | Chains |
+|---|---|
+| `"discount"` | Aldi Nord, Lidl, Netto Marken-Discount, Netto, Penny, Norma |
+| `"standard"` | Edeka, Rewe, Kaufland, HIT, CAP, Nah & Frisch, Mix Markt |
+| `"bio"` | Denns BioMarkt, Bio Company, Alnatura, LPG BioMarkt |
+
+### `process_supermarkets`
+
+```
+hotelling.spatial.process_supermarkets(
+    pois_raw: geopandas.GeoDataFrame,
+    grid: geopandas.GeoDataFrame,
+) -> geopandas.GeoDataFrame
+```
+
+Clean, normalise, and clip raw supermarket POIs to the simulation grid.
+
+Reprojects to grid CRS, replaces geometry with centroids, clips to grid
+extent, adds `chain_type` from `CHAIN_TYPE_MAP`, and retains only
+recognised chains. Returns columns: `geometry`, `name`, `chain`, `chain_type`.
+
+Writes to `data/processed/supermarkets.parquet` when called from the pipeline.
 
 ---
 
@@ -565,11 +622,19 @@ Run the complete Berlin inner-Ringbahn spatial data pipeline in seven phases:
 |---|---|---|
 | 1 — Download | Census, boundaries, LOR, ESIx/MSS, GTFS, OSM POIs | `data/raw/` |
 | 2 — Filter | Clip Zensus to Berlin boundary | `zensus2022_grid_filtered.parquet` |
-| 3 — LOR selection | Select and extend Ringbahn-area LOR districts | `lor_ringbahn.parquet` |
-| 4 — Grid construction | INSPIRE 100 m lattice within selected LORs | `pop_grid.parquet` |
-| 5 — Enrichment | ESIx/MSS, IHK employment, transit hubs, CBDs | in-memory |
-| 6 — POI layer | OSM supermarket count / chain flags per cell | in-memory |
-| 7 — Assembly | Merge all layers, validate schema | `simulation_grid.parquet` |
+| 3 — LOR selection | Select Ringbahn-area LOR districts | `lor_ringbahn.parquet` |
+| 4 — Grid construction | `find_optimal_rectangle` → INSPIRE 100 m lattice | `pop_grid.parquet` |
+| 5 — Enrichment | LOR attrs, ESIx/MSS, IHK (cell + building), AABPL clustering, transport hubs | `gebaeude_stadtstruktur.parquet`, `prime_location_clusters.parquet`, `grid_with_stations.parquet` |
+| 6 — POI layers | Supermarket normalisation, per-cell chain flags, LCC mall scores | `supermarkets.parquet`, `grid_malls.parquet` |
+| 7 — Assembly | Validate schema, fill defaults | `simulation_grid.parquet` |
+
+> **Grid boundary note (Phase 4):** The grid is built inside an optimal
+> *rectangular* bounding box (`find_optimal_rectangle`) rather than the
+> irregular LOR polygon union. This guarantees a regular INSPIRE 100 m
+> lattice with no partial edge cells — required by the simulation engine.
+> The rectangle is centred on the Ringbahn boundary centroid and fitted to
+> maximise population density. Parameters: `rect_buffer_distance=350.0 m`,
+> `rect_augment_layers=(2, 0, 4, 2)`. See ADR-019.
 
 **IHK note:** IHK business microdata cannot be downloaded automatically.
 Place `2023_12_IHK_Berlin_Gewerbedaten.csv` in `data/raw/` before running,
@@ -587,7 +652,6 @@ lor: geopandas.GeoDataFrame,
 
 Spatial-join LOR planning-area identifiers (`PLR_ID`, `PLR_NAME`) to grid
 cells by matching each cell's centroid to the containing LOR polygon.
-*(Not yet implemented.)*
 
 ---
 
@@ -600,7 +664,6 @@ chain_col: str = "chain",
 
 Count and classify OSM POIs per grid cell.  Adds `poi_count`, `poi_chains`,
 and per-chain boolean flags (e.g. `has_Rewe`, `has_Lidl`).
-*(Not yet implemented.)*
 
 ---
 
@@ -614,7 +677,23 @@ pois: geopandas.GeoDataFrame,
 Assemble the final simulation-ready grid from all spatial layers.
 Guarantees the output columns: `x_mp_100m`, `y_mp_100m`, `geometry`
 (100 m² Polygon, EPSG:3035), `Einwohner`, `PLR_ID`, `PLR_NAME`, `poi_count`.
-*(Not yet implemented.)*
+
+---
+
+### `add_lcc_layer`
+
+```
+hotelling.spatial.add_lcc_layer(
+    grid: geopandas.GeoDataFrame,
+    lcc_gdf: geopandas.GeoDataFrame,
+) -> geopandas.GeoDataFrame
+```
+
+Add Local Commercial Centre mall-intersection data to the simulation grid.
+Processes `shop=mall` features from `fetch_pois(type="LCC")`. For each grid
+cell, computes what fraction of each overlapping mall's area falls within
+that cell. Adds columns: `mall_area` (m²), `mall_intersection_fraction`,
+`has_mall` (bool). Saves intermediate to `data/processed/grid_malls.parquet`.
 
 ---
 ## Module: `city_data.py` — City Data Downloads and Processing
@@ -627,7 +706,7 @@ Guarantees the output columns: `x_mp_100m`, `y_mp_100m`, `geometry`
 | `download_stadtstruktur()` | `stadtstruktur.gpkg`, `gebaeude.gpkg`, `zentren.gpkg` | Berlin GDI WFS |
 | `download_station_data()` | `db_station_data.csv`, `gtfs-2024/` | DB InfraGo / VBB |
 
-### Processing functions (stubs — not yet implemented)
+### Processing functions
 
 **`process_ihk_data(grid, ihk_path)`**
 Load IHK Berlin business microdata CSV, parse employee-count ranges
@@ -640,12 +719,58 @@ Load `esix.gpkg` / `mss.gpkg`, reproject to EPSG:3035, spatial-join to
 grid, add `esix_score` and `mss_score` columns.
 
 **`identify_transport_hubs(grid, gtfs_dir=None)`**
-Parse VBB GTFS `stops.txt`, identify major S/U-Bahn interchange nodes,
-add `transit_stops` (int) and `is_transit_hub` (bool) columns.
+Load OSM station POIs, spatial-join to grid cells, match DB station classes,
+add `station_count`, `station_names`, `station_class`, `matched_db_station`
+columns. Saves `data/processed/grid_with_stations.parquet`.
 
 **`identify_cbd(grid, zentren_path=None)`**
-Load Zentren FMA layer, flag cells intersecting Hauptzentrum / CBD polygons
-via `is_cbd` (bool) column.
+*(Deprecated — ADR-018; returns grid unchanged with a DeprecationWarning.)*
+
+### `process_gebaeude_stadtstruktur`
+
+```
+hotelling.spatial.process_gebaeude_stadtstruktur(
+    gebaeude_path: Path | None = None,
+    stadtstruktur_path: Path | None = None,
+    ihk_path: Path | None = None,
+) -> geopandas.GeoDataFrame
+```
+
+Build the enriched building-level GeoDataFrame used by the AABPL pipeline.
+
+Steps:
+1. Load ALKIS building footprints (`gebaeude.gpkg`) and urban-structure
+   classification (`stadtstruktur.gpkg`).
+2. Intersects sjoin with tie-breaking by maximum intersection area.
+3. Impute `aog` (above-ground floors) for unmatched buildings via
+   `bezgfk` → AOG lookup.
+4. Convert `hoh` to bool.
+5. Apply `gebaeude_capacity` to compute `efficiency`, `usable_area_m2`,
+   `employee_hard_cap`.
+6. Match IHK geocoordinates to nearest building via STRtree (≤500 m threshold).
+7. Apply employee hard cap: `approx_empl = min(empl, employee_hard_cap)`.
+
+Saved output: `data/processed/gebaeude_stadtstruktur.parquet`.
+
+### `run_prime_location_clustering`
+
+```
+hotelling.spatial.run_prime_location_clustering(
+    gebaeude_stadtstruktur: geopandas.GeoDataFrame,
+    k_percentile: float = 99.5,
+    min_empl: float = 10.0,
+    radius_m: int = 500,
+) -> geopandas.GeoDataFrame
+```
+
+Detect employment-dense prime-location clusters using the AABPL algorithm
+(Automatic Algorithm for Boundary-Identification of Prime Locations).
+Wraps `scripts/aabpl_wrapper.detect_employment_clusters`.
+
+Defines the φ_i^prime component (employment-density footfall weight) for the
+demand model, as per ADR-018. Requires the `aabpl` package.
+
+Saved output: `data/processed/prime_location_clusters.parquet`.
 
 ---
 
@@ -680,11 +805,18 @@ See `docs/crs-handling-and-known-issues.md` for full CRS inventory and known iss
 | `data/raw/zensus2022_grid.parquet` | Parquet | `download_zensus_2022` | `load_zensus_2022` | EPSG:3035 |
 | `data/raw/zensus2022_grid_filtered.parquet` | Parquet | `filter_zensus_2022` | `gpd.read_parquet` | EPSG:3035 |
 | `data/raw/OSM_POIs_{city}.parquet` | Parquet | `fetch_pois` | `gpd.read_parquet` + `_add_point_column` | EPSG:4326 |
+| `data/raw/OSM_POIs_Berlin_LCC.parquet` | Parquet | `fetch_pois(type="LCC")` | `gpd.read_parquet` + `_add_point_column` | EPSG:4326 |
+| `data/raw/OSM_POIs_Berlin_stations.parquet` | Parquet | `fetch_pois(type="stations")` | `gpd.read_parquet` + `_add_point_column` | EPSG:4326 |
 | `data/processed/lor_2019.parquet` | Parquet | `join_lor_names(if_old=True)` | `gpd.read_parquet` | EPSG:3035 |
 | `data/processed/lor_2021.parquet` | Parquet | `join_lor_names(if_old=False)` | `gpd.read_parquet` | EPSG:3035 |
 | `data/processed/lor.parquet` | Parquet | `load_lor(year)` | `gpd.read_parquet` | EPSG:3035 |
 | `data/processed/lor_ringbahn.parquet` | Parquet | `select_ringbahn_lor` | `gpd.read_parquet` | EPSG:3035 |
 | `data/processed/pop_grid.parquet` | Parquet | `build_full_grid` + `build_grid_polygons` | `gpd.read_parquet` | EPSG:3035 |
+| `data/processed/gebaeude_stadtstruktur.parquet` | Parquet | `process_gebaeude_stadtstruktur` | `gpd.read_parquet` | source (EPSG:25833) |
+| `data/processed/prime_location_clusters.parquet` | Parquet | `run_prime_location_clustering` | `gpd.read_parquet` | EPSG:3035 |
+| `data/processed/grid_with_stations.parquet` | Parquet | `identify_transport_hubs` | `gpd.read_parquet` | EPSG:3035 |
+| `data/processed/grid_malls.parquet` | Parquet | `add_lcc_layer` | `gpd.read_parquet` | EPSG:3035 |
+| `data/processed/supermarkets.parquet` | Parquet | `process_supermarkets` (pipeline) | `gpd.read_parquet` | EPSG:3035 |
 | `data/processed/simulation_grid.parquet` | Parquet | `assemble_simulation_grid` | `gpd.read_parquet` | EPSG:3035 |
 
 ---

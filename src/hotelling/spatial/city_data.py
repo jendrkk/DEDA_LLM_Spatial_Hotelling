@@ -550,8 +550,8 @@ def download_index_data(skip_if_exists: bool = True) -> None:
     """
     logger.info("Downloading ESIx and MSS index data.")
 
-    esix_path = Path("data/raw/esix.gpkg")
-    mss_path = Path("data/raw/mss.gpkg")
+    esix_path = Path(__file__).resolve().parents[3] / "data" / "raw" / "esix.gpkg"
+    mss_path = Path(__file__).resolve().parents[3] / "data" / "raw" / "mss.gpkg"
 
     if skip_if_exists and esix_path.exists():
         logger.info("ESIx already exists at %s — skipping.", esix_path)
@@ -591,9 +591,9 @@ def download_stadtstruktur(skip_if_exists: bool = True) -> None:
     ``_GEBAEUDE_PAGE_SIZE`` features to avoid a single >400 MB JSON response.
     Expect several minutes for the buildings layer even on a fast connection.
     """
-    stadtstruktur_path = Path("data/raw/stadtstruktur.gpkg")
-    gebaeude_path = Path("data/raw/gebaeude.gpkg")
-    zentren_path = Path("data/raw/zentren.gpkg")
+    stadtstruktur_path = Path(__file__).resolve().parents[3] / "data" / "raw" / "stadtstruktur.gpkg"
+    gebaeude_path = Path(__file__).resolve().parents[3] / "data" / "raw" / "gebaeude.gpkg"
+    zentren_path = Path(__file__).resolve().parents[3] / "data" / "raw" / "zentren.gpkg"
 
     if skip_if_exists and stadtstruktur_path.exists():
         logger.info("Stadtstruktur already exists — skipping.")
@@ -670,8 +670,8 @@ def download_station_data(
         ) from exc
 
     # ── DB InfraGo station price list ──────────────────────────────────────
-    db_pdf_path = Path("data/raw/db_station_data.pdf")
-    db_csv_path = Path("data/raw/db_station_data.csv")
+    db_pdf_path = Path(__file__).resolve().parents[3] / "data" / "raw" / "db_station_data.pdf"
+    db_csv_path = Path(__file__).resolve().parents[3] / "data" / "raw" / "db_station_data.csv"
 
     if skip_if_exists and db_csv_path.exists():
         logger.info("DB station CSV already exists — skipping PDF download.")
@@ -700,14 +700,14 @@ def download_station_data(
         logger.info("DB station data saved → %s", db_csv_path)
 
     # ── VBB GTFS ────────────────────────────────────────────────────────────
-    gtfs_dir = Path("data/raw/gtfs")
+    gtfs_dir = Path(__file__).resolve().parents[3] / "data" / "raw" / "gtfs"
     stops_file = gtfs_dir / "stops.txt"
 
     if skip_if_exists and stops_file.exists():
         logger.info("GTFS stops already exist at %s — skipping.", gtfs_dir)
     else:
         url = gtfs_url or _GTFS_DEFAULT_URL
-        gtfs_zip = Path("data/raw/gtfs.zip")
+        gtfs_zip = Path(__file__).resolve().parents[3] / "data" / "raw" / "gtfs.zip"
 
         logger.info("Downloading GTFS from %s …", url)
         gtfs_zip.parent.mkdir(parents=True, exist_ok=True)
@@ -827,8 +827,8 @@ def process_esix_mss_data(
         *grid* with ``esix_score`` and ``mss_score`` columns added.
         Cells that do not intersect any index polygon receive ``NaN``.
     """
-    esix_path = Path("data/raw/esix.gpkg")
-    mss_path  = Path("data/raw/mss.gpkg")
+    esix_path = Path(__file__).resolve().parents[3] / "data" / "raw" / "esix.gpkg"
+    mss_path  = Path(__file__).resolve().parents[3] / "data" / "raw" / "mss.gpkg"
     if not esix_path.exists():
         raise FileNotFoundError(
             f"ESIx GeoPackage not found at {esix_path}. "
@@ -921,7 +921,7 @@ def identify_transport_hubs(
     import unicodedata
     from hotelling.spatial.osm import fetch_pois  # lazy import
 
-    db_csv_path = Path("data/raw/db_station_data.csv")
+    db_csv_path = Path(__file__).resolve().parents[3] / "data" / "raw" / "db_station_data.csv"
 
     # ── OSM stations ──────────────────────────────────────────────────────────
     logger.info("Loading OSM station POIs.")
@@ -1004,7 +1004,7 @@ def identify_transport_hubs(
                 if not db_info.empty:
                     out.at[idx, "station_class"] = int(db_info["klasse"].iloc[0])
 
-    out_path = Path("data/processed/grid_with_stations.parquet")
+    out_path = Path(__file__).resolve().parents[3] / "data" / "processed" / "grid_with_stations.parquet"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out.to_parquet(out_path, index=False)
     logger.info(
@@ -1097,9 +1097,9 @@ def process_gebaeude_stadtstruktur(
         get_efficiency_factor,
     )
 
-    _geb_path = gebaeude_path    or Path("data/raw/gebaeude.gpkg")
-    _ss_path  = stadtstruktur_path or Path("data/raw/stadtstruktur.gpkg")
-    _ihk      = ihk_path or Path("data/raw/2023_12_IHK_Berlin_Gewerbedaten.csv")
+    _geb_path = gebaeude_path    or Path(__file__).resolve().parents[3] / "data" / "raw" / "gebaeude.gpkg"
+    _ss_path  = stadtstruktur_path or Path(__file__).resolve().parents[3] / "data" / "raw" / "stadtstruktur.gpkg"
+    _ihk      = ihk_path or Path(__file__).resolve().parents[3] / "data" / "raw" / "2023_12_IHK_Berlin_Gewerbedaten.csv"
 
     for p in (_geb_path, _ss_path):
         if not p.exists():
@@ -1264,7 +1264,7 @@ def process_gebaeude_stadtstruktur(
         logger.warning("IHK path %s absent; empl/approx_empl=0.", _ihk)
 
     # ── 9. Save and return ────────────────────────────────────────────────────
-    out_path = Path("data/processed/gebaeude_stadtstruktur.parquet")
+    out_path = Path(__file__).resolve().parents[3] / "data" / "processed" / "gebaeude_stadtstruktur.parquet"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     enriched.to_parquet(out_path, index=False)
     logger.info("gebaeude_stadtstruktur saved → %s (%d rows).", out_path, len(enriched))
@@ -1308,7 +1308,7 @@ def run_prime_location_clustering(
     component, as per ADR-018.
     """
     import sys
-    _scripts = Path(__file__).resolve().parents[4] / "scripts"
+    _scripts = Path(__file__).resolve().parents[3] / "scripts"
     if str(_scripts) not in sys.path:
         sys.path.insert(0, str(_scripts))
     try:
@@ -1342,11 +1342,11 @@ def run_prime_location_clustering(
         crs="EPSG:4326",
     ).to_crs("EPSG:3035")
 
-    out_path = Path("data/processed/prime_location_clusters.parquet")
+    out_path = Path(__file__).resolve().parents[3] / "data" / "processed" / "prime_location_clusters.parquet"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     cluster_gdf.to_parquet(out_path, index=False)
     logger.info("Prime-location clusters saved → %s.", out_path)
-    return cluster_gdf
+    return clusters_df
 
 
 # ---------------------------------------------------------------------------

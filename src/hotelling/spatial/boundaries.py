@@ -24,7 +24,7 @@ def _boundary_is_closed(boundary: gpd.GeoDataFrame) -> bool:
 
 def download_city_boundary(city_name: str) -> None:
     """Download German city boundary from Overpass and save as GeoJSON in EPSG:3035."""
-    output_path = Path("data/raw") / f"city_boundary_{city_name.replace(' ', '_')}.geojson"
+    output_path = Path(__file__).resolve().parents[3] / "data" / "raw" / f"city_boundary_{city_name.replace(' ', '_')}.geojson"
     if output_path.exists():
         logger.info("City boundary already exists at %s; skipping Overpass request.", output_path)
         return
@@ -121,7 +121,7 @@ def download_city_boundary(city_name: str) -> None:
 
 def download_relation_boundary(relation_id: int) -> None:
     """Download the boundary of an OSM relation from Overpass and save as GeoJSON (EPSG:3035)."""
-    output_path = Path("data/raw") / f"relation_boundary_{relation_id}.geojson"
+    output_path = Path(__file__).resolve().parents[3] / "data" / "raw" / f"relation_boundary_{relation_id}.geojson"
 
     if output_path.exists():
         logger.info("Relation boundary already exists at %s; skipping Overpass request.", output_path)

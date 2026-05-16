@@ -449,7 +449,7 @@ def join_lor_names(if_old: bool = True):
     else:
         link = "https://www.berlin.de/sen/sbw/_assets/stadtdaten/stadtwissen/lebensweltlich-orientierte-raeume/lor_2021-01-01_k3_uebersicht_id_namen.xlsx?ts=1770289269"
         valid_year = 2021
-    save_path = Path(f"data/raw/lor_names_{valid_year}.xlsx")
+    save_path = Path(__file__).resolve().parents[3] / "data" / "raw" / f"lor_names_{valid_year}.xlsx"
     urllib.request.urlretrieve(link, save_path)
     logger.info("LOR names downloaded.")
     

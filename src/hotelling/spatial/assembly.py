@@ -320,7 +320,7 @@ def add_lcc_layer(
 
     grid_malls["mall_area"] = grid_malls["mall_area"].fillna(0.0)
 
-    out_path = Path("data/processed/grid_malls.parquet")
+    out_path = Path(__file__).resolve().parents[3] / "data" / "processed" / "grid_malls.parquet"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     grid_malls.to_parquet(out_path, index=False)
     logger.info(

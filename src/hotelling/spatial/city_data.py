@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "download_IHK_data",
+    "download_alkis_data",
     "download_index_data",
     "download_medianeinkommen_data",
     "download_stadtstruktur",
@@ -278,14 +279,39 @@ _GTFS_DEFAULT_URL: str = os.environ.get(
     "https://unternehmen.vbb.de/fileadmin/user_upload/VBB/Dokumente/API-Datensaetze/gtfs-2024.zip",
 )
 
+# ALKIS helper: static registry from GetCapabilities (2026-05); lazy-filled if empty.
+# Each tuple: (service, qualified_layer_name, gpkg_layer_name, human_desc).
+__ALKIS_LAYERS: list[tuple[str, str, str, str]] = [
+    ("alkis", "alkis:bauwerkeflaechen", "bauwerkeflaechen", "ALKIS bauwerkeflaechen"),
+    ("alkis", "alkis:bauwerkelinien", "bauwerkelinien", "ALKIS bauwerkelinien"),
+    ("alkis", "alkis:besondereflurstuecksgrenzen", "besondereflurstuecksgrenzen", "ALKIS besondereflurstuecksgrenzen"),
+    ("alkis", "alkis:bezirk", "bezirk", "ALKIS bezirk"),
+    ("alkis", "alkis:festlegungenflaechen", "festlegungenflaechen", "ALKIS festlegungenflaechen"),
+    ("alkis", "alkis:flur", "flur", "ALKIS flur"),
+    ("alkis", "alkis:flurstuecke", "flurstuecke", "ALKIS flurstuecke"),
+    ("alkis", "alkis:gebaeudeflaechen", "gebaeudeflaechen", "ALKIS gebaeudeflaechen"),
+    ("alkis", "alkis:gebaeudelinien", "gebaeudelinien", "ALKIS gebaeudelinien"),
+    ("alkis", "alkis:gemarkung", "gemarkung", "ALKIS gemarkung"),
+    ("alkis", "alkis:gewaesservegetationflaechen", "gewaesservegetationflaechen", "ALKIS gewaesservegetationflaechen"),
+    ("alkis", "alkis:gewaesservegetationlinien", "gewaesservegetationlinien", "ALKIS gewaesservegetationlinien"),
+    ("alkis", "alkis:land", "land", "ALKIS land"),
+    ("alkis", "alkis:ortsteile", "ortsteile", "ALKIS ortsteile"),
+    ("alkis", "alkis:relief", "relief", "ALKIS relief"),
+    ("alkis", "alkis:tatsaechlichenutzungflaechen", "tatsaechlichenutzungflaechen", "ALKIS tatsaechlichenutzungflaechen"),
+    ("alkis", "alkis:vegetationpunkte", "vegetationpunkte", "ALKIS vegetationpunkte"),
+]
+
 # WFS layer tuples: (service, qualified_layer_name)
 # All names verified against live GetCapabilities responses.
-_ESIX_LAYER          = ("gssa_esix2022",    "gssa_esix2022:gssa_esix2022")
-_MSS_LAYER           = ("mss_2023",          "mss_2023:mss2023_indizes_542")
+_ESIX_LAYER          = ("gssa_esix2022",     "gssa_esix2022:gssa_esix2022")
+_MSS_LAYER           = ("mss_2025",          "mss_2025:mss2025_indizes_542")
 _STADTSTRUKTUR_LAYER = ("ua_stadtstruktur",  "ua_stadtstruktur:b_stadtstruktur_differenziert_2024")
 _GEBAEUDE_LAYER      = ("alkis_gebaeude",    "alkis_gebaeude:gebaeude")
 _ZENTREN_FMA_LAYER   = ("step_zen_2040",     "step_zen_2040:step_zen_2040_fma")
 _ZENTREN_ZH_LAYER    = ("step_zen_2040",     "step_zen_2040:step_zen_2040_zh")
+_FNP_LAYER           = ("fnp_2025",          "fnp_2025:fnp_2025_vektor")
+_BRW_LAYER           = ("brw2025",           "brw2025:brw_2025_vector")
+_ALKIS_LAYER         = ("alkis_gebaeude",    "alkis_gebaeude:gebaeude")
 
 # Buildings layer has 783 071 features → paginate to avoid a >400 MB JSON blob.
 # GeoPackage format (binary, ~3× smaller than JSON) is used for non-paginated layers.
@@ -509,6 +535,45 @@ def _read_wfs(
     return _read_wfs_gpkg(service, layer, desc=label)
 
 
+def _fetch_alkis_layers() -> list[tuple[str, str, str, str]]:
+    """Discover ALKIS feature types from WFS GetCapabilities."""
+    import urllib.request  # noqa: PLC0415
+    import xml.etree.ElementTree as ET  # noqa: PLC0415
+
+    url = (
+        f"{_GDI_WFS_BASE.format(service='alkis')}"
+        "?request=GetCapabilities&service=WFS"
+    )
+    req = urllib.request.Request(url, headers={"User-Agent": _BROWSER_UA})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        raw = r.read()
+
+    root = ET.fromstring(raw)
+    qualified_names: list[str] = []
+    for ns in (
+        "{http://www.opengis.net/wfs/2.0}",
+        "{http://www.opengis.net/wfs}",
+    ):
+        for ft in root.findall(f".//{ns}FeatureType"):
+            name_el = ft.find(f"{ns}Name")
+            if name_el is not None and name_el.text:
+                qualified_names.append(name_el.text.strip())
+        if qualified_names:
+            break
+
+    layers: list[tuple[str, str, str, str]] = []
+    for qualified in sorted(set(qualified_names)):
+        gpkg_name = re.sub(
+            r"[^a-z0-9]+",
+            "_",
+            qualified.split(":", 1)[-1].lower(),
+        ).strip("_")
+        layers.append(("alkis", qualified, gpkg_name, f"ALKIS {gpkg_name}"))
+
+    logger.info("Discovered %d ALKIS layers.", len(layers))
+    return layers
+
+
 # ---------------------------------------------------------------------------
 # Employee range parser
 # ---------------------------------------------------------------------------
@@ -628,7 +693,6 @@ def download_stadtstruktur(skip_if_exists: bool = True) -> None:
         gdf_zh.to_file(zentren_path, driver="GPKG", layer="zentren_zh")
         logger.info("Zentren ZH saved → %s", zentren_path)
 
-
 def download_station_data(
     skip_if_exists: bool = True,
     gtfs_url: str | None = None,
@@ -721,6 +785,122 @@ def download_station_data(
         gtfs_zip.unlink()
         logger.info("GTFS extracted → %s", gtfs_dir)
 
+def download_fnp_data(skip_if_exists: bool = True) -> None:
+    """Download the FNP 2025 data from the Berlin Geoportal.
+    
+    Saves
+    -----
+    ``data/raw/fnp.gpkg`` (layer ``fnp_2025``)
+
+    Parameters
+    ----------
+    skip_if_exists:
+        If *True* (default) and the output file already exists, skip the
+        download for that layer.
+    """
+    fnp_path = Path(__file__).resolve().parents[3] / "data" / "raw" / "fnp_2025.gpkg"
+    
+    if skip_if_exists and fnp_path.exists():
+        logger.info("FNP 2025 already exists at %s — skipping.", fnp_path)
+    else:
+        gdf = _read_wfs(*_FNP_LAYER, desc="FNP 2025")
+        fnp_path.parent.mkdir(parents=True, exist_ok=True)
+        gdf.to_file(fnp_path, driver="GPKG", layer="fnp_2025")
+        logger.info("FNP 2025 saved → %s", fnp_path)
+
+def download_brw_data(skip_if_exists: bool = True) -> None:
+    """Download the BRW data from the Berlin Senate of Finance."""
+    brw_path = Path(__file__).resolve().parents[3] / "data" / "raw" / "brw_2025.gpkg"
+    if skip_if_exists and brw_path.exists():
+        logger.info("BRW already exists at %s — skipping.", brw_path)
+    else:
+        gdf = _read_wfs(*_BRW_LAYER, desc="BRW 2025")
+        brw_path.parent.mkdir(parents=True, exist_ok=True)
+        gdf.to_file(brw_path, driver="GPKG", layer="brw_2025")
+
+
+def download_alkis_data(skip_if_exists: bool = True) -> None:
+    """Download ALL ALKIS layers from the GDI Berlin WFS and save to a single GeoPackage.
+
+    Saves
+    -----
+    ``data/raw/alkis_full.gpkg``
+        Multi-layer GeoPackage; one internal layer per ALKIS feature type.
+        Layer names are the unqualified, normalised FeatureType names
+        (e.g. ``ax_gebaeude``, ``ax_flurstueck``).
+
+    Parameters
+    ----------
+    skip_if_exists:
+        If *True* (default), skip layers already present inside the output
+        GeoPackage (checked per layer via ``fiona.listlayers``).
+
+    Notes
+    -----
+    The ALKIS WFS endpoint is ``https://gdi.berlin.de/services/wfs/alkis``.
+    Layers are discovered dynamically from GetCapabilities at first call if
+    ``__ALKIS_LAYERS`` is empty; otherwise the static registry is used.
+
+    Some layers may be large (``ax_gebaeude`` has ~783 K features).
+    ``_read_wfs`` handles pagination automatically; expect several minutes
+    for large layers.
+
+    CRS is EPSG:25833 (GDI Berlin native); reproject with ``.to_crs()`` if needed.
+    """
+    global __ALKIS_LAYERS  # noqa: PLW0603
+
+    if not __ALKIS_LAYERS:
+        __ALKIS_LAYERS = _fetch_alkis_layers()
+
+    import fiona  # noqa: PLC0415
+
+    alkis_path = Path(__file__).resolve().parents[3] / "data" / "raw" / "alkis_full.gpkg"
+    alkis_path.parent.mkdir(parents=True, exist_ok=True)
+
+    existing_layers: set[str] = set()
+    if skip_if_exists and alkis_path.exists():
+        existing_layers = set(fiona.listlayers(alkis_path))
+
+    attempted = 0
+    downloaded = 0
+    skipped = 0
+
+    for service, qualified_layer_name, gpkg_layer_name, human_desc in __ALKIS_LAYERS:
+        attempted += 1
+        if skip_if_exists and gpkg_layer_name in existing_layers:
+            logger.info(
+                "ALKIS layer %s already in %s — skipping.",
+                gpkg_layer_name,
+                alkis_path,
+            )
+            skipped += 1
+            continue
+
+        try:
+            gdf = _read_wfs(service, qualified_layer_name, desc=human_desc)
+            gdf.to_file(alkis_path, driver="GPKG", layer=gpkg_layer_name)
+            logger.info(
+                "ALKIS %s saved (%d features) → %s",
+                gpkg_layer_name,
+                len(gdf),
+                alkis_path,
+            )
+            downloaded += 1
+        except Exception as exc:
+            logger.error(
+                "ALKIS layer %s (%s) failed: %s",
+                gpkg_layer_name,
+                qualified_layer_name,
+                exc,
+            )
+
+    logger.info(
+        "ALKIS download complete: %d attempted, %d downloaded, %d skipped.",
+        attempted,
+        downloaded,
+        skipped,
+    )
+
 
 def download_IHK_data() -> None:
     """Download the IHK data from the Berlin Chamber of Commerce."""
@@ -734,7 +914,6 @@ def download_medianeinkommen_data() -> None:
     raise NotImplementedError(
         "Medianeinkommen data must be downloaded manually."
     )
-
 
 # ---------------------------------------------------------------------------
 # Processing stubs (not yet implemented)

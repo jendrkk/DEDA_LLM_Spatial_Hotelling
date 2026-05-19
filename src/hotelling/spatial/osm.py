@@ -51,7 +51,7 @@ import logging
 import re
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Callable, Dict, List, Optional, Union
 
 import geopandas as gpd
 import pandas as pd
@@ -65,6 +65,7 @@ __all__ = [
     "CHAIN_QID_MAP",
     "CHAIN_TYPE_MAP",
     "fetch_pois",
+    "fetch_site_eligibility_signals",
     "normalize_chain_name",
     "process_supermarkets",
 ]
@@ -917,3 +918,416 @@ def fetch_pois(
     logger.info("Cached %d POIs for '%s' to %s.", len(gdf), city, output_path)
 
     return _add_point_column(gdf)
+
+
+# ---------------------------------------------------------------------------
+# Site-eligibility signal constants
+# ---------------------------------------------------------------------------
+
+# ── BLOCKER tags ─────────────────────────────────────────────────────────────
+# Every currently occupied ground-floor commercial unit.
+# Format: list of dicts; each dict is one independent Overpass tag-block
+# (OR-unioned in the query).
+# Used by fetch_site_eligibility_signals().
+_BLOCKER_TAGS: List[Dict[str, object]] = [
+    # All retail shops — any value of shop=*
+    {"shop": True},
+    # Food & drink service
+    {"amenity": ["restaurant", "cafe", "fast_food", "bar", "pub",
+                 "biergarten", "food_court", "ice_cream", "nightclub"]},
+    # Financial services (bank branches occupy significant ground-floor units)
+    {"amenity": ["bank", "bureau_de_change", "money_transfer"]},
+    # Health & personal care
+    {"amenity": ["pharmacy", "doctors", "dentist", "clinic",
+                 "veterinary", "optician"]},
+    # Postal & telecoms
+    {"amenity": ["post_office", "telephone_office"]},
+    # Entertainment / leisure — large footprint (gyms, bowling, etc.)
+    {"leisure": ["fitness_centre", "gym", "sports_centre",
+                 "bowling_alley", "escape_game", "dance",
+                 "amusement_arcade"]},
+    # Ground-floor offices
+    {"office": True},
+    # Craft / workshops (Handwerksbetriebe)
+    {"craft": True},
+    # Cultural / public services mapped inside commercial buildings
+    {"amenity": ["theatre", "cinema", "library", "community_centre",
+                 "social_facility", "embassy", "courthouse",
+                 "townhall"]},
+    # Tourism accommodation (hotel lobbies occupy street-front ground floor)
+    {"tourism": ["hotel", "hostel", "guest_house", "motel", "apartment"]},
+    # Religious buildings — permanent occupant
+    {"amenity": ["place_of_worship"]},
+]
+
+# ── VACANT tags ───────────────────────────────────────────────────────────────
+# Empty or formerly occupied commercial units — highest-priority candidates.
+# Format: list of dicts; each dict is one independent Overpass tag-block.
+# Used by fetch_site_eligibility_signals().
+_VACANT_TAGS: List[Dict[str, object]] = [
+    # Explicitly vacant retail unit (mapper confirmed empty shopfront)
+    {"shop": "vacant"},
+    # Former shops — all types (disused:shop=supermarket is especially relevant)
+    {"disused:shop": True},
+    # Abandoned shops (longer-term closure)
+    {"abandoned:shop": True},
+    # Informal former-use prefix
+    {"was:shop": True},
+    # Disused large-footprint leisure (gyms ~400–2000 m², open plan)
+    {"disused:leisure": ["fitness_centre", "gym", "sports_centre",
+                         "bowling_alley", "dance", "amusement_arcade"]},
+    {"abandoned:leisure": ["fitness_centre", "gym", "sports_centre",
+                           "bowling_alley"]},
+    # Disused food service & amenities
+    {"disused:amenity": ["restaurant", "cafe", "fast_food", "bar", "pub",
+                         "biergarten", "cinema", "theatre", "bank",
+                         "pharmacy", "post_office", "doctors", "dentist",
+                         "nightclub"]},
+    {"abandoned:amenity": ["restaurant", "cafe", "fast_food", "bar",
+                           "pub", "cinema", "theatre", "bank"]},
+    # Disused offices
+    {"disused:office": True},
+    # Buildings tagged as retail/commercial/supermarket with NO active
+    # occupant tag — likely vacant.
+    # NOTE: this block uses way-only tags (building=*) — nodes rarely carry
+    # building=* so the result is dominated by way elements; that is correct.
+    {"building": ["retail", "commercial", "supermarket", "warehouse"]},
+]
+
+_ACTIVE_OCCUPANT_COLS = ("amenity", "office", "leisure", "craft", "tourism")
+
+_FOOD_SERVICE_AMENITIES = frozenset({
+    "restaurant", "cafe", "fast_food", "bar", "pub", "biergarten",
+    "food_court", "ice_cream", "nightclub",
+})
+_FINANCIAL_AMENITIES = frozenset({"bank", "bureau_de_change", "money_transfer"})
+_HEALTH_AMENITIES = frozenset({
+    "pharmacy", "doctors", "dentist", "clinic", "veterinary", "optician",
+})
+_ENTERTAINMENT_AMENITIES = frozenset({"theatre", "cinema"})
+_SUPERMARKET_SHOPS = frozenset({"supermarket", "convenience", "discount", "wholesale"})
+_COMMERCIAL_BUILDINGS = frozenset({"retail", "commercial", "supermarket", "warehouse"})
+
+
+def _empty_site_eligibility_gdf(category_col: str) -> gpd.GeoDataFrame:
+    """Return an empty site-eligibility GeoDataFrame with required columns."""
+    return gpd.GeoDataFrame(
+        columns=["osm_id", "osm_type", "geometry", category_col],
+        geometry="geometry",
+        crs="EPSG:4326",
+    )
+
+
+def _records_to_eligibility_gdf(
+    records: List[dict],
+    category_col: str,
+    city: str,
+    layer: str,
+) -> gpd.GeoDataFrame:
+    """Assemble records into a GeoDataFrame or return an empty frame with warning."""
+    if not records:
+        logger.warning(
+            "No usable %s elements found for '%s'.", layer, city
+        )
+        return _empty_site_eligibility_gdf(category_col)
+
+    gdf = gpd.GeoDataFrame(records, geometry="geometry", crs="EPSG:4326")
+    gdf = gdf.drop_duplicates(subset=["osm_id"], keep="first")
+    if gdf.empty:
+        logger.warning(
+            "No usable %s elements remain for '%s' after deduplication.",
+            layer,
+            city,
+        )
+        return _empty_site_eligibility_gdf(category_col)
+    return gdf
+
+
+def _filter_vacant_active_occupants(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """Drop vacant-layer rows that carry an active ground-floor occupant tag."""
+    if not any(c in gdf.columns for c in ("shop", *_ACTIVE_OCCUPANT_COLS)):
+        return gdf
+
+    active_mask = pd.Series(False, index=gdf.index)
+    if "shop" in gdf.columns:
+        active_mask |= gdf["shop"].notna() & (gdf["shop"] != "vacant")
+    for col in _ACTIVE_OCCUPANT_COLS:
+        if col in gdf.columns:
+            active_mask |= gdf[col].notna()
+    return gdf[~active_mask].copy()
+
+
+def _blocker_category_from_row(row: pd.Series) -> str:
+    shop = row.get("shop")
+    if pd.notna(shop):
+        if shop in _SUPERMARKET_SHOPS:
+            return "supermarket"
+        return "retail_other"
+
+    amenity = row.get("amenity")
+    if pd.notna(amenity):
+        if amenity in _FOOD_SERVICE_AMENITIES:
+            return "food_service"
+        if amenity in _FINANCIAL_AMENITIES:
+            return "financial"
+        if amenity in _HEALTH_AMENITIES:
+            return "health"
+        if amenity in _ENTERTAINMENT_AMENITIES:
+            return "entertainment_large"
+        if amenity == "place_of_worship":
+            return "religious"
+
+    if pd.notna(row.get("leisure")):
+        return "leisure"
+    if pd.notna(row.get("office")):
+        return "office"
+    if pd.notna(row.get("craft")):
+        return "craft"
+    if pd.notna(row.get("tourism")):
+        return "accommodation"
+    return "other"
+
+
+def _vacant_category_from_row(row: pd.Series) -> str:
+    if row.get("shop") == "vacant":
+        return "vacant_unit"
+
+    for col in ("disused:shop", "abandoned:shop", "was:shop"):
+        if pd.notna(row.get(col)):
+            return "former_shop"
+
+    for col in ("disused:leisure", "abandoned:leisure"):
+        if pd.notna(row.get(col)):
+            return "former_leisure"
+
+    for col in ("disused:amenity", "abandoned:amenity"):
+        if pd.notna(row.get(col)):
+            return "former_amenity"
+
+    if pd.notna(row.get("disused:office")):
+        return "former_office"
+
+    building = row.get("building")
+    if pd.notna(building) and building in _COMMERCIAL_BUILDINGS:
+        return "commercial_building"
+    return "other"
+
+
+def _assign_blocker_categories(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    gdf = gdf.copy()
+    gdf["blocker_category"] = gdf.apply(_blocker_category_from_row, axis=1)
+    return gdf
+
+
+def _assign_vacant_categories(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    gdf = gdf.copy()
+    gdf["vacant_category"] = gdf.apply(_vacant_category_from_row, axis=1)
+    return gdf
+
+
+def _fetch_eligibility_layer(
+    *,
+    city: str,
+    area_id: int,
+    tag_defs: List[Dict[str, object]],
+    category_col: str,
+    layer: str,
+    timeout: int,
+    post_filter: Optional[Callable[[gpd.GeoDataFrame], gpd.GeoDataFrame]] = None,
+) -> gpd.GeoDataFrame:
+    """Run one Overpass query and return a processed eligibility GeoDataFrame."""
+    tag_filter_blocks = [_build_tag_filters(t) for t in tag_defs]
+    query = _build_overpass_query(area_id, tag_filter_blocks, timeout=timeout)
+    logger.debug("Overpass query (%s):\n%s", layer, query)
+
+    logger.info(
+        "Fetching site-eligibility '%s' layer for '%s' from Overpass (timeout=%ds).",
+        layer,
+        city,
+        timeout,
+    )
+    response = _post_with_retry(
+        _OVERPASS_URL,
+        query.encode("utf-8"),
+        timeout=timeout + 60,
+    )
+    response.raise_for_status()
+
+    elements: List[dict] = response.json().get("elements", [])
+    logger.info(
+        "Overpass returned %d raw elements for '%s' layer.", len(elements), layer
+    )
+
+    records = _parse_elements(elements)
+    logger.info(
+        "%d usable elements parsed for '%s' layer (nodes, closed ways, relations).",
+        len(records),
+        layer,
+    )
+
+    gdf = _records_to_eligibility_gdf(records, category_col, city, layer)
+    if gdf.empty:
+        return gdf
+
+    if post_filter is not None:
+        gdf = post_filter(gdf)
+        if gdf.empty:
+            logger.warning(
+                "No usable %s elements remain for '%s' after post-filtering.",
+                layer,
+                city,
+            )
+            return _empty_site_eligibility_gdf(category_col)
+
+    if category_col == "blocker_category":
+        gdf = _assign_blocker_categories(gdf)
+    else:
+        gdf = _assign_vacant_categories(gdf)
+    return gdf
+
+
+# Columns written to the GeoPackage layers.
+# Restricted to fields with safe names and known types.
+# The colon-namespaced OSM tag columns (brand:wikidata, disused:shop, etc.)
+# are intentionally excluded — they are used only for in-memory categorisation
+# and their names or dtypes can cause GDAL write failures.
+_GPKG_KEEP_BLOCKERS: frozenset[str] = frozenset({
+    "osm_id", "osm_type", "geometry", "name",
+    "shop", "amenity", "leisure", "office", "craft", "tourism", "building",
+    "blocker_category",
+})
+
+_GPKG_KEEP_VACANT: frozenset[str] = frozenset({
+    "osm_id", "osm_type", "geometry", "name",
+    "shop", "amenity", "leisure", "office", "craft", "tourism", "building",
+    "vacant_category",
+})
+
+
+def fetch_site_eligibility_signals(
+    city: str = "Berlin",
+    cache_dir: Optional[Path] = None,
+    timeout: int = 180,
+) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame]:
+    """Fetch ground-floor commercial occupancy signals from OpenStreetMap.
+
+    Runs two separate Overpass queries for *city* and returns two
+    GeoDataFrames that together cover all locations where a new supermarket
+    entry is physically and institutionally plausible:
+
+    ``gdf_blockers``
+        Currently occupied ground-floor commercial units: all retail shops
+        (``shop=*``), food service, banks, gyms, offices, hotels, craft
+        workshops, cinemas, and religious buildings.  These confirm that a
+        commercially configured unit exists at this location, but the space
+        is currently taken.
+
+    ``gdf_vacant``
+        Empty or formerly occupied commercial units: ``shop=vacant``,
+        ``disused:shop=*``, ``abandoned:shop=*``, ``was:shop=*``, disused
+        leisure/amenity/office elements, and ``building=retail|commercial|
+        supermarket|warehouse`` with no active occupant tag.  These are the
+        highest-priority candidate locations for market entry because the
+        physical configuration is confirmed and the space is currently free.
+
+    Both layers are written to a single GeoPackage at
+    ``<cache_dir>/OSM_site_eligibility_{city}.gpkg`` for reproducibility.
+    Subsequent calls load from cache without hitting the Overpass API.
+
+    Parameters
+    ----------
+    city:
+        Nominatim place name used to resolve the Overpass search area.
+        Default: ``"Berlin"``.
+    cache_dir:
+        Directory for the GeoPackage cache file.  Created if absent.
+        Defaults to ``<repo_root>/data/raw``.
+    timeout:
+        Overpass API query timeout in seconds.  Default: 180.
+
+    Returns
+    -------
+    tuple[geopandas.GeoDataFrame, geopandas.GeoDataFrame]
+        ``(gdf_blockers, gdf_vacant)`` — both in CRS EPSG:4326.
+        Each row includes ``osm_id``, ``osm_type``, ``geometry``, ``point``
+        (Shapely Point, not a GeoSeries), and all OSM tag columns present in
+        the data.  ``gdf_blockers`` additionally contains
+        ``blocker_category``; ``gdf_vacant`` additionally contains
+        ``vacant_category``.
+
+    Notes
+    -----
+    The ``point`` column is not written to the GeoPackage (it is re-derived
+    on every load).  The ``building=*`` elements in the vacant layer have
+    active-occupant rows filtered out in post-processing (see source).
+    """
+    effective_cache_dir = (
+        cache_dir if cache_dir is not None else _find_repo_root() / Path("data/raw")
+    )
+    output_path = effective_cache_dir / f"OSM_site_eligibility_{city}.gpkg"
+
+    if output_path.exists():
+        logger.info("Loading cached site-eligibility signals from %s.", output_path)
+        gdf_blockers = gpd.read_file(output_path, layer="blockers")
+        gdf_vacant = gpd.read_file(output_path, layer="vacant")
+        return _add_point_column(gdf_blockers), _add_point_column(gdf_vacant)
+
+    logger.info("Resolving Overpass area ID for '%s' via Nominatim.", city)
+    area_id = _get_area_id(city)
+    logger.info("Area ID for '%s': %d.", city, area_id)
+
+    gdf_blockers = _fetch_eligibility_layer(
+        city=city,
+        area_id=area_id,
+        tag_defs=_BLOCKER_TAGS,
+        category_col="blocker_category",
+        layer="blockers",
+        timeout=timeout,
+    )
+
+    gdf_vacant = _fetch_eligibility_layer(
+        city=city,
+        area_id=area_id,
+        tag_defs=_VACANT_TAGS,
+        category_col="vacant_category",
+        layer="vacant",
+        timeout=timeout,
+        post_filter=_filter_vacant_active_occupants,
+    )
+
+    effective_cache_dir.mkdir(parents=True, exist_ok=True)
+
+    # Select only curated columns for the GPKG.  Colon-namespaced OSM tag
+    # columns (e.g. brand:wikidata, disused:shop, addr:street) are excluded
+    # because GDAL may reject their field definitions regardless of any name
+    # sanitization.  Categories are already derived in memory so no information
+    # required downstream is lost.
+    _blockers_out_cols = [
+        c for c in gdf_blockers.columns
+        if c in _GPKG_KEEP_BLOCKERS
+    ]
+    _vacant_out_cols = [
+        c for c in gdf_vacant.columns
+        if c in _GPKG_KEEP_VACANT
+    ]
+
+    gdf_blockers[_blockers_out_cols].to_file(
+        output_path, layer="blockers", driver="GPKG"
+    )
+    gdf_vacant[_vacant_out_cols].to_file(
+        output_path, layer="vacant", driver="GPKG", mode="a"
+    )
+
+    gdf_blockers = _add_point_column(gdf_blockers)
+    gdf_vacant = _add_point_column(gdf_vacant)
+
+    logger.info(
+        "Cached site-eligibility signals for '%s' to %s "
+        "(%d blockers, %d vacant).",
+        city,
+        output_path,
+        len(gdf_blockers),
+        len(gdf_vacant),
+    )
+
+    return gdf_blockers, gdf_vacant

@@ -87,17 +87,17 @@ class SimulationRecorder:
     def flush(self) -> Path:
         """Write buffered rows to a Parquet file and clear the buffer.
 
-        The output file is named ``<run_id>.parquet`` inside run_dir.
+        The output file is named ``agents.parquet`` inside run_dir.
 
         Returns
         -------
         Path to the written Parquet file
         """
         if not self._buffer:
-            return self.run_dir / f"{self.run_id}.parquet"
+            return self.run_dir / "agents.parquet"
 
         df = pd.DataFrame(self._buffer)
-        out_path = self.run_dir / f"{self.run_id}.parquet"
+        out_path = self.run_dir / "agents.parquet"
         df.to_parquet(out_path, index=False)
         self._buffer = []
         return out_path

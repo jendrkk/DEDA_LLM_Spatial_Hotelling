@@ -2,7 +2,7 @@
 # Scope: inner S-Bahn Ringbahn (S41/S42). NOT Pankow. See ADR-012.
 
 name: "berlin_inner_ring"
-epsg: 25833                        # EPSG projection for all coordinates and distances
+epsg: 3035                        # EPSG projection for all coordinates and distances
 
 demand_grid_resolution_m: 100      # Zensus 2022 population raster cell size (metres)
 site_grid_resolution_m: 250        # candidate entry site grid resolution (metres)
@@ -16,3 +16,37 @@ bounding_box:
   lat_max: 52.55   # northern edge of inner ring (WGS84); 55.55 would be Hamburg
   lon_min: 13.32   # western edge
   lon_max: 13.49   # eastern edge
+
+# ── Data file paths (relative to repo root) ──────────────────────────────────
+grid_path: data/processed/demand_grid.parquet
+stores_path: data/processed/supermarkets.parquet
+travel_times_path: data/processed/travel_times.parquet
+
+# ── Demand model parameters ───────────────────────────────────────────────────
+# lambda_val: calibrate via calibrate_lambda(grid, target_footfall_share=0.125)
+# Run: python scripts/run_baseline.py --calibrate-only to print the value.
+lambda_val: 1500.0       # placeholder — replace with calibrated value
+
+# Chain quality intercepts (q_D = 0 normalised baseline, ADR-014)
+q_S: 0.8                 # standard chain quality (Rewe, Edeka, Kaufland, HIT, CAP)
+q_B: 1.5                 # bio/premium chain quality (Bio Company, Alnatura, Denns, LPG)
+
+# Consumer type WTP for quality (vertical preference parameters)
+alpha_L: 0.5             # low-type (L) marginal utility of chain quality
+alpha_H: 1.5             # high-type (H) marginal utility of chain quality
+
+# Effort demand + cost parameters (sensitivity parameters — no Berlin data)
+beta_effort: 0.001       # homogeneous marginal utility of store effort β
+kappa0: 1.0              # quadratic effort cost coefficient κ₀ (chain-invariant, ADR-017)
+
+# Store physical parameters
+store_size: 600.0        # typical inner-Berlin LEH floor space in m² (used with rent)
+
+# Marginal cost (ADR-014: normalised to zero for baseline)
+marginal_cost_D: 0.0
+marginal_cost_S: 0.0
+marginal_cost_B: 0.0
+
+# Distance matrix parameters
+nan_fill_minutes: 120.0  # travel-time fill value for unreachable (cell, store) pairs
+                          # 2× the 60-min cap from GEO_05 — ensures near-zero logit share

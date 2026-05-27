@@ -25,6 +25,7 @@ __all__ = [
     "add_poi_layer",
     "assemble_simulation_grid",
     "build_demand_grid",
+    "calibrate_lambda",
     "enrich_supermarkets_with_brw",
     "normalize_social_indices",
 ]
@@ -179,51 +180,199 @@ def add_poi_layer(
     return out
 
 
+def calibrate_lambda(
+    grid: gpd.GeoDataFrame,
+    target_footfall_share: float = 0.125,
+) -> float:
+    """Compute the footfall-bonus scaling parameter λ from the simulation grid.
+
+    λ is defined by the calibration condition:
+
+        λ · Σᵢ φᵢ  =  α · Σᵢ ωᵢ
+
+    where α = *target_footfall_share*, ωᵢ = ``Einwohner`` (residential
+    population), and φᵢ = ``phi_i`` (the footfall index from
+    :func:`assemble_simulation_grid`).  Rearranging:
+
+        λ = α · Σᵢ ωᵢ / Σᵢ φᵢ
+
+    λ is a global scalar — it does not vary by cell or by simulation period.
+    The two inputs (Zensus residential counts and static infrastructure
+    indicators) are both cross-sectional snapshots, so the calibration is
+    time-invariant.
+
+    This function should be called **once** during experiment setup
+    (after :func:`assemble_simulation_grid` has been run) and its output
+    stored in the Hydra environment config
+    (``configs/env/berlin_inner_ring.yaml``) as the ``lambda`` parameter.
+    Do not re-run it during simulation.
+
+    Parameters
+    ----------
+    grid:
+        Output of :func:`assemble_simulation_grid`.  Must contain columns
+        ``Einwohner`` (int, residential population) and ``phi_i`` (float,
+        footfall index ∈ [0, 1]).
+    target_footfall_share:
+        α — target ratio of total footfall demand to total residential
+        demand.  Default 0.125 (midpoint of the 10–15 % range from the
+        project specification).  Valid range: (0, 1).
+
+    Returns
+    -------
+    float
+        Calibrated λ in units of resident-equivalent consumers.
+
+    Raises
+    ------
+    KeyError
+        If ``Einwohner`` or ``phi_i`` are absent from *grid*.
+    ValueError
+        If *target_footfall_share* is outside (0, 1), or if Σᵢ φᵢ = 0
+        (no cell has any footfall signal).
+
+    Examples
+    --------
+    >>> lam = calibrate_lambda(simulation_grid, target_footfall_share=0.10)
+    >>> # Write to config:
+    >>> # configs/env/berlin_inner_ring.yaml  →  lambda: <lam>
+    """
+    for col in ("Einwohner", "phi_i"):
+        if col not in grid.columns:
+            raise KeyError(
+                f"calibrate_lambda: column '{col}' not found. "
+                "Run assemble_simulation_grid() first."
+            )
+    if not (0.0 < target_footfall_share < 1.0):
+        raise ValueError(
+            f"target_footfall_share must be in (0, 1), got {target_footfall_share}."
+        )
+
+    total_residential = float(grid["Einwohner"].sum())
+    total_phi = float(grid["phi_i"].sum())
+
+    if total_phi == 0.0:
+        raise ValueError(
+            "Σ phi_i = 0: no cell has any footfall signal. "
+            "Check that has_mall, has_cluster, and station_class columns "
+            "were populated before calling assemble_simulation_grid()."
+        )
+
+    lam = target_footfall_share * total_residential / total_phi
+    logger.info(
+        "λ calibrated: %.4f  "
+        "(α=%.3f, Σω=%.0f, Σφ=%.4f).",
+        lam, target_footfall_share, total_residential, total_phi,
+    )
+    return lam
+
+
 def assemble_simulation_grid(
     pop_grid: gpd.GeoDataFrame,
     lor: gpd.GeoDataFrame,
     pois: gpd.GeoDataFrame,
+    *,
+    w_hub: float = 0.4,
+    w_prime: float = 0.3,
+    w_lcl: float = 0.3,
 ) -> gpd.GeoDataFrame:
-    """Validate schema and finalise the simulation-ready grid.
+    """Validate schema, compute φ_i, and finalise the simulation-ready grid.
 
-    This function receives a *pop_grid* that has already been enriched by
-    the pipeline (LOR attributes, ESIx/MSS scores, IHK employment, transit
-    hub flags, CBD flags, and POI layer have all been joined in prior phases).
-    Its job is to:
+    Receives a *pop_grid* enriched by all prior pipeline phases and:
 
-    1. Verify that all required columns are present, raising ``KeyError``
+    1. Verifies that all required columns are present, raising ``KeyError``
        with a clear message for any that are missing.
-    2. Fill guaranteed-present columns with safe defaults where values are
+    2. Fills guaranteed-present columns with safe defaults where values are
        ``NaN`` (e.g. ``poi_count`` → 0, ``Einwohner`` → 0).
-    3. Reset the index to a clean RangeIndex.
-    4. Return the final GeoDataFrame ready for the simulation engine.
+    3. Derives ``station_class_normalized`` from ``station_class`` when the
+       column is absent (happens when the raw enriched grid is passed rather
+       than the output of :func:`build_demand_grid`).
+    4. Derives ``has_cluster`` from ``cluster_id`` when absent.
+    5. Computes the cell-level footfall index
+       ``φ_i = w_hub * φ_hub + w_prime * φ_prime + w_lcl * φ_lcl``
+       using the three demand-side signals:
+
+       * ``φ_hub``   — ``station_class_normalized`` (0 for no-station and
+                        lowest-class-station cells; 1 for best-class station).
+       * ``φ_prime`` — ``has_cluster`` cast to float (employment cluster).
+       * ``φ_lcl``   — ``has_mall`` cast to float (local commercial centre).
+
+    6. Computes the per-cell residential H-type consumer share
+       ``pi_H_res`` ∈ [0, 1] from the social-status indices.  High social
+       status → more high-WTP (H-type) consumers:
+
+       * Both ``esix_normalized`` and ``si_normalized`` present →
+         arithmetic mean of the two (they were cross-calibrated to the
+         same scale by :func:`normalize_social_indices`).
+       * Only one present → use that column directly.
+       * Neither present (e.g. grid cells outside all LOR districts) →
+         neutral default 0.5.
+       * Where a single column is present but NaN for a specific cell →
+         fall back to the other column if available, else 0.5.
+
+       ``pi_L_res = 1 - pi_H_res`` is also written.
+
+    7. Logs the λ value calibrated at the default footfall share of 12.5 %
+       as a convenience reference (calls :func:`calibrate_lambda` internally
+       with ``target_footfall_share=0.125``; does not modify *pop_grid*).
+    8. Resets the index to a clean RangeIndex and returns.
+
+    The weights *w_hub*, *w_prime*, *w_lcl* must sum to 1.0.
 
     Required output columns (will raise ``KeyError`` if absent):
         ``x_mp_100m``, ``y_mp_100m``, ``geometry``, ``Einwohner``,
         ``PLR_ID``, ``PLR_NAME``, ``poi_count``
+
+    Optional φ_i source columns (defaults to 0 when absent):
+        ``station_class`` / ``station_class_normalized``,
+        ``cluster_id`` / ``has_cluster``,
+        ``has_mall``
+
+    Optional π_{H,res} source columns (defaults to 0.5 when absent):
+        ``esix_normalized``, ``si_normalized``
 
     Parameters
     ----------
     pop_grid:
         Fully-enriched grid GeoDataFrame produced by all prior pipeline
         phases.  Must already contain the required columns listed above.
+        The φ_i source columns are optional — missing ones default to 0.
     lor:
         Selected LOR districts (passed for reference / logging only;
         not used for spatial joins here).
     pois:
         OSM POI GeoDataFrame (passed for reference / logging only;
         not used for spatial joins here).
+    w_hub:
+        Weight for the transit-hub component φ_hub.  Default 0.4.
+    w_prime:
+        Weight for the prime-location / employment-cluster component
+        φ_prime.  Default 0.3.
+    w_lcl:
+        Weight for the local commercial centre component φ_lcl.
+        Default 0.3.
 
     Returns
     -------
     geopandas.GeoDataFrame
-        Schema-validated simulation grid in EPSG:3035, clean RangeIndex.
+        Schema-validated simulation grid in EPSG:3035, clean RangeIndex,
+        with additional columns ``phi_i`` ∈ [0, 1],
+        ``pi_H_res`` ∈ [0, 1], and ``pi_L_res`` ∈ [0, 1].
 
     Raises
     ------
     KeyError
         If any required column is missing from *pop_grid*.
+    ValueError
+        If ``w_hub + w_prime + w_lcl`` does not equal 1.0 (within 1e-9).
     """
+    if abs(w_hub + w_prime + w_lcl - 1.0) > 1e-9:
+        raise ValueError(
+            f"φ_i weights must sum to 1.0, got "
+            f"w_hub={w_hub} + w_prime={w_prime} + w_lcl={w_lcl} = "
+            f"{w_hub + w_prime + w_lcl:.10f}."
+        )
+
     REQUIRED = ["x_mp_100m", "y_mp_100m", "geometry", "Einwohner", "PLR_ID", "PLR_NAME", "poi_count"]
     missing = [c for c in REQUIRED if c not in pop_grid.columns]
     if missing:
@@ -231,13 +380,117 @@ def assemble_simulation_grid(
             f"assemble_simulation_grid: required columns missing: {missing}. "
             "Ensure add_lor_attributes and add_poi_layer have been run."
         )
+
     out = pop_grid.copy()
     out["poi_count"] = out["poi_count"].fillna(0).astype(int)
     out["Einwohner"] = out["Einwohner"].fillna(0).astype(np.int32)
+
+    # ── Derive station_class_normalized if absent ─────────────────────────────
+    # build_demand_grid() already computes this column; when assemble is called
+    # directly on the raw enriched grid (which has station_class but not the
+    # normalised version), derive it here with the same formula.
+    if "station_class_normalized" not in out.columns:
+        if "station_class" in out.columns:
+            sc = out["station_class"]
+            sc_max = sc.max()   # NaN-safe: ignores NaN cells
+            sc_min = sc.min()
+            if pd.notna(sc_max) and pd.notna(sc_min) and sc_max > sc_min:
+                out["station_class_normalized"] = (sc_max - sc) / (sc_max - sc_min)
+            else:
+                # All cells have the same class, or no cells have a station:
+                # the hub signal is uninformative — set to 0.
+                out["station_class_normalized"] = 0.0
+        else:
+            out["station_class_normalized"] = 0.0
+
+    # ── Derive has_cluster if absent ──────────────────────────────────────────
+    # build_demand_grid() sets this explicitly after the employment-cluster
+    # sjoin.  On the raw enriched grid, cluster_id may be present (if the
+    # sjoin was run elsewhere), or absent (safe default: no clusters).
+    if "has_cluster" not in out.columns:
+        if "cluster_id" in out.columns:
+            out["has_cluster"] = out["cluster_id"].notna()
+        else:
+            out["has_cluster"] = False
+
+    # ── Derive has_mall if absent ─────────────────────────────────────────────
+    if "has_mall" not in out.columns:
+        out["has_mall"] = False
+
+    # ── Compute φ_i ───────────────────────────────────────────────────────────
+    # φ_hub:   station_class_normalized ∈ [0, 1]; NaN (no station) → 0.
+    #          Cells with the worst station class also get 0 by construction.
+    # φ_prime: 1.0 if the cell is inside a high-employment cluster, else 0.
+    # φ_lcl:   1.0 if a shopping mall intersects the cell, else 0.
+    phi_hub   = out["station_class_normalized"].fillna(0.0).astype(float)
+    phi_prime = out["has_cluster"].fillna(False).astype(float)
+    phi_lcl   = out["has_mall"].fillna(False).astype(float)
+
+    out["phi_i"] = w_hub * phi_hub + w_prime * phi_prime + w_lcl * phi_lcl
+
+    # ── Compute pi_H_res: residential H-type consumer share per cell ──────────
+    # Sources (in priority order, by availability):
+    #   esix_normalized — continuous ESIx social-structure index, [0, 1].
+    #                     1 = highest social status = most H-type consumers.
+    #   si_normalized   — MSS ordinal index rescaled to the ESIx quantile
+    #                     distribution, [0, 1].  Cross-calibrated in
+    #                     normalize_social_indices() so both are on the same
+    #                     scale by construction.
+    # Neutral default when neither column is present or both are NaN: 0.5.
+    _esix_col = "esix_normalized"
+    _si_col   = "si_normalized"
+    _has_esix = _esix_col in out.columns
+    _has_si   = _si_col   in out.columns
+
+    if _has_esix and _has_si:
+        esix_vals = out[_esix_col]
+        si_vals   = out[_si_col]
+        both_valid = esix_vals.notna() & si_vals.notna()
+        only_esix  = esix_vals.notna() & si_vals.isna()
+        only_si    = si_vals.notna()   & esix_vals.isna()
+        pi_H_res = pd.Series(0.5, index=out.index, dtype=float)
+        pi_H_res[both_valid] = (esix_vals[both_valid] + si_vals[both_valid]) / 2.0
+        pi_H_res[only_esix]  = esix_vals[only_esix]
+        pi_H_res[only_si]    = si_vals[only_si]
+    elif _has_esix:
+        pi_H_res = out[_esix_col].fillna(0.5).astype(float)
+    elif _has_si:
+        pi_H_res = out[_si_col].fillna(0.5).astype(float)
+    else:
+        pi_H_res = pd.Series(0.5, index=out.index, dtype=float)
+
+    out["pi_H_res"] = pi_H_res.clip(0.0, 1.0)
+    out["pi_L_res"] = (1.0 - out["pi_H_res"]).clip(0.0, 1.0)
+
+    # ── Log calibrated λ for reference ────────────────────────────────────────
+    # This is purely informational — the caller should copy the logged value
+    # into configs/env/berlin_inner_ring.yaml as the lambda parameter.
+    try:
+        _lam_ref = calibrate_lambda(out, target_footfall_share=0.125)
+        logger.info(
+            "λ reference (α=12.5%%): %.4f  — copy to configs/env/berlin_inner_ring.yaml.",
+            _lam_ref,
+        )
+    except (ValueError, KeyError) as exc:
+        logger.warning("λ reference could not be computed: %s", exc)
+
     out = out.reset_index(drop=True)
+
     logger.info(
-        "Simulation grid assembled: %d cells, %d columns, CRS=%s.",
+        "Simulation grid assembled: %d cells, %d columns, CRS=%s. "
+        "φ_i: mean=%.4f, max=%.4f, cells>0=%d. "
+        "pi_H_res: mean=%.4f (source: %s).",
         len(out), len(out.columns), out.crs,
+        float(out["phi_i"].mean()),
+        float(out["phi_i"].max()),
+        int((out["phi_i"] > 0).sum()),
+        float(out["pi_H_res"].mean()),
+        (
+            "esix+si avg" if (_has_esix and _has_si)
+            else "esix only" if _has_esix
+            else "si only"   if _has_si
+            else "default 0.5"
+        ),
     )
     return out
 
@@ -554,14 +807,16 @@ def build_demand_grid(
         ["station_class", "matched_db_station"]
     ]
     demand_grid = demand_grid.join(station_info, on="GITTER_ID_100m")
-
+    demand_grid['station_class_normalized'] = (demand_grid['station_class'].max() - demand_grid['station_class']) / (demand_grid['station_class'].max() - demand_grid['station_class'].min())
+    
     # ── Step 3: Employment clusters (sjoin intersects) ────────────────────────
     demand_grid = demand_grid.sjoin(
         employment_clusters, how="left", predicate="intersects"
     )
     if "index_right" in demand_grid.columns:
         demand_grid = demand_grid.drop(columns=["index_right"])
-
+    demand_grid['has_cluster'] = demand_grid['cluster_id'].notna()
+    
     # ── Step 4: Travel-time dict per cell ─────────────────────────────────────
     demand_grid["travel_times"] = None
     travel_times = travel_times.copy()

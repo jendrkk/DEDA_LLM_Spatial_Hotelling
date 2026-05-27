@@ -309,7 +309,6 @@ def build_commercial_candidates(
     from hotelling.spatial.osm import fetch_pois  # noqa: PLC0415
 
     ANALYSIS_CRS = "EPSG:3035"
-    DISPLAY_CRS  = "EPSG:4326"
 
     # ── 1. OSM fetch (cached) ─────────────────────────────────────────────────
     _TAGS: list[dict] = [

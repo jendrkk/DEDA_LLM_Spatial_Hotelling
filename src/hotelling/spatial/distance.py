@@ -50,19 +50,12 @@ def euclidean_distance_matrix(
     -------
     np.ndarray shape (M, N) - distances in metres
     """
-    from scipy.spatial import KDTree  # lazy import; scipy is a core dep
-
     a = np.asarray(locations_a, dtype=np.float64)
     b = np.asarray(locations_b, dtype=np.float64)
     if a.ndim != 2 or a.shape[1] != 2:
         raise ValueError("locations_a must have shape (M, 2).")
     if b.ndim != 2 or b.shape[1] != 2:
         raise ValueError("locations_b must have shape (N, 2).")
-
-    tree = KDTree(b)
-    dists, _ = tree.query(a, k=len(b), workers=-1)
-    # KDTree.query returns sorted distances; we need the full (M, N) matrix.
-    # For the general (M,N) case, use cdist instead of KDTree.
     from scipy.spatial.distance import cdist
     return cdist(a, b)
 
@@ -180,7 +173,7 @@ def build_transit_travel_times(
     Parameters
     ----------
     grid:
-        Population grid GeoDataFrame in EPSP:3035 with polygon geometry.
+        Population grid GeoDataFrame in EPSG:3035 with polygon geometry.
         Must contain ``GITTER_ID_100m`` or ``x_mp_100m`` / ``y_mp_100m``
         columns so that :func:`~hotelling.spatial.census.make_cell_id` can
         assign cell IDs.

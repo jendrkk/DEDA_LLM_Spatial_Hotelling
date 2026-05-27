@@ -32,6 +32,7 @@ __all__ = [
     "build_full_grid",
     "build_grid_polygons",
     "clip_grid_to_boundary",
+    "make_cell_id",
 ]
 
 
@@ -285,3 +286,40 @@ def clip_grid_to_boundary(
     out["geometry"] = out.geometry.intersection(clip_geom)
     keep = ~out.geometry.is_empty & out.geometry.geom_type.isin(["Polygon", "MultiPolygon"])
     return out.loc[keep].copy()
+
+
+def make_cell_id(row: pd.Series) -> str:
+    """Return the canonical INSPIRE 100 m cell identifier for a grid row.
+
+    Uses the official ``GITTER_ID_100m`` value when present and non-None;
+    otherwise synthesises it from the metric EPSG:3035 midpoint coordinates
+    following the INSPIRE naming convention::
+
+        CRS3035RES100mN{y_mp_100m}E{x_mp_100m}
+
+    This function is the single authoritative source of cell IDs in the
+    hotelling package and replaces the ad-hoc ``gitter_id`` / ``name_grid``
+    helpers used in GEO_05 and GEO_07 notebooks.
+
+    Parameters
+    ----------
+    row:
+        A row from a Zensus / population-grid GeoDataFrame.  Must contain
+        either ``GITTER_ID_100m`` or both ``x_mp_100m`` and ``y_mp_100m``.
+
+    Returns
+    -------
+    str
+        The cell identifier string.
+
+    Examples
+    --------
+    >>> import pandas as pd
+    >>> row = pd.Series({"GITTER_ID_100m": None, "x_mp_100m": 4493500, "y_mp_100m": 3279200})
+    >>> make_cell_id(row)
+    'CRS3035RES100mN3279200E4493500'
+    """
+    gid = row.get("GITTER_ID_100m")
+    if gid is not None and not (isinstance(gid, float) and pd.isna(gid)):
+        return str(gid)
+    return f"CRS3035RES100mN{int(row['y_mp_100m'])}E{int(row['x_mp_100m'])}"

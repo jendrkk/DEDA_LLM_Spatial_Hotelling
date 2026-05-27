@@ -47,6 +47,9 @@ spatial = [
     "pdfplumber>=0.10",
     "openpyxl>=3.1",
 ]
+transit = [
+    "r5py>=0.1",
+]
 viz = [
     "matplotlib>=3.8",
     "plotly>=5.20",
@@ -73,7 +76,7 @@ notebooks = [
     "marimo>=0.6",
 ]
 all = [
-    "hotelling[llm,spatial,viz,rl,db,cli,notebooks]",
+    "hotelling[llm,spatial,transit,viz,rl,db,cli,notebooks]",
 ]
 
 [project.scripts]

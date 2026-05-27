@@ -66,7 +66,7 @@ def logit_demand(
     V = (
         alpha[:, None, None] * quality[None, None, :] +
         beta * efforts[None, None, :] -
-        prices[None, :, None] -
+        prices[None, None, :] -
         transport_cost * dist2_km2[None, :, :]
     )
     

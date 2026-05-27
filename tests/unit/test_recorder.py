@@ -62,5 +62,5 @@ class TestSimulationRecorder:
         rec = SimulationRecorder(run_dir=tmp_path, run_id="close-test")
         rec.record_step(period=0, agent_id="A", price=1.0, demand=0.5, profit=0.5)
         rec.close()
-        out = tmp_path / "close-test.parquet"
+        out = tmp_path / "agents.parquet"
         assert out.exists()

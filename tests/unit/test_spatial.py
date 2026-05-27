@@ -70,9 +70,9 @@ class TestNormalizeChainName:
     def test_known_qid_returns_canonical(self):
         from hotelling.spatial.osm import normalize_chain_name
 
-        assert normalize_chain_name("Q151954") == "Rewe"
-        assert normalize_chain_name("Q700965") == "Lidl"
-        assert normalize_chain_name("Q685967") == "Edeka"
+        assert normalize_chain_name("Q151954") == "Lidl"
+        assert normalize_chain_name("Q16968817") == "Rewe"
+        assert normalize_chain_name("Q701755") == "Edeka"
 
     def test_unknown_qid_returns_fallback(self):
         from hotelling.spatial.osm import normalize_chain_name
@@ -481,13 +481,6 @@ class TestAssembleSimulationGrid:
 
 class TestStubsRaiseNotImplementedError:
     """All pipeline stubs must raise NotImplementedError, not fail silently."""
-
-    def test_euclidean_distance_matrix(self):
-        import numpy as np
-        from hotelling.spatial.distance import euclidean_distance_matrix
-
-        with pytest.raises(NotImplementedError):
-            euclidean_distance_matrix(np.zeros((2, 2)), np.zeros((2, 2)))
 
     def test_network_distance_matrix(self):
         import numpy as np

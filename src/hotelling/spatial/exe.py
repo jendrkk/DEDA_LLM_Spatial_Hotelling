@@ -75,6 +75,9 @@ from hotelling.spatial.assembly import (
     add_lor_attributes,
     add_poi_layer,
     assemble_simulation_grid,
+    build_demand_grid,
+    enrich_supermarkets_with_brw,
+    normalize_social_indices,
 )
 from hotelling.spatial.boundaries import (
     download_city_boundary,
@@ -99,6 +102,8 @@ from hotelling.spatial.city_data import (
     run_prime_location_clustering,
 )
 from hotelling.spatial.osm import fetch_pois, process_supermarkets
+from hotelling.spatial.distance import build_transit_travel_times
+from hotelling.spatial.parcels import build_commercial_candidates
 
 
 __all__ = [
@@ -106,8 +111,11 @@ __all__ = [
     "add_lor_attributes",
     "add_poi_layer",
     "assemble_simulation_grid",
+    "build_commercial_candidates",
+    "build_demand_grid",
     "build_full_grid",
     "build_grid_polygons",
+    "build_transit_travel_times",
     "download_city_boundary",
     "download_index_data",
     "download_local_shapes",
@@ -128,9 +136,11 @@ __all__ = [
     "process_gebaeude_stadtstruktur",
     "process_ihk_data",
     "process_supermarkets",
+    "enrich_supermarkets_with_brw",
     "run_default_data_pipeline",
     "run_prime_location_clustering",
     "select_ringbahn_lor",
+    "normalize_social_indices",
 ]
 
 logger = logging.getLogger(__name__)
@@ -332,6 +342,19 @@ def run_default_data_pipeline(
     supermarkets.to_parquet("data/processed/supermarkets.parquet", index=False)
     logger.info("Supermarkets: %d in grid after normalisation.", len(supermarkets))
 
+    # 6b-transit. Transit travel-time matrix (r5py; optional)
+    #     Produces data/processed/travel_times.parquet
+    try:
+        travel_times_df = build_transit_travel_times(grid=grid, supermarkets=supermarkets)
+        logger.info("Transit travel-time matrix computed (%d rows).", len(travel_times_df))
+    except ImportError:
+        logger.warning(
+            "r5py not installed — skipping transit travel-time computation. "
+            "Install with: pip install hotelling[transit]"
+        )
+    except Exception as exc:
+        logger.warning("Transit travel-time computation failed: %s", exc)
+
     # 6b. POI layer: count and chain flags per grid cell
     grid = add_poi_layer(grid, supermarkets)
     logger.info("POI layer added.")
@@ -341,7 +364,70 @@ def run_default_data_pipeline(
     grid = add_lcc_layer(grid, lcc_gdf)
     logger.info("LCC mall layer added.")
 
+    # 6d. Commercial entry-site candidates (L_commercial_final)
+    #     Produces data/processed/L_commercial_final.parquet + .gpkg
+    _alkis_path = Path("data/raw/alkis_full.gpkg")
+    if _alkis_path.exists():
+        try:
+            _brw = gpd.read_file("data/raw/brw_2025.gpkg").to_crs("EPSG:3035")
+            _ss  = gpd.read_file("data/raw/stadtstruktur.gpkg").to_crs("EPSG:3035")
+            _incumbents_raw = fetch_pois(type="supermarket", city="Berlin")
+            build_commercial_candidates(
+                boundary=boundary,
+                alkis_path=_alkis_path,
+                incumbents=_incumbents_raw,
+                brw=_brw,
+                stadtstruktur=_ss,
+            )
+            logger.info("Commercial entry-site candidates built.")
+        except Exception as exc:
+            logger.warning("build_commercial_candidates failed: %s", exc)
+    else:
+        logger.warning(
+            "ALKIS file not found at %s — skipping L_commercial_final. "
+            "Run download_alkis_data() first.", _alkis_path
+        )
+
     logger.info("Phase 6 complete.")
+
+    # ------------------------------------------------------------------
+    # 6e. Final demand grid assembly
+    #     Requires: travel_times.parquet to exist on disk.
+    _travel_times_path = Path("data/processed/travel_times.parquet")
+    _empl_clusters_path = Path("data/processed/employment_clusters.parquet")
+    if _travel_times_path.exists() and _empl_clusters_path.exists():
+        try:
+            import pandas as _pd
+            _tt = _pd.read_parquet(_travel_times_path)
+            _ec = gpd.read_parquet(_empl_clusters_path).to_crs("EPSG:3035")
+            _grid_malls_path = Path("data/processed/grid_malls.parquet")
+            _grid_stations_path = Path("data/processed/grid_with_stations.parquet")
+            if _grid_malls_path.exists() and _grid_stations_path.exists():
+                _gm = gpd.read_parquet(_grid_malls_path).to_crs("EPSG:3035")
+                _gs = gpd.read_parquet(_grid_stations_path).to_crs("EPSG:3035")
+                build_demand_grid(
+                    grid=grid,
+                    grid_malls=_gm,
+                    grid_with_stations=_gs,
+                    travel_times=_tt,
+                    employment_clusters=_ec,
+                )
+                logger.info("Demand grid assembled.")
+                _brw_for_sm = gpd.read_file("data/raw/brw_2025.gpkg").to_crs("EPSG:3035")
+                enrich_supermarkets_with_brw(supermarkets, _brw_for_sm)
+                logger.info("Supermarkets enriched with BRW data.")
+            else:
+                logger.warning(
+                    "grid_malls.parquet or grid_with_stations.parquet missing — "
+                    "skipping demand grid assembly."
+                )
+        except Exception as exc:
+            logger.warning("Demand grid assembly failed: %s", exc)
+    else:
+        logger.warning(
+            "travel_times.parquet or employment_clusters.parquet not found — "
+            "skipping demand grid assembly. Run build_transit_travel_times first."
+        )
 
     # ------------------------------------------------------------------
     # PHASE 7 — ASSEMBLE & SAVE FINAL GRID

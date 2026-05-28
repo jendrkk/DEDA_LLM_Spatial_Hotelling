@@ -56,7 +56,8 @@ class TestSimulationRecorder:
         )
         out = rec.flush()
         df = pd.read_parquet(out)
-        assert "price_index" in df.columns
+        assert "price_idx" in df.columns
+        assert int(df.iloc[0]["price_idx"]) == 3
 
     def test_close_flushes(self, tmp_path: Path):
         rec = SimulationRecorder(run_dir=tmp_path, run_id="close-test")

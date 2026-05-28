@@ -22,6 +22,7 @@ classifiers = [
 ]
 dependencies = [
     "numpy>=1.26",
+    "numba>=0.59",
     "pandas>=2.1",
     "pydantic>=2.7",
     "jinja2>=3.1",

@@ -189,6 +189,8 @@ def print_summary(result: dict) -> None:
     print(f"  Mean final price:   {result.get('mean_final_price', float('nan')):.4f}")
     print(f"  Bertrand-Nash p:    {result.get('p_nash',           float('nan')):.4f}")
     print(f"  Joint-monopoly p:   {result.get('p_mono',           float('nan')):.4f}")
+    if "epsilon_mean" in result:
+        print(f"  Epsilon (mean):     {result['epsilon_mean']:.4f}")
     print()
 
     final_prices = result.get("final_prices", {})

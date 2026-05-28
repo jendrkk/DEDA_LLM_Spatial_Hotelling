@@ -12,6 +12,7 @@ References: ADR-006; docs/agent_simulation_technical_report.md §8.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 import numpy as np
 
@@ -34,11 +35,12 @@ class Phase0BurnIn:
 
     def run(
         self,
-        agents: dict,
-        env: object,
-        city: object,
-        transport_cost: float,
+        agents: dict | None = None,
+        env: object = None,
+        city: object = None,
+        transport_cost: float = 0.0,
         seed: int | None = None,
+        batch_agent: object | None = None,
     ) -> dict:
         """Run Q-learning burn-in until convergence; return statistics.
 
@@ -72,7 +74,6 @@ class Phase0BurnIn:
             effort_history     list   — sampled mean efforts
             step_history       list   — step indices for samples
         """
-        from hotelling.simulation.engine import SimulationEngine
         from hotelling.core.equilibrium import bertrand_nash, joint_monopoly
 
         cfg = self.config
@@ -82,13 +83,30 @@ class Phase0BurnIn:
         check_interval = int(cfg.get("check_interval", 1_000))
         record_every = int(cfg.get("record_every", check_interval))
 
-        engine = SimulationEngine(
-            env=env,
-            agents=agents,
-            max_steps=T_burnin,
-            record_every=record_every,
-            recorder=cfg.get("_recorder", None),
-        )
+        batch_agent = batch_agent or cfg.get("_batch_agent")
+        if batch_agent is not None:
+            from hotelling.simulation.engine import BatchSimulationEngine
+
+            engine = BatchSimulationEngine(
+                env=env,
+                batch_agent=batch_agent,
+                max_steps=T_burnin,
+                record_every=record_every,
+                recorder=cfg.get("_recorder", None),
+                dense_log=cfg.get("_dense_log"),
+            )
+        else:
+            from hotelling.simulation.engine import SimulationEngine
+
+            if agents is None:
+                raise ValueError("agents dict required when batch_agent is not set")
+            engine = SimulationEngine(
+                env=env,
+                agents=agents,
+                max_steps=T_burnin,
+                record_every=record_every,
+                recorder=cfg.get("_recorder", None),
+            )
 
         result = engine.run(seed=seed)
 
@@ -100,15 +118,26 @@ class Phase0BurnIn:
                 converged = True
 
         mean_final_price = (
-            float(np.mean(price_history[-convergence_window:]))
-            if len(price_history) >= convergence_window
-            else float(np.mean(price_history)) if price_history else 0.0
+            float(np.mean(list(result["final_prices"].values())))
+            if result["final_prices"]
+            else 0.0
         )
 
         # --- Compute Bertrand-Nash and joint-monopoly benchmarks ---
+        cache_path = cfg.get("benchmark_cache_path", None)
+        if cache_path is not None:
+            cache_path = Path(cache_path)
         try:
-            p_nash_arr, _ = bertrand_nash(city, transport_cost=transport_cost)
-            p_mono_arr, _ = joint_monopoly(city, transport_cost=transport_cost)
+            p_nash_arr, _ = bertrand_nash(
+                city,
+                transport_cost=transport_cost,
+                cache_path=cache_path,
+            )
+            p_mono_arr, _ = joint_monopoly(
+                city,
+                transport_cost=transport_cost,
+                cache_path=cache_path,
+            )
             p_nash = float(p_nash_arr.mean())
             p_mono = float(p_mono_arr.mean())
         except Exception as exc:
@@ -135,7 +164,7 @@ class Phase0BurnIn:
             p_mono,
         )
 
-        return {
+        out = {
             "converged": converged,
             "n_steps": result["n_steps"],
             "delta": delta,
@@ -147,6 +176,9 @@ class Phase0BurnIn:
             "step_history": result["step_history"],
             "final_prices": result["final_prices"],
         }
+        if "epsilon_mean" in result:
+            out["epsilon_mean"] = result["epsilon_mean"]
+        return out
 
 
 class Phase1Entry:

@@ -106,34 +106,77 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
         max_price=float(max_price) if max_price is not None else None,
     )
 
-    # --- 3. Create Q-learning agents (one per firm) ---
-    agents = {
-        str(f.id): QLearningAgent(
-            firm_id=str(f.id),
+    use_batch = bool(agent_cfg.get("use_batch", True))
+    agents: Dict[str, Any] | None = None
+    batch_agent = None
+
+    if use_batch:
+        from hotelling.agents.batch_qlearning import BatchQLearningAgent
+
+        batch_agent = BatchQLearningAgent(
+            n_agents=len(firms),
             m=int(agent_cfg.get("m", 15)),
             m_effort=int(agent_cfg.get("m_effort", 5)),
-            e_max=float(agent_cfg.get("e_max", 10.0)),
             k=int(agent_cfg.get("k_neighbors", 1)),
             alpha=float(agent_cfg.get("alpha_lr", 0.15)),
             beta_decay=float(agent_cfg.get("beta_decay", 4e-6)),
             delta=float(agent_cfg.get("delta", 0.95)),
-            update_mode=str(agent_cfg.get("update_mode", "sync")),
-            seed=(int(seed) + i) if seed is not None else None,
+            seed=int(seed) if seed is not None else None,
         )
-        for i, f in enumerate(firms)
-    }
+    else:
+        agents = {
+            str(f.id): QLearningAgent(
+                firm_id=str(f.id),
+                m=int(agent_cfg.get("m", 15)),
+                m_effort=int(agent_cfg.get("m_effort", 5)),
+                e_max=float(agent_cfg.get("e_max", 10.0)),
+                k=int(agent_cfg.get("k_neighbors", 1)),
+                alpha=float(agent_cfg.get("alpha_lr", 0.15)),
+                beta_decay=float(agent_cfg.get("beta_decay", 4e-6)),
+                delta=float(agent_cfg.get("delta", 0.95)),
+                update_mode=str(agent_cfg.get("update_mode", "sync")),
+                seed=(int(seed) + i) if seed is not None else None,
+            )
+            for i, f in enumerate(firms)
+        }
 
     # --- 4. Run Phase 0 burn-in ---
     T_burnin = int(phase0_cfg.get("T_burnin", 1_000_000))
     record_every = int(phase0_cfg.get("record_every", phase0_cfg.get("check_interval", 1_000)))
 
-    # Create recorder for per-agent sampling
-    recorder = SimulationRecorder(
-        run_dir=output_dir,
-        run_id=run_id,
-    )
+    dense_log = None
+    recorder = None
+    if use_batch:
+        from hotelling.simulation.dense_log import DenseLog
 
-    phase0_cfg_with_recorder = {**phase0_cfg, "_recorder": recorder}
+        dense_log = DenseLog(
+            run_dir=output_dir,
+            T=T_burnin,
+            N=len(firms),
+            agent_ids=[str(f.id) for f in firms],
+            price_grid=env.price_grid,
+            effort_grid=env.effort_grid,
+        )
+    else:
+        recorder = SimulationRecorder(
+            run_dir=output_dir,
+            run_id=run_id,
+        )
+
+    benchmark_cache = (
+        Path(env_cfg.get("grid_path", "data/processed/demand_grid.parquet")).parent
+        / "benchmarks_cache.npz"
+    )
+    phase0_cfg_with_recorder: Dict[str, Any] = {
+        **phase0_cfg,
+        "_recorder": recorder,
+        "benchmark_cache_path": str(benchmark_cache),
+    }
+    if batch_agent is not None:
+        phase0_cfg_with_recorder["_batch_agent"] = batch_agent
+    if dense_log is not None:
+        phase0_cfg_with_recorder["_dense_log"] = dense_log
+
     phase0 = Phase0BurnIn(phase0_cfg_with_recorder)
     phase0_result = phase0.run(
         agents=agents,
@@ -141,10 +184,15 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
         city=city,
         transport_cost=float(env_cfg.get("transport_cost", 0.01)),
         seed=seed,
+        batch_agent=batch_agent,
     )
 
-    # Flush recorder to agents.parquet
-    agents_parquet_path = recorder.flush()
+    # Flush outputs
+    agents_parquet_path = None
+    if recorder is not None:
+        agents_parquet_path = recorder.flush()
+    if dense_log is not None:
+        dense_log.flush()
 
     # Save metadata.json
     metadata = {
@@ -161,7 +209,11 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
         "n_firms": len(firms),
         "T_burnin": T_burnin,
         "record_every": record_every,
-        "agents_parquet": str(agents_parquet_path),
+        "agents_parquet": str(agents_parquet_path) if agents_parquet_path else None,
+        "dense_log_meta": str(output_dir / "dense_log_meta.json")
+        if dense_log is not None
+        else None,
+        "use_batch": use_batch,
     }
     with (output_dir / "metadata.json").open("w") as _f:
         json.dump(metadata, _f, indent=2)

@@ -1,5 +1,7 @@
 # Q-learning agent configuration for the Berlin baseline run
-# One QLearningAgent per incumbent store; no CEO envelope in Phase 0.
+# use_batch: vectorized BatchQLearningAgent (default); False uses per-store agents.
+# One QLearningAgent per incumbent store when use_batch is false; no CEO in Phase 0.
+use_batch: true
 #
 # Joint action encoding: joint_action_idx = price_idx * m_effort + effort_idx
 # State: k nearest neighbors' joint action indices from the previous period.

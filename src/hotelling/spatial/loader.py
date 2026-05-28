@@ -413,4 +413,27 @@ def load_berlin_city(
         "City loaded: %d cells, %d stores, boundary=(%.0f,%.0f,%.0f,%.0f).",
         M, N, *boundary,
     )
+
+    # Trigger Numba JIT compilation so the first simulation step is not penalised
+    from hotelling.core.market import logit_demand
+
+    n_warm = min(2, N)
+    m_warm = min(2, M)
+    if n_warm > 0 and m_warm > 0:
+        logit_demand(
+            prices=np.zeros(n_warm, dtype=np.float64),
+            efforts=np.zeros(n_warm, dtype=np.float64),
+            dist2_km2=dist_matrix[:m_warm, :n_warm],
+            cell_pop=cell_pop[:m_warm],
+            lambda_phi=lambda_phi[:m_warm],
+            pi_H=pi_H[:m_warm],
+            pi_H_lambda_phi=pi_H_lambda_phi[:m_warm],
+            alpha=city.alpha,
+            quality=np.array([f.quality for f in firms[:n_warm]], dtype=np.float64),
+            beta=beta_effort,
+            transport_cost=transport_cost,
+            mu=mu,
+            a0=a0,
+        )
+
     return city, firms

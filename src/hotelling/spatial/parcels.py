@@ -339,6 +339,14 @@ def build_commercial_candidates(
     boundary_proj = boundary.to_crs(ANALYSIS_CRS) if boundary.crs.to_epsg() != 3035 else boundary.copy()
     osm_3035 = osm_raw.to_crs(ANALYSIS_CRS).copy()
     boundary_union = boundary_proj.geometry.union_all()
+    if boundary_union.geom_type not in ("Polygon", "MultiPolygon"):
+        logger.warning(
+            "boundary.union_all() yielded %s instead of Polygon/MultiPolygon "
+            "(boundary may contain Point/LineString geometry). "
+            "Falling back to convex hull — pass a polygon boundary for exact clipping.",
+            type(boundary_union).__name__,
+        )
+        boundary_union = boundary_union.convex_hull
 
     _centroid_in = osm_3035.geometry.centroid.within(boundary_union)
     _poly_in     = osm_3035.geometry.intersects(boundary_union)

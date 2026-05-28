@@ -815,6 +815,17 @@ def build_demand_grid(
     )
     if "index_right" in demand_grid.columns:
         demand_grid = demand_grid.drop(columns=["index_right"])
+    # Deduplicate: cells intersecting 2+ cluster polygons get 2+ rows from
+    # the sjoin. Keep the first match — any row with non-null cluster_id
+    # correctly flags has_cluster=True; cells outside all clusters get the
+    # single null row (has_cluster=False).
+    if demand_grid.index.duplicated().any():
+        n_before = len(demand_grid)
+        demand_grid = demand_grid.loc[~demand_grid.index.duplicated(keep="first")].copy()
+        logger.debug(
+            "Step 3 dedup: %d → %d rows (removed %d cluster-sjoin duplicates).",
+            n_before, len(demand_grid), n_before - len(demand_grid),
+        )
     demand_grid['has_cluster'] = demand_grid['cluster_id'].notna()
     
     # ── Step 4: Travel-time dict per cell ─────────────────────────────────────
@@ -850,10 +861,32 @@ def build_demand_grid(
 
     if "index_right" in demand_grid.columns:
         demand_grid = demand_grid.drop(columns=["index_right"])
+    # Deduplicate: cells on LOR boundaries intersect 2 MSS polygons → 2 rows.
+    # Keep the first LOR match. Adjacent LOR areas have similar indices;
+    # taking the first is acceptable and restores the 1-row-per-cell invariant
+    # before the ESIx sjoin, which would otherwise compound the duplication.
+    if demand_grid.index.duplicated().any():
+        n_before = len(demand_grid)
+        demand_grid = demand_grid.loc[~demand_grid.index.duplicated(keep="first")].copy()
+        logger.warning(
+            "Step 5 MSS dedup: %d → %d rows. "
+            "%d cells were on LOR boundaries and matched 2+ MSS polygons. "
+            "First-match LOR attributes kept.",
+            n_before, len(demand_grid), n_before - len(demand_grid),
+        )
     demand_grid = demand_grid.sjoin(esix, how="left", predicate="intersects")
 
     if "index_right" in demand_grid.columns:
         demand_grid = demand_grid.drop(columns=["index_right"])
+    # Deduplicate again after ESIx sjoin for the same LOR-boundary reason.
+    if demand_grid.index.duplicated().any():
+        n_before = len(demand_grid)
+        demand_grid = demand_grid.loc[~demand_grid.index.duplicated(keep="first")].copy()
+        logger.warning(
+            "Step 5 ESIx dedup: %d → %d rows. "
+            "%d cells matched 2+ ESIx polygons. First-match kept.",
+            n_before, len(demand_grid), n_before - len(demand_grid),
+        )
 
     # ── Step 6: Normalize social indices ─────────────────────────────────────
     if "esix_wert" in demand_grid.columns and "si_n" in demand_grid.columns:
@@ -862,6 +895,25 @@ def build_demand_grid(
         logger.warning(
             "esix_wert or si_n column not found after MSS/ESIx join — "
             "skipping normalization. Check the gpkg column names."
+        )
+
+    # Final integrity check: every GITTER_ID_100m must be unique at this point.
+    n_dupes = demand_grid["GITTER_ID_100m"].duplicated().sum()
+    if n_dupes > 0:
+        logger.error(
+            "demand_grid still has %d duplicate GITTER_ID_100m rows after all "
+            "deduplication steps. This should not happen — investigate the sjoin "
+            "steps above.",
+            n_dupes,
+        )
+        # Fail-safe: deduplicate anyway so the output is always clean.
+        demand_grid = demand_grid.drop_duplicates(
+            subset="GITTER_ID_100m", keep="first"
+        ).reset_index(drop=True)
+    else:
+        logger.info(
+            "Integrity check passed: all %d GITTER_ID_100m values are unique.",
+            len(demand_grid),
         )
 
     # ── Step 7: Save ──────────────────────────────────────────────────────────

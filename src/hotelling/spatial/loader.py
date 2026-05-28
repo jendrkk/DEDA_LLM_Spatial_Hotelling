@@ -279,6 +279,25 @@ def load_berlin_city(
 
     # Sort by GITTER_ID_100m to establish canonical cell order (reproducible)
     grid = grid_raw.sort_values("GITTER_ID_100m").reset_index(drop=True)
+
+    # Safeguard: if demand_grid.parquet was generated before the
+    # build_demand_grid() deduplication fix was applied, it will contain
+    # ~32k rows (2× the expected 16k). Detect and fix this transparently.
+    n_dupes = grid["GITTER_ID_100m"].duplicated().sum()
+    if n_dupes > 0:
+        logger.warning(
+            "demand_grid.parquet contains %d duplicate GITTER_ID_100m rows "
+            "(%d total rows, %d unique cells). "
+            "This is caused by a now-fixed bug in build_demand_grid() where "
+            "sjoin(predicate='intersects') on LOR polygons doubled boundary cells. "
+            "Deduplicating automatically — re-run GEO_07_demand.ipynb to fix "
+            "the source parquet.",
+            n_dupes, len(grid), grid["GITTER_ID_100m"].nunique(),
+        )
+        grid = grid.drop_duplicates(
+            subset="GITTER_ID_100m", keep="first"
+        ).reset_index(drop=True)
+
     cell_ids: list[str] = grid["GITTER_ID_100m"].tolist()
     M = len(grid)
     logger.info("Grid: %d cells (canonical order: sorted by GITTER_ID_100m).", M)

@@ -48,6 +48,7 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
     from hotelling.agents.qlearning import QLearningAgent
     from hotelling.simulation.phases import Phase0BurnIn
     from hotelling.simulation.recorder import SimulationRecorder
+    from hotelling.core.equilibrium import bertrand_nash, joint_monopoly
 
     t_start = time.time()
     run_id = str(uuid.uuid4())[:8]
@@ -91,9 +92,33 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
         marginal_cost_B=float(env_cfg.get("marginal_cost_B", 0.0)),
     )
 
+    # --- 1b. Pre-compute benchmarks and derive Calvano price grid ---
+    tc = float(env_cfg.get("transport_cost", 0.01))
+    benchmark_cache_pre = (
+        Path(env_cfg.get("grid_path", "data/processed/demand_grid.parquet")).parent
+        / "benchmarks_cache.npz"
+    )
+    auto_grid = bool(agent_cfg.get("auto_price_grid", True))
+    p_nash_pre = p_mono_pre = None
+    if auto_grid:
+        p_nash_arr, _ = bertrand_nash(city, transport_cost=tc, cache_path=benchmark_cache_pre)
+        p_mono_arr, _ = joint_monopoly(city, transport_cost=tc, cache_path=benchmark_cache_pre)
+        p_nash_pre = float(p_nash_arr.mean())
+        p_mono_pre = float(p_mono_arr.mean())
+        xi = float(agent_cfg.get("price_grid_xi", 0.1))
+        span = p_mono_pre - p_nash_pre
+        if span > 1e-6:
+            mc_min = min(getattr(f, "marginal_cost", 0.0) for f in firms)
+            grid_min = max(mc_min, p_nash_pre - xi * span)
+            grid_max = p_mono_pre + xi * span
+        else:
+            grid_min = agent_cfg.get("min_price", None)
+            grid_max = agent_cfg.get("max_price", None)
+    else:
+        grid_min = agent_cfg.get("min_price", None)
+        grid_max = agent_cfg.get("max_price", None)
+
     # --- 2. Create environment ---
-    min_price = agent_cfg.get("min_price", None)
-    max_price = agent_cfg.get("max_price", None)
     env = HotellingMarketEnv(
         city=city,
         firms=firms,
@@ -102,8 +127,8 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
         e_max=float(agent_cfg.get("e_max", 10.0)),
         k_neighbors=int(agent_cfg.get("k_neighbors", 1)),
         transport_cost=float(env_cfg.get("transport_cost", 0.01)),
-        min_price=float(min_price) if min_price is not None else None,
-        max_price=float(max_price) if max_price is not None else None,
+        min_price=float(grid_min) if grid_min is not None else None,
+        max_price=float(grid_max) if grid_max is not None else None,
     )
 
     use_batch = bool(agent_cfg.get("use_batch", True))
@@ -163,14 +188,12 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
             run_id=run_id,
         )
 
-    benchmark_cache = (
-        Path(env_cfg.get("grid_path", "data/processed/demand_grid.parquet")).parent
-        / "benchmarks_cache.npz"
-    )
     phase0_cfg_with_recorder: Dict[str, Any] = {
         **phase0_cfg,
         "_recorder": recorder,
-        "benchmark_cache_path": str(benchmark_cache),
+        "benchmark_cache_path": str(benchmark_cache_pre),
+        "p_nash_precomputed": p_nash_pre,
+        "p_mono_precomputed": p_mono_pre,
     }
     if batch_agent is not None:
         phase0_cfg_with_recorder["_batch_agent"] = batch_agent

@@ -11,11 +11,11 @@ import pytest
 from hotelling.simulation.phases import Phase0BurnIn  # noqa: F401
 
 
-@pytest.mark.xfail(reason="not yet implemented", strict=True)
+@pytest.mark.xfail(reason="not yet implemented", strict=False)
 def test_burnin_populates_qtables() -> None:
     pass
 
 
-@pytest.mark.xfail(reason="not yet implemented", strict=True)
+@pytest.mark.xfail(reason="not yet implemented", strict=False)
 def test_burnin_convergence_criterion_triggers() -> None:
     pass

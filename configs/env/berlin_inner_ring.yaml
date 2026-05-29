@@ -7,7 +7,7 @@ epsg: 3035                        # EPSG projection for all coordinates and dist
 demand_grid_resolution_m: 100      # Zensus 2022 population raster cell size (metres)
 site_grid_resolution_m: 250        # candidate entry site grid resolution (metres)
 
-transport_cost: 0.5                # t: quadratic transport disutility (€/km²)
+transport_cost: 0.5                # t: LINEAR transit-time disutility (€/min). See ADR-020.
 logit_scale: 0.25                  # μ: logit scale parameter
 outside_option: -1.0               # a0: outside-option utility (normalised)
 

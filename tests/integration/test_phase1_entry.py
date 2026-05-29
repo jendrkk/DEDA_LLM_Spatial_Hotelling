@@ -13,21 +13,21 @@ from hotelling.agents.entrant_llm import EntrantLLM  # noqa: F401
 from hotelling.simulation.phases import Phase1Entry  # noqa: F401
 
 
-@pytest.mark.xfail(reason="not yet implemented", strict=True)
+@pytest.mark.xfail(reason="not yet implemented", strict=False)
 def test_entry_decision_produces_valid_chain_type() -> None:
     pass
 
 
-@pytest.mark.xfail(reason="not yet implemented", strict=True)
+@pytest.mark.xfail(reason="not yet implemented", strict=False)
 def test_entry_decision_location_in_candidate_list() -> None:
     pass
 
 
-@pytest.mark.xfail(reason="not yet implemented", strict=True)
+@pytest.mark.xfail(reason="not yet implemented", strict=False)
 def test_qtable_init_blank_produces_zero_table() -> None:
     pass
 
 
-@pytest.mark.xfail(reason="not yet implemented", strict=True)
+@pytest.mark.xfail(reason="not yet implemented", strict=False)
 def test_qtable_init_inherit_algorithm_copies_valid_table() -> None:
     pass

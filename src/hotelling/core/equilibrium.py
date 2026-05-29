@@ -5,7 +5,7 @@ Hotelling model.
 
 Public API: bertrand_nash, joint_monopoly, tabuchi_2d_benchmark
 
-Key dependencies: numpy, scipy.optimize, hotelling.core.city
+Key dependencies: numpy, scipy.optimize, numba, hotelling.core.city
 
 References:
     Calvano et al. (2020 AER);
@@ -14,15 +14,101 @@ References:
 """
 from __future__ import annotations
 
-import dataclasses
+import hashlib
 import warnings
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
+import numba as nb
 import numpy as np
 
 from hotelling.core.city import City
 from hotelling.core.market import market_clearing
+
+
+def _param_signature(city: City, transport_cost: float) -> str:
+    """Stable short hash of all economic parameters that move the equilibrium."""
+    parts = [
+        f"tc={transport_cost!r}",
+        f"mu={city.mu!r}",
+        f"a0={city.a0!r}",
+        f"beta={city.beta!r}",
+        f"alpha={np.asarray(city.alpha).tolist()!r}",
+        f"N={len(city.firms)}",
+        f"q={[round(f.quality,6) for f in city.firms]!r}",
+        f"c={[round(f.marginal_cost,6) for f in city.firms]!r}",
+        f"kappa={[round(f.kappa0,6) for f in city.firms]!r}",
+        f"pop_sum={float(np.asarray(city.cell_pop).sum()):.6f}",
+        f"lphi_sum={float(np.asarray(city.lambda_phi).sum()):.6f}",
+        f"dist_sum={float(np.asarray(city.dist2_km2).sum()):.6f}",
+    ]
+    raw = "|".join(parts).encode("utf-8")
+    return hashlib.sha1(raw).hexdigest()[:12]
+
+
+@nb.njit(parallel=True, fastmath=True, cache=True)
+def _demand_and_elasticity_jit(prices, efforts, dist2, cell_pop, lambda_phi,
+                               pi_H, pi_H_lphi, alpha_L, alpha_H, qualities,
+                               beta, transport_cost, mu, a0, transport_exponent):
+    M = dist2.shape[0]; N = dist2.shape[1]
+    Dc = np.zeros((M, N)); Ec = np.zeros((M, N))
+    inv_mu = 1.0 / mu; a0s = a0 * inv_mu
+    for i in nb.prange(M):
+        w_H = cell_pop[i] * pi_H[i] + lambda_phi[i] * pi_H_lphi[i]
+        w_L = cell_pop[i] * (1.0 - pi_H[i]) + lambda_phi[i] * (1.0 - pi_H_lphi[i])
+        for h in range(2):
+            alpha_h = alpha_L if h == 0 else alpha_H
+            w_h = w_L if h == 0 else w_H
+            vmax = a0s
+            for j in range(N):
+                vj = (alpha_h * qualities[j] + beta * efforts[j] - prices[j]
+                      - transport_cost * dist2[i, j] ** transport_exponent) * inv_mu
+                if vj > vmax: vmax = vj
+            denom = np.exp(a0s - vmax); ev = np.empty(N)
+            for j in range(N):
+                vj = (alpha_h * qualities[j] + beta * efforts[j] - prices[j]
+                      - transport_cost * dist2[i, j] ** transport_exponent) * inv_mu
+                ev[j] = np.exp(vj - vmax); denom += ev[j]
+            inv_d = 1.0 / denom
+            for j in range(N):
+                s = ev[j] * inv_d
+                Dc[i, j] += w_h * s
+                Ec[i, j] += w_h * s * (1.0 - s)
+    return Dc.sum(axis=0), Ec.sum(axis=0)
+
+
+@nb.njit(parallel=True, fastmath=True, cache=True)
+def _monopoly_demand_grad_jit(prices, efforts, costs, dist2, cell_pop, lambda_phi,
+                              pi_H, pi_H_lphi, alpha_L, alpha_H, qualities,
+                              beta, transport_cost, mu, a0, transport_exponent):
+    M = dist2.shape[0]; N = dist2.shape[1]
+    Dc = np.zeros((M, N)); Gc = np.zeros((M, N))
+    inv_mu = 1.0 / mu; a0s = a0 * inv_mu
+    for i in nb.prange(M):
+        w_H = cell_pop[i] * pi_H[i] + lambda_phi[i] * pi_H_lphi[i]
+        w_L = cell_pop[i] * (1.0 - pi_H[i]) + lambda_phi[i] * (1.0 - pi_H_lphi[i])
+        for h in range(2):
+            alpha_h = alpha_L if h == 0 else alpha_H
+            w_h = w_L if h == 0 else w_H
+            vmax = a0s
+            for j in range(N):
+                vj = (alpha_h * qualities[j] + beta * efforts[j] - prices[j]
+                      - transport_cost * dist2[i, j] ** transport_exponent) * inv_mu
+                if vj > vmax: vmax = vj
+            denom = np.exp(a0s - vmax); ev = np.empty(N)
+            for j in range(N):
+                vj = (alpha_h * qualities[j] + beta * efforts[j] - prices[j]
+                      - transport_cost * dist2[i, j] ** transport_exponent) * inv_mu
+                ev[j] = np.exp(vj - vmax); denom += ev[j]
+            inv_d = 1.0 / denom
+            m_hi = 0.0
+            for j in range(N):
+                m_hi += (prices[j] - costs[j]) * (ev[j] * inv_d)
+            for j in range(N):
+                s = ev[j] * inv_d
+                Dc[i, j] += w_h * s
+                Gc[i, j] += w_h * inv_mu * s * (m_hi - (prices[j] - costs[j]))
+    return Dc.sum(axis=0), Gc.sum(axis=0)
 
 
 def _load_benchmark_cache(
@@ -65,6 +151,10 @@ def bertrand_nash(
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Find Bertrand-Nash equilibrium prices by iterating best responses.
 
+    Uses the elasticity-correct single-product logit FOC with heterogeneous
+    consumers:  p_j - c_j = mu * D_j / E_j  where D_j = sum_i w_ij s_ij and
+    E_j = sum_i w_ij s_ij (1 - s_ij).
+
     Returns
     -------
     prices : np.ndarray shape (N,) equilibrium prices
@@ -72,52 +162,41 @@ def bertrand_nash(
     """
     if cache_path is not None:
         cache_path = Path(cache_path)
-        cached = _load_benchmark_cache(cache_path, "nash")
+        _sig = _param_signature(city, transport_cost)
+        cached = _load_benchmark_cache(cache_path, f"nash_{_sig}")
         if cached is not None:
             return cached
 
     firms = city.firms
-
-    total_pop = (city.cell_pop + city.lambda_phi).sum()
-
     N = len(firms)
-    costs = np.array([firm.marginal_cost for firm in firms])
-    kappa0 = np.array([firm.kappa0 for firm in firms])
-    beta = city.beta
-
-    prices = costs.copy()
+    costs   = np.array([f.marginal_cost for f in firms], dtype=np.float64)
+    kappa0  = np.array([f.kappa0        for f in firms], dtype=np.float64)
+    quals   = np.array([f.quality       for f in firms], dtype=np.float64)
+    beta    = city.beta
+    prices  = costs.copy()
     efforts = np.zeros(N)
     converged = False
 
     for _ in range(max_iter):
-        demands, profits = market_clearing(
-            prices=prices,
-            efforts=efforts,
-            city=city,
-            transport_cost=transport_cost,
-        )
-
-        shares = demands / total_pop
-        new_prices = costs + city.mu / np.clip(1 - shares, 1e-9, None)
-        new_efforts = beta * demands / kappa0
-
-        converged = (
-            np.max(np.abs(new_prices - prices)) < tol
-            and np.max(np.abs(new_efforts - efforts)) < tol
-        )
-
+        D, E = _demand_and_elasticity_jit(
+            prices, efforts, city.dist2_km2, city.cell_pop, city.lambda_phi,
+            city.pi_H, city.pi_H_lambda_phi,
+            float(city.alpha[0]), float(city.alpha[1]),
+            quals, float(beta), float(transport_cost), float(city.mu), float(city.a0),
+            float(getattr(city, "transport_exponent", 1.0)))
+        new_prices  = costs + city.mu * D / np.clip(E, 1e-12, None)
+        new_efforts = beta * D / kappa0
+        converged = (np.max(np.abs(new_prices - prices)) < tol
+                     and np.max(np.abs(new_efforts - efforts)) < tol)
         prices, efforts = new_prices, new_efforts
-
         if converged:
             break
 
     if not converged:
-        warnings.warn(
-            f"Bertrand-Nash equilibrium not found after max_iter {max_iter} iterations"
-        )
+        warnings.warn(f"Bertrand-Nash not converged after {max_iter} iters")
 
     if cache_path is not None:
-        _save_benchmark_cache(cache_path, "nash", prices, efforts)
+        _save_benchmark_cache(cache_path, f"nash_{_sig}", prices, efforts)
 
     return prices, efforts
 
@@ -130,81 +209,54 @@ def joint_monopoly(
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Find joint-monopoly (cartel) prices maximising total profit.
 
-    Uses a K-firm spatial subsample (K <= 30) as a proxy for large N, then
-    broadcasts the mean optimized price/effort to all N firms.  Suitable for
-    scalar benchmark quantities (e.g. Calvano Δ).
+    Optimizes all N prices jointly using the analytic gradient of total profit
+    from the spatial logit model.
 
     Returns
     -------
     prices : np.ndarray shape (N,) equilibrium prices
-    efforts : np.ndarray shape (N,) equilibrium efforts
+    efforts : np.ndarray shape (N,) equilibrium efforts (zero at benchmark)
     """
     from scipy.optimize import minimize
 
     if cache_path is not None:
         cache_path = Path(cache_path)
-        cached = _load_benchmark_cache(cache_path, "mono")
+        _sig = _param_signature(city, transport_cost)
+        cached = _load_benchmark_cache(cache_path, f"mono_{_sig}")
         if cached is not None:
             return cached
 
     firms = city.firms
     N = len(firms)
-    costs = np.array([firm.marginal_cost for firm in firms])
-    kappa0 = np.array([firm.kappa0 for firm in firms])
+    costs   = np.array([f.marginal_cost for f in firms], dtype=np.float64)
+    quals   = np.array([f.quality       for f in firms], dtype=np.float64)
+    efforts = np.zeros(N)
 
-    K = min(30, N)
-    idx = np.round(np.linspace(0, N - 1, K)).astype(int)
-    proxy_firms = [city.firms[i] for i in idx]
-    proxy_dist2 = city.dist2_km2[:, idx]
-    proxy_city = dataclasses.replace(
-        city,
-        firms=proxy_firms,
-        dist2_km2=proxy_dist2,
-    )
+    def neg_obj_and_grad(p: np.ndarray) -> Tuple[float, np.ndarray]:
+        D, G = _monopoly_demand_grad_jit(
+            p, efforts, costs, city.dist2_km2, city.cell_pop, city.lambda_phi,
+            city.pi_H, city.pi_H_lambda_phi,
+            float(city.alpha[0]), float(city.alpha[1]),
+            quals, float(city.beta), float(transport_cost), float(city.mu), float(city.a0),
+            float(getattr(city, "transport_exponent", 1.0)))
+        profit_val = float(np.sum((p - costs) * D))
+        grad = D + G
+        return -profit_val, -grad
 
-    proxy_costs = costs[idx]
-    proxy_kappa0 = kappa0[idx]
-
-    def neg_total_profit(x: np.ndarray) -> float:
-        prices_k, efforts_k = x[:K], x[K:]
-        _, profits = market_clearing(
-            prices=prices_k,
-            efforts=efforts_k,
-            city=proxy_city,
-            transport_cost=transport_cost,
-        )
-        return -float(profits.sum())
-
-    x0 = np.concatenate([proxy_costs + 3 * city.mu, np.zeros(K)])
-    bounds = [(c, c + 20 * city.mu) for c in proxy_costs] + [(0, 10.0)] * K
-
-    res = minimize(
-        neg_total_profit,
-        x0,
-        bounds=bounds,
-        method="L-BFGS-B",
-        options={
-            "ftol": 1e-6,
-            "gtol": 1e-5,
-            "maxiter": 300,
-            "maxfun": 600,
-        },
-    )
+    x0 = costs + 3.0 * city.mu
+    bounds = [(float(c), float(c) + 50.0 * city.mu) for c in costs]
+    res = minimize(neg_obj_and_grad, x0, jac=True, method="L-BFGS-B",
+                   bounds=bounds, options={"ftol": 1e-9, "gtol": 1e-6, "maxiter": 500})
 
     if not res.success:
-        warnings.warn(
-            f"Joint-monopoly optimizer did not converge: {res.message}",
-            RuntimeWarning,
-        )
+        warnings.warn(f"Joint-monopoly optimizer did not converge: {res.message}",
+                      RuntimeWarning)
 
-    optimized_prices = res.x[:K]
-    optimized_efforts = res.x[K:]
-
-    prices = np.full(N, float(optimized_prices.mean()))
-    efforts = np.full(N, float(optimized_efforts.mean()))
+    prices  = res.x.astype(np.float64)
+    efforts = np.zeros(N)
 
     if cache_path is not None:
-        _save_benchmark_cache(cache_path, "mono", prices, efforts)
+        _save_benchmark_cache(cache_path, f"mono_{_sig}", prices, efforts)
 
     return prices, efforts
 

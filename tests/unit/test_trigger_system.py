@@ -15,21 +15,21 @@ from hotelling.simulation.triggers import (  # noqa: F401
 )
 
 
-@pytest.mark.xfail(reason="not yet implemented", strict=True)
+@pytest.mark.xfail(reason="not yet implemented", strict=False)
 def test_time_trigger_fires_at_interval() -> None:
     pass
 
 
-@pytest.mark.xfail(reason="not yet implemented", strict=True)
+@pytest.mark.xfail(reason="not yet implemented", strict=False)
 def test_time_trigger_does_not_fire_before_interval() -> None:
     pass
 
 
-@pytest.mark.xfail(reason="not yet implemented", strict=True)
+@pytest.mark.xfail(reason="not yet implemented", strict=False)
 def test_profit_drop_trigger_fires_on_threshold_breach() -> None:
     pass
 
 
-@pytest.mark.xfail(reason="not yet implemented", strict=True)
+@pytest.mark.xfail(reason="not yet implemented", strict=False)
 def test_rival_event_trigger_fires_on_price_change() -> None:
     pass

@@ -34,12 +34,12 @@ class TestQLearningAgent:
         assert agent.delta == 0.95
 
     def test_epsilon_at_zero_steps(self):
-        agent = QLearningAgent(firm_id="A", beta=1e-5, seed=0)
+        agent = QLearningAgent(firm_id="A", beta_decay=1e-5, seed=0)
         # At t=0, epsilon = exp(0) = 1.0
         assert agent.epsilon == pytest.approx(1.0)
 
     def test_epsilon_decays(self):
-        agent = QLearningAgent(firm_id="A", beta=2e-5, seed=0)
+        agent = QLearningAgent(firm_id="A", beta_decay=2e-5, seed=0)
         agent._t = 100_000
         expected = math.exp(-2e-5 * 100_000)
         assert agent.epsilon == pytest.approx(expected, rel=1e-6)

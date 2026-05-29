@@ -36,6 +36,7 @@ def _logit_demand_jit(
     transport_cost: float,
     mu: float,
     a0: float,
+    transport_exponent: float,
 ) -> np.ndarray:
     M = dist2_km2.shape[0]
     N = dist2_km2.shape[1]
@@ -60,7 +61,7 @@ def _logit_demand_jit(
                     alpha_h * qualities[j]
                     + beta * efforts[j]
                     - prices[j]
-                    - transport_cost * dist2_km2[i, j]
+                    - transport_cost * dist2_km2[i, j] ** transport_exponent
                 ) * inv_mu
                 if v_j > v_max:
                     v_max = v_j
@@ -72,7 +73,7 @@ def _logit_demand_jit(
                     alpha_h * qualities[j]
                     + beta * efforts[j]
                     - prices[j]
-                    - transport_cost * dist2_km2[i, j]
+                    - transport_cost * dist2_km2[i, j] ** transport_exponent
                 ) * inv_mu
                 exp_v[j] = np.exp(v_j - v_max)
                 exp_sum += exp_v[j]
@@ -98,6 +99,7 @@ def logit_demand(
     transport_cost: float,
     mu: float,
     a0: float = 0.0,
+    transport_exponent: float = 1.0,
 ) -> np.ndarray:
     """Compute logit market shares for N firms at given prices."""
     prices = np.ascontiguousarray(prices, dtype=np.float64)
@@ -126,6 +128,7 @@ def logit_demand(
         float(transport_cost),
         float(mu),
         float(a0),
+        float(transport_exponent),
     )
 
 
@@ -178,6 +181,7 @@ def market_clearing(
         transport_cost=transport_cost,
         mu=city.mu,
         a0=city.a0,
+        transport_exponent=getattr(city, "transport_exponent", 1.0),
     )
 
     profits = profit(

@@ -127,23 +127,26 @@ class Phase0BurnIn:
         cache_path = cfg.get("benchmark_cache_path", None)
         if cache_path is not None:
             cache_path = Path(cache_path)
-        try:
-            p_nash_arr, _ = bertrand_nash(
-                city,
-                transport_cost=transport_cost,
-                cache_path=cache_path,
-            )
-            p_mono_arr, _ = joint_monopoly(
-                city,
-                transport_cost=transport_cost,
-                cache_path=cache_path,
-            )
-            p_nash = float(p_nash_arr.mean())
-            p_mono = float(p_mono_arr.mean())
-        except Exception as exc:
-            logger.warning("Could not compute benchmarks: %s", exc)
-            p_nash = 0.0
-            p_mono = mean_final_price + 1e-9  # avoid division by zero
+        p_nash = cfg.get("p_nash_precomputed", None)
+        p_mono = cfg.get("p_mono_precomputed", None)
+        if p_nash is None or p_mono is None:
+            try:
+                p_nash_arr, _ = bertrand_nash(
+                    city,
+                    transport_cost=transport_cost,
+                    cache_path=cache_path,
+                )
+                p_mono_arr, _ = joint_monopoly(
+                    city,
+                    transport_cost=transport_cost,
+                    cache_path=cache_path,
+                )
+                p_nash = float(p_nash_arr.mean())
+                p_mono = float(p_mono_arr.mean())
+            except Exception as exc:
+                logger.warning("Could not compute benchmarks: %s", exc)
+                p_nash = 0.0
+                p_mono = mean_final_price + 1e-9  # avoid division by zero
 
         # Calvano Δ = (p_mean - p_Nash) / (p_Monopoly - p_Nash)
         denom = p_mono - p_nash

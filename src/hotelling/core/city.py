@@ -45,6 +45,7 @@ class City:
     beta: float
     mu: float = 0.25
     a0: float = 0.0
+    transport_exponent: float = 1.0  # exponent on travel-time disutility; 1.0 = linear (ADR-020)
     
     @property
     def width(self) -> float:

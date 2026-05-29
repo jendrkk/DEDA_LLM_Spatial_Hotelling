@@ -10,12 +10,14 @@ use_batch: true
 
 # Action space dimensions
 m: 15             # number of discrete price levels
-m_effort: 5       # number of discrete effort levels; set to 1 to recover Calvano (price only)
+# Phase-0 baseline replicates Calvano price-only. Raise m_effort (and recalibrate
+# beta_effort/e_max) only for the full effort-extended model.
+m_effort: 1       # Calvano validation limit: effort frozen (price-only game)
 e_max: 10.0       # maximum effort level (effort_grid = linspace(0, e_max, m_effort))
 
 # State space
 k_neighbors: 1    # number of nearest-rival joint actions in the Q-table state
-                  # State space size = (m * m_effort)^k = 75^1 = 75 for baseline
+                  # State space size = (m * m_effort)^k = 15^1 = 15 for baseline
 
 # Q-learning hyperparameters (Calvano 2020 calibration)
 alpha_lr: 0.15         # learning rate α
@@ -27,3 +29,5 @@ update_mode: sync      # "sync" (Calvano-style) or "async" (Asker-Fershtman-Pake
 # Price grid bounds (relative to marginal cost = 0 baseline, ADR-014)
 min_price: 0.0         # lower bound (= marginal cost for mc=0 baseline)
 max_price: 2.0         # upper bound; adjust if Bertrand-Nash price falls outside range
+auto_price_grid: true    # derive grid from Nash/monopoly benchmarks (Calvano)
+price_grid_xi: 0.1       # grid margin beyond [p_nash, p_mono]

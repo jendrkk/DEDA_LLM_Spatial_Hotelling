@@ -1,0 +1,47 @@
+# Q-learning agent configuration with effort margin activated
+#
+# Joint action space: joint_action_idx = price_idx * m_effort + effort_idx
+#   m=15, m_effort=5  →  15 * 5 = 75 joint actions per agent
+#   State space (k_neighbors=1): 75^1 = 75 Q-table entries per agent
+#
+# Before enabling this config for a full run, verify that the effort
+# best response is interior (not a corner solution) using:
+#   python scripts/check_effort_calibration.py
+# Recalibrate beta_effort and/or kappa0 in configs/env/berlin_inner_ring.yaml
+# until check_effort_calibration.py reports INTERIOR.
+#
+# TODO: calibrate e_max jointly with beta_effort and kappa0 so that the FOC
+#   e* = (p - c) * (beta_effort / mu) * D_j * (1 - s_j_local) / kappa0
+# places the argmax effort at ~0.3–0.6 * e_max for a representative store.
+# See check_effort_calibration.py for the numerical sweep and FOC guidance.
+#
+# References: Calvano et al. (2020 AER) Table 1 (price-only baseline).
+#             ADR-017: kappa0 is chain-invariant.
+
+# Action space dimensions
+m: 15             # number of discrete price levels  (unchanged from baseline)
+m_effort: 5       # number of discrete effort levels; activates joint action space
+                  # Raise further only after interior calibration is confirmed.
+e_max: 10.0       # maximum effort level (effort_grid = linspace(0, e_max, m_effort))
+                  # TODO: recalibrate e_max; a reasonable starting point:
+                  # e_max = 2 * e*_foc where e*_foc is the closed-form FOC target
+                  # printed by check_effort_calibration.py.
+
+# State space
+k_neighbors: 1    # number of nearest-rival joint actions in the Q-table state
+                  # State space size = (m * m_effort)^k = (15*5)^1 = 75
+
+# Q-learning hyperparameters — identical to qlearning_baseline.yaml (Calvano 2020)
+alpha_lr: 0.15         # learning rate α
+beta_decay: 4.0e-6     # exploration decay rate β; ε(t) = exp(−β·t)
+delta: 0.95            # discount factor δ
+update_mode: sync      # "sync" (Calvano-style) or "async"
+
+# Price grid bounds — identical to qlearning_baseline.yaml
+min_price: 0.0
+max_price: 2.0
+auto_price_grid: true
+price_grid_xi: 0.1
+
+# Agent type
+use_batch: true

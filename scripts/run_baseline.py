@@ -216,10 +216,35 @@ def main() -> None:
                         help="Print calibrated lambda and exit (no simulation)")
     parser.add_argument("--T-burnin",       type=int,   default=None,
                         help="Override T_burnin (e.g. 10000 for a quick test)")
+    parser.add_argument(
+        "--with-effort",
+        action="store_true",
+        help=(
+            "Load configs/agents/qlearning_effort.yaml (m_effort=5, joint action "
+            "space 75) instead of qlearning_baseline.yaml. Verify calibration with "
+            "scripts/check_effort_calibration.py before using for results."
+        ),
+    )
+    parser.add_argument(
+        "--m-effort",
+        type=int,
+        default=None,
+        metavar="INT",
+        help=(
+            "Override agents.m_effort in the loaded config (e.g. --m-effort 3). "
+            "Applied after --with-effort; default is 1 (price-only Calvano baseline)."
+        ),
+    )
     args = parser.parse_args()
 
     # --- Load config ---
-    config = load_config()
+    # --with-effort selects the effort-activated agent config; otherwise use baseline.
+    _agents_yaml = (
+        _REPO_ROOT / "configs" / "agents" / "qlearning_effort.yaml"
+        if args.with_effort
+        else _REPO_ROOT / "configs" / "agents" / "qlearning_baseline.yaml"
+    )
+    config = load_config(agents_yaml=_agents_yaml)
 
     # --- Apply CLI overrides ---
     if args.seed is not None:
@@ -228,6 +253,9 @@ def main() -> None:
         config["env"]["lambda_val"] = args.lambda_val
     if args.T_burnin is not None:
         config["phase0"]["T_burnin"] = args.T_burnin
+    if args.m_effort is not None:
+        config["agents"]["m_effort"] = args.m_effort
+        logger.info("CLI override: agents.m_effort = %d", args.m_effort)
 
     output_dir = _REPO_ROOT / args.output_dir
 

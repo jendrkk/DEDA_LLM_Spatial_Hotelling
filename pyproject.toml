@@ -57,6 +57,8 @@ viz = [
     "folium>=0.16",
     "pydeck>=0.8",
     "imageio>=2.34",
+    "contextily>=1.5",
+    "xyzservices>=2023.10",
 ]
 rl = [
     "torch>=2.2",

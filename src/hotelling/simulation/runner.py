@@ -102,6 +102,8 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
         catchment_minutes=_catchment_minutes,
         catchment_k_min=int(env_cfg.get("catchment_k_min", 12)),
         catchment_k_max=int(env_cfg.get("catchment_k_max", 80)),
+        precompute_expweights=bool(env_cfg.get("precompute_expweights", False)),
+        low_precision_storage=bool(env_cfg.get("low_precision_storage", False)),
     )
 
     # --- 1b. Pre-compute benchmarks and derive Calvano price grid ---

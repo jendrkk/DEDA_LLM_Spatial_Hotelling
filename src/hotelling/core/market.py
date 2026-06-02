@@ -148,7 +148,7 @@ def _get_firm_arrays(city: City) -> FirmArrays:
 # Catchment (sparse CSR) demand kernels
 # ---------------------------------------------------------------------------
 
-@nb.njit(parallel=True, fastmath=True, cache=False)
+@nb.njit(parallel=True, fastmath=True, cache=True)
 def _catchment_demand_jit(
     g,          # (N,) float64  beta*efforts - prices  [per-period]
     A,          # (2, N) float64  alpha_h * quality_j  [invariant]
@@ -239,7 +239,7 @@ def _catchment_demand_jit(
     return result
 
 
-@nb.njit(parallel=True, fastmath=True, cache=False)
+@nb.njit(parallel=True, fastmath=True, cache=True)
 def _catchment_demand_expw_jit(
     g,       # (N,) float64  beta*efforts - prices  [per-period]
     Kexp_L,  # (NNZ,) precomputed exp((A[0,idx]+C)*inv_mu)
@@ -325,7 +325,7 @@ def _catchment_demand_expw_jit(
     return result
 
 
-@nb.njit(parallel=True, fastmath=True, cache=False)
+@nb.njit(parallel=True, fastmath=True, cache=True)
 def _catchment_cell_mass_jit(
     g,       # (N,) float64  [per-period]
     A,       # (2, N) float64 [invariant]

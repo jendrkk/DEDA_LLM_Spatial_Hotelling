@@ -69,3 +69,10 @@ dense_distances: true
 # Q-table price grid, and Calvano Δ are all invariant to it.  See ADR-022.
 rent_scale: 0.0
 rent_normalization: mean_ratio
+
+# --- Demand kernel: sparse catchment (fast hot path) ---
+catchment_minutes: 20.0        # per-cell store catchment radius in transit minutes
+catchment_k_min: 12            # always keep at least this many nearest stores per cell
+catchment_k_max: 60            # hard cap on stores per cell
+precompute_expweights: true    # N exp() per period instead of one exp() per catchment entry
+low_precision_storage: false   # true = store exp-weights as float32 (faster, slightly less precise)

@@ -1,0 +1,30 @@
+# Phase 0 burn-in configuration for full-scale runs (1M steps, ~1800 stores).
+#
+# This config is designed for the full Berlin demand grid
+# (configs/env/berlin_full.yaml) where a naive dense log would produce
+# ~14 GB per array.  The stride/tail controls reduce this to a manageable size:
+#
+#   dense_stride=1000  → 1 000 rows from stride (coarse trajectory)
+#   dense_tail=10_000  → 10 000 rows at full resolution (converged regime)
+#   Total rows ≈ 11 000  (vs 1 000 000 without controls)
+#
+# Projected on-disk footprint (1800 stores, float32, demand+profit included):
+#   11 000 rows × 1800 stores × (2+2) arrays × 4 bytes ≈ 317 MB
+#   vs naive: 1M × 1800 × 4 arrays × 4 B ≈ 28.8 GB
+#
+# References: Calvano et al. (2020 AER) §III.
+
+T_burnin: 1_000_000
+convergence_window: 100
+convergence_threshold: 0.01
+check_interval: 1_000
+record_every: 1_000
+seed: 42
+
+# ── Dense log scaling controls ─────────────────────────────────────────────
+# Record 1-in-1000 steps for the bulk of training, plus always keep
+# the last 10 000 steps at full resolution to capture the converged regime.
+dense_stride: 1000           # 1 recorded row per 1000 simulation steps
+dense_tail: 10000            # always record the last 10 000 steps
+store_demand_profit: true    # include demand/profit (set false to save another ~50%)
+float_dtype: float32         # float32 is ample for all analysis tasks

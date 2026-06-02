@@ -12,3 +12,12 @@ convergence_threshold: 0.01  # rolling std of mean price < this → converged
 check_interval: 1_000        # check convergence every this many steps
 record_every: 1_000          # record mean price/effort every this many steps
 seed: 42
+
+# ── Dense log scaling controls ─────────────────────────────────────────────
+# dense_stride=1 + dense_tail=null: record every step (default / current behaviour).
+# Increase dense_stride for long runs to reduce disk footprint.
+# See src/hotelling/simulation/dense_log.py for detailed documentation.
+dense_stride: 1              # record every step (set >1 to skip steps)
+dense_tail: null             # also always record the last N steps (null = disabled)
+store_demand_profit: true    # write demand/profit arrays (set false to halve disk use)
+float_dtype: float32         # demand/profit array precision (float32 or float64)

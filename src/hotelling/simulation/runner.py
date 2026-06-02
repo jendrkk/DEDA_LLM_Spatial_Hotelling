@@ -208,6 +208,20 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
             agent_ids=[str(f.id) for f in firms],
             price_grid=env.price_grid,
             effort_grid=env.effort_grid,
+            store_demand_profit=bool(
+                phase0_cfg.get("store_demand_profit", True)
+            ),
+            float_dtype=str(
+                phase0_cfg.get("float_dtype", "float32")
+            ),
+            dense_stride=int(
+                phase0_cfg.get("dense_stride", 1)
+            ),
+            dense_tail=(
+                int(phase0_cfg["dense_tail"])
+                if phase0_cfg.get("dense_tail") is not None
+                else None
+            ),
         )
     else:
         recorder = SimulationRecorder(

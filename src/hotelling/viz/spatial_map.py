@@ -370,6 +370,12 @@ def load_run(
         marginal_cost_D=float(env_cfg.get("marginal_cost_D", 0.0)),
         marginal_cost_S=float(env_cfg.get("marginal_cost_S", 0.0)),
         marginal_cost_B=float(env_cfg.get("marginal_cost_B", 0.0)),
+        dense_distances=bool(env_cfg.get("dense_distances", False)),
+        catchment_minutes=(
+            float(env_cfg["catchment_minutes"])
+            if "catchment_minutes" in env_cfg
+            else None
+        ),
     )
 
     # Load DenseLog
@@ -702,7 +708,7 @@ def animate_market(
     run_dir = Path(run_dir)
     dense_log, city, firms, grid_gdf, stores_gdf, cfg = load_run(run_dir)
     tc = _get_transport_cost(cfg)
-    T = dense_log._t_written
+    T = dense_log._rows_written
     N_firms = len(firms)
     run_name = run_dir.name
 
@@ -906,7 +912,7 @@ def interactive_slider(
 
     run_dir = Path(run_dir)
     dense_log, city, firms, grid_gdf, stores_gdf, cfg = load_run(run_dir)
-    T = dense_log._t_written
+    T = dense_log._rows_written
     step = max(1, T // 200)
 
     # ── Pre-compute a single consistent norm across all slider steps ─────────

@@ -69,8 +69,14 @@ logger = logging.getLogger("run_baseline")
 # Config loading
 # ---------------------------------------------------------------------------
 
+_ENV_YAMLS = {
+    "inner_ring": _REPO_ROOT / "configs" / "env" / "berlin_inner_ring.yaml",
+    "full":       _REPO_ROOT / "configs" / "env" / "berlin_full.yaml",
+}
+
+
 def load_config(
-    env_yaml:    Path = _REPO_ROOT / "configs" / "env"    / "berlin_inner_ring.yaml",
+    env_yaml:    Path = _ENV_YAMLS["inner_ring"],
     agents_yaml: Path = _REPO_ROOT / "configs" / "agents" / "qlearning_baseline.yaml",
     phase0_yaml: Path = _REPO_ROOT / "configs" / "simulation" / "phase0_baseline.yaml",
 ) -> dict:
@@ -96,7 +102,7 @@ def load_config(
 # Lambda calibration
 # ---------------------------------------------------------------------------
 
-def calibrate_and_print_lambda(env_cfg: dict) -> float:
+def calibrate_and_print_lambda(env_cfg: dict, env_name: str = "berlin_inner_ring") -> float:
     """Load demand_grid.parquet, call calibrate_lambda, print result."""
     from hotelling.spatial.assembly import calibrate_lambda
     import geopandas as gpd
@@ -117,10 +123,11 @@ def calibrate_and_print_lambda(env_cfg: dict) -> float:
         grid["phi_i"] = phi_series.values
 
     lam = calibrate_lambda(grid, target_footfall_share=0.125)
+    cfg_file = f"configs/env/{env_name}.yaml"
     print(f"\n{'='*60}")
     print(f"  Calibrated λ = {lam:.4f}")
     print(f"  (α=12.5%, Σω={grid['Einwohner'].sum():.0f}, Σφ={grid['phi_i'].sum():.4f})")
-    print(f"  → Set 'lambda_val: {lam:.1f}' in configs/env/berlin_inner_ring.yaml")
+    print(f"  → Set 'lambda_val: {lam:.1f}' in {cfg_file}")
     print(f"{'='*60}\n")
     return lam
 
@@ -204,7 +211,7 @@ def print_summary(result: dict) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Berlin Inner-Ringbahn Q-learning baseline simulation."
+        description="Berlin Q-learning baseline simulation (inner-ring or full grid)."
     )
     parser.add_argument("--seed",           type=int,   default=None,
                         help="Random seed (overrides config)")
@@ -216,6 +223,19 @@ def main() -> None:
                         help="Print calibrated lambda and exit (no simulation)")
     parser.add_argument("--T-burnin",       type=int,   default=None,
                         help="Override T_burnin (e.g. 10000 for a quick test)")
+    parser.add_argument(
+        "--full-grid",
+        action="store_true",
+        help=(
+            "Load configs/env/berlin_full.yaml (full Berlin demand grid + full "
+            "supermarket set) instead of berlin_inner_ring.yaml.  Requires the "
+            "full-grid GEO pipeline outputs "
+            "(demand_grid_full.parquet, supermarkets_full.parquet, "
+            "travel_times_full.parquet).  Uses the sparse catchment CSR "
+            "representation; Bertrand-Nash benchmarks are skipped until the "
+            "Prompt-4 catchment kernels are implemented."
+        ),
+    )
     parser.add_argument(
         "--with-effort",
         action="store_true",
@@ -238,13 +258,16 @@ def main() -> None:
     args = parser.parse_args()
 
     # --- Load config ---
-    # --with-effort selects the effort-activated agent config; otherwise use baseline.
+    # --full-grid selects berlin_full.yaml; otherwise inner-ring.
+    # --with-effort selects the effort-activated agent config.
+    _env_yaml = _ENV_YAMLS["full"] if args.full_grid else _ENV_YAMLS["inner_ring"]
+    _env_name = "berlin_full" if args.full_grid else "berlin_inner_ring"
     _agents_yaml = (
         _REPO_ROOT / "configs" / "agents" / "qlearning_effort.yaml"
         if args.with_effort
         else _REPO_ROOT / "configs" / "agents" / "qlearning_baseline.yaml"
     )
-    config = load_config(agents_yaml=_agents_yaml)
+    config = load_config(env_yaml=_env_yaml, agents_yaml=_agents_yaml)
 
     # --- Apply CLI overrides ---
     if args.seed is not None:
@@ -261,13 +284,14 @@ def main() -> None:
 
     # --- Calibrate lambda ---
     if args.calibrate_only:
-        calibrate_and_print_lambda(config["env"])
+        calibrate_and_print_lambda(config["env"], env_name=_env_name)
         return
 
     if config["env"].get("lambda_val", 0) <= 0:
         logger.warning(
             "lambda_val is 0 or not set. Run with --calibrate-only first, "
-            "then set lambda_val in configs/env/berlin_inner_ring.yaml."
+            "then set lambda_val in %s.",
+            _env_yaml,
         )
 
     # --- Optionally auto-calibrate lambda if placeholder value ---
@@ -277,7 +301,7 @@ def main() -> None:
             "Computing calibrated value automatically …"
         )
         try:
-            lam = calibrate_and_print_lambda(config["env"])
+            lam = calibrate_and_print_lambda(config["env"], env_name=_env_name)
             config["env"]["lambda_val"] = lam
         except Exception as exc:
             logger.warning("Auto-calibration failed: %s. Using placeholder λ=1500.", exc)
@@ -287,8 +311,8 @@ def main() -> None:
 
     seed = config["phase0"].get("seed", None)
     logger.info(
-        "Starting Berlin baseline run: seed=%s, T_burnin=%d, N_stores=auto.",
-        seed, int(config["phase0"].get("T_burnin", 1_000_000)),
+        "Starting Berlin baseline run: env=%s, seed=%s, T_burnin=%d, N_stores=auto.",
+        _env_name, seed, int(config["phase0"].get("T_burnin", 1_000_000)),
     )
 
     # Add output_dir to config so runner knows where to write

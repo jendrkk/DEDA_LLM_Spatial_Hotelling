@@ -95,6 +95,33 @@ class TestFirm:
         assert firm.rent == pytest.approx(0.3)
         assert firm.chain is None
 
+    def test_fixed_cost_default_zero(self):
+        """fixed_cost defaults to 0.0 — backward-compatible with existing fixtures."""
+        firm = Firm(
+            id="X",
+            location=(0.5, 0.5),
+            marginal_cost=0.1,
+            quality=1.5,
+            kappa0=1.0,
+            size=2.0,
+            rent=0.3,
+        )
+        assert firm.fixed_cost == pytest.approx(0.0)
+
+    def test_fixed_cost_explicit(self):
+        """fixed_cost can be set explicitly and is stored correctly."""
+        firm = Firm(
+            id="X",
+            location=(0.5, 0.5),
+            marginal_cost=0.1,
+            quality=1.5,
+            kappa0=1.0,
+            size=2.0,
+            rent=0.3,
+            fixed_cost=42.5,
+        )
+        assert firm.fixed_cost == pytest.approx(42.5)
+
     def test_id_required(self):
         with pytest.raises(TypeError):
             Firm()  # type: ignore[call-arg]

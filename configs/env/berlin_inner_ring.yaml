@@ -43,10 +43,29 @@ kappa0: 1.0              # quadratic effort cost coefficient κ₀ (chain-invari
 store_size: 600.0        # typical inner-Berlin LEH floor space in m² (used with rent)
 
 # Marginal cost (ADR-014: normalised to zero for baseline)
-marginal_cost_D: 0.0
-marginal_cost_S: 0.0
-marginal_cost_B: 0.0
+marginal_cost_D: 0.1
+marginal_cost_S: 0.13
+marginal_cost_B: 0.17
 
 # Distance matrix parameters
 nan_fill_minutes: 120.0  # travel-time fill value for unreachable (cell, store) pairs
                           # 2× the 60-min cap from GEO_05 — ensures near-zero logit share
+
+# ── Distance representation ───────────────────────────────────────────────────
+# dense_distances=true: build the full (M×N) matrix (required for the existing
+# logit kernels and the equilibrium solvers). Default for the inner-ring.
+# Set to false and add catchment_* params to switch to the sparse CSR path
+# (required for the full Berlin grid, see berlin_full.yaml).
+dense_distances: true
+
+# ── BRW-derived per-store fixed cost (ADR-022) ────────────────────────────────
+# rent_scale=0.0 disables BRW fixed costs entirely (ADR-015 baseline).
+# To enable: set rent_scale to a target fraction (e.g. 0.05–0.15) of the mean
+# per-period GROSS margin at Bertrand-Nash prices.  Run run_baseline.py first
+# to print mean gross margin, then choose rent_scale accordingly.
+# rent_normalization: one of mean_ratio (default), median_ratio, minmax.
+# NOTE: fixed_cost is an additive constant in each firm's per-period profit and
+# does NOT enter the price FOC.  Bertrand-Nash / joint-monopoly prices, the
+# Q-table price grid, and Calvano Δ are all invariant to it.  See ADR-022.
+rent_scale: 0.0
+rent_normalization: mean_ratio

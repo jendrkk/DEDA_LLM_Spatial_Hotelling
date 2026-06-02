@@ -191,6 +191,72 @@ def _continuous_setup(metric: str, dense_log: Any) -> Tuple[Any, Any]:
     return cmap_obj, norm_obj
 
 
+def _build_global_norm(
+    dense_log: Any,
+    city: Any,
+    firms: list,
+    cfg: dict,
+    frames: Sequence[int],
+    metric: str,
+    cmap: str,
+) -> Tuple[Any, Any]:
+    """Compute a single consistent (cmap, norm) pair spanning *all* given frames.
+
+    For ``"expected_price"`` the norm is derived from ``dense_log.price_grid``
+    and requires no frame scan.  For all other continuous metrics, every frame
+    in *frames* is evaluated with :func:`~hotelling.core.market.cell_metrics`
+    and the global finite min/max is used as ``vmin``/``vmax``.  For
+    ``"dominant_chain"`` the :class:`~matplotlib.colors.BoundaryNorm` on
+    ``N_firms`` bins is returned unchanged — it is already frame-independent.
+
+    Parameters
+    ----------
+    dense_log : DenseLog instance.
+    city : City instance.
+    firms : list of Firm objects.
+    cfg : run config dict (used to extract ``transport_cost``).
+    frames : sequence of time-step indices to scan.
+    metric : one of the four metric strings.
+    cmap : matplotlib colormap name.
+
+    Returns
+    -------
+    cmap_obj : matplotlib Colormap
+    norm_obj : matplotlib Normalize (or BoundaryNorm for dominant_chain)
+    """
+    mpl = _require_mpl()
+    plt = _require_plt()
+
+    if metric == "dominant_chain":
+        cmap_obj, norm_obj, _ = _categorical_setup(firms)
+        return cmap_obj, norm_obj
+
+    cmap_obj = plt.get_cmap(cmap)
+    tc = _get_transport_cost(cfg)
+
+    if metric == "expected_price":
+        # Price-grid bounds are frame-independent by construction.
+        vmin = float(dense_log.price_grid.min())
+        vmax = float(dense_log.price_grid.max())
+    else:
+        # Scan every frame in the given sequence to find the global finite range.
+        g_min, g_max = np.inf, -np.inf
+        for t in frames:
+            prices_t, efforts_t = prices_efforts_at(dense_log, t)
+            m_t = cell_metrics(
+                prices_t, efforts_t, city, transport_cost=tc, metric=metric
+            )
+            finite = m_t[np.isfinite(m_t)]
+            if finite.size:
+                g_min = min(g_min, float(finite.min()))
+                g_max = max(g_max, float(finite.max()))
+        vmin = g_min if np.isfinite(g_min) else 0.0
+        vmax = g_max if np.isfinite(g_max) else 1.0
+
+    norm_obj = mpl.colors.Normalize(vmin=vmin, vmax=vmax)
+    return cmap_obj, norm_obj
+
+
 def _add_dominant_chain_legend(ax: Any, firms: list, cmap: Any, norm: Any) -> None:
     """Attach a categorical chain legend to *ax* for dominant_chain metric."""
     from matplotlib.patches import Patch
@@ -372,8 +438,19 @@ def _plot_snapshot_from_loaded(
     ax: Optional[Any] = None,
     save_path: Optional[Path] = None,
     point_size_by_demand: bool = True,
+    norm: Optional[Any] = None,
 ) -> Any:
-    """Internal: render a single frame from already-loaded run artefacts."""
+    """Internal: render a single frame from already-loaded run artefacts.
+
+    Parameters
+    ----------
+    norm : optional pre-built matplotlib Normalize (or BoundaryNorm).
+        When supplied — e.g. from :func:`_build_global_norm` — this exact
+        norm is used for the choropleth and (for ``expected_price``) the
+        scatter, so every call shares the same colour scale.  When ``None``
+        the norm is derived from the current frame's data range, which is
+        appropriate for one-off snapshots but inconsistent across frames.
+    """
     mpl = _require_mpl()
     plt = _require_plt()
     ctx = _require_ctx()
@@ -384,13 +461,17 @@ def _plot_snapshot_from_loaded(
         prices_t, efforts_t, city, transport_cost=tc, metric=metric
     )
     demands_t = dense_log.demands[t].astype(np.float64)
-    N_firms = len(firms)
 
     # --- Colormap / norm setup -------------------------------------------
     is_categorical = metric == "dominant_chain"
     if is_categorical:
         cmap_obj, norm_obj, chain_labels = _categorical_setup(firms)
+    elif norm is not None:
+        # Use caller-supplied norm (global range for consistent scales).
+        cmap_obj = plt.get_cmap(cmap)
+        norm_obj = norm
     else:
+        # Per-frame fallback: suitable for standalone one-off snapshots.
         cmap_obj = plt.get_cmap(cmap)
         if metric == "expected_price":
             vmin = float(dense_log.price_grid.min())
@@ -428,20 +509,25 @@ def _plot_snapshot_from_loaded(
     ax.set_ylim(miny, maxy)
 
     # --- Store scatter ------------------------------------------------------
+    # The scatter always shows store *prices* coloured on the price-grid range
+    # so the store dots are frame-consistent regardless of the choropleth metric.
+    # Exception: expected_price shares the choropleth norm (both are price-valued).
     sx = stores_gdf.geometry.x.values
     sy = stores_gdf.geometry.y.values
 
+    _price_norm = mpl.colors.Normalize(
+        vmin=float(dense_log.price_grid.min()),
+        vmax=float(dense_log.price_grid.max()),
+    )
     if is_categorical:
-        # Dominant-chain plot: scatter uses prices, independent colormap
         sc_cmap = plt.get_cmap(cmap)
-        sc_norm = mpl.colors.Normalize(
-            vmin=float(dense_log.price_grid.min()),
-            vmax=float(dense_log.price_grid.max()),
-        )
-        sc_vals = prices_t
+        sc_norm = _price_norm
+    elif metric == "expected_price":
+        # Shared norm: choropleth and scatter both represent price values.
+        sc_cmap, sc_norm = cmap_obj, norm_obj
     else:
-        # Shared continuous norm across choropleth and scatter
-        sc_cmap, sc_norm, sc_vals = cmap_obj, norm_obj, prices_t
+        # Scatter is independently coloured by price on the fixed price-grid range.
+        sc_cmap, sc_norm = cmap_obj, _price_norm
 
     if point_size_by_demand:
         sizes = np.sqrt(np.clip(demands_t, 0, None)) * 3.0
@@ -451,19 +537,25 @@ def _plot_snapshot_from_loaded(
 
     sc = ax.scatter(
         sx, sy,
-        c=sc_vals, cmap=sc_cmap, norm=sc_norm,
+        c=prices_t, cmap=sc_cmap, norm=sc_norm,
         s=sizes, zorder=5, edgecolors="k", linewidths=0.4,
     )
 
     # --- Colorbar / legend --------------------------------------------------
     if is_categorical:
         _add_dominant_chain_legend(ax, firms, cmap_obj, norm_obj)
-        # Separate colorbar for prices at stores
         cbar = plt.colorbar(sc, ax=ax, shrink=0.45, pad=0.01)
         cbar.set_label("Store price (€)", fontsize=9)
-    else:
+    elif metric == "expected_price":
+        # Single shared colorbar covers both choropleth and scatter.
         cbar = plt.colorbar(poly_coll, ax=ax, shrink=0.6, pad=0.01)
         cbar.set_label(metric.replace("_", " ").title(), fontsize=9)
+    else:
+        # Two colorbars: one for the choropleth metric, one for store prices.
+        cbar = plt.colorbar(poly_coll, ax=ax, shrink=0.6, pad=0.01)
+        cbar.set_label(metric.replace("_", " ").title(), fontsize=9)
+        cbar2 = plt.colorbar(sc, ax=ax, shrink=0.35, pad=0.06)
+        cbar2.set_label("Store price (€)", fontsize=8)
 
     # --- Title --------------------------------------------------------------
     run_name = Path(dense_log.run_dir).name
@@ -516,12 +608,13 @@ def plot_market_snapshot(
 
     Notes
     -----
-    **Colour-scale sharing** — for continuous metrics (``expected_price``,
-    ``served_demand``, ``consumer_surplus``) the choropleth and the store
-    scatter share the *same* :class:`~matplotlib.colors.Normalize` instance
-    and a single colorbar, so one scale reads both layers.  The norm range is
-    taken from ``dense_log.price_grid`` for ``expected_price``; for other
-    metrics it is derived from the data range at step *t*.
+    **Colour scale** — for ``expected_price`` the choropleth and scatter share
+    a single :class:`~matplotlib.colors.Normalize` fixed to
+    ``dense_log.price_grid`` bounds (frame-independent).  For other continuous
+    metrics the choropleth norm is derived from the data at step *t* (suitable
+    for standalone snapshots; pass a pre-built *norm* via
+    :func:`_plot_snapshot_from_loaded` for cross-frame consistency).  The
+    store scatter always uses the price-grid range regardless of metric.
 
     **Dominant chain** — a categorical ``tab20`` colormap is used for the
     choropleth; the stores scatter is coloured independently by price and
@@ -583,6 +676,13 @@ def animate_market(
 
     Notes
     -----
+    **Consistent colour scale** — the choropleth norm is computed by scanning
+    *all* frames in the animation sequence before any frame is rendered, so
+    the same ``vmin``/``vmax`` applies throughout.  For ``expected_price`` the
+    norm is always ``dense_log.price_grid`` bounds; for other metrics the
+    global finite min/max across all frames is used.  The store-scatter dots
+    always use the fixed price-grid range independent of the choropleth metric.
+
     The axis extent is locked to the 3857 grid bounding box before basemap
     fetch and restored afterwards so contextily cannot resize the axes between
     frames.
@@ -627,31 +727,29 @@ def animate_market(
     if not frames_list:
         raise ValueError(f"No frames to animate in run at {run_dir}")
 
-    # ── Colormap / norm (computed from first frame for non-price metrics) ───
+    # ── Consistent colormap / norm across ALL animation frames ──────────────
+    # _build_global_norm scans every frame in frames_list so the colour scale
+    # is fixed for the entire animation (not just the first frame).
     is_categorical = metric == "dominant_chain"
+    cmap_obj, norm_obj = _build_global_norm(
+        dense_log, city, firms, cfg, frames_list, metric, cmap
+    )
+    if is_categorical:
+        _, _, chain_labels = _categorical_setup(firms)
+
+    # Initial frame data (needed to seed the artists before the loop)
     prices_0, efforts_0 = prices_efforts_at(dense_log, frames_list[0])
     metric_0 = cell_metrics(prices_0, efforts_0, city, transport_cost=tc, metric=metric)
 
-    if is_categorical:
-        cmap_obj, norm_obj, chain_labels = _categorical_setup(firms)
-    else:
-        cmap_obj = plt.get_cmap(cmap)
-        if metric == "expected_price":
-            vmin = float(dense_log.price_grid.min())
-            vmax = float(dense_log.price_grid.max())
-        else:
-            finite = metric_0[np.isfinite(metric_0)]
-            vmin = float(finite.min()) if finite.size else 0.0
-            vmax = float(finite.max()) if finite.size else 1.0
-        norm_obj = mpl.colors.Normalize(vmin=vmin, vmax=vmax)
-
-    # Scatter uses shared price norm for price-like metrics
+    # Scatter always shows store prices on the fixed price-grid range.
+    # Exception: expected_price shares the choropleth norm (both price-valued).
+    _price_norm = mpl.colors.Normalize(
+        vmin=float(dense_log.price_grid.min()),
+        vmax=float(dense_log.price_grid.max()),
+    )
     if is_categorical or metric != "expected_price":
         sc_cmap = plt.get_cmap(cmap)
-        sc_norm = mpl.colors.Normalize(
-            vmin=float(dense_log.price_grid.min()),
-            vmax=float(dense_log.price_grid.max()),
-        )
+        sc_norm = _price_norm
     else:
         sc_cmap, sc_norm = cmap_obj, norm_obj
 
@@ -773,6 +871,9 @@ def interactive_slider(
 
     The run data (City, DenseLog, GDFs) is loaded **once** before the slider
     is created so that slider interactions do not trigger redundant I/O.
+    A single consistent colour norm is also pre-computed by scanning the
+    sampled slider steps (``range(0, T, max(1, T // 200))``), so the colour
+    scale remains identical across all slider positions.
 
     Parameters
     ----------
@@ -808,11 +909,20 @@ def interactive_slider(
     T = dense_log._t_written
     step = max(1, T // 200)
 
+    # ── Pre-compute a single consistent norm across all slider steps ─────────
+    # This ensures the colour scale is identical for every slider position,
+    # making visual comparison between time steps meaningful.
+    _slider_frames = list(range(0, T, step))
+    _, _global_norm = _build_global_norm(
+        dense_log, city, firms, cfg, _slider_frames, metric, cmap
+    )
+
     def _display_frame(t: int) -> None:
         fig = _plot_snapshot_from_loaded(
             dense_log, city, firms, grid_gdf, stores_gdf, cfg, t,
             metric=metric,
             cmap=cmap,
+            norm=_global_norm,
         )
         plt.show()
         plt.close(fig)

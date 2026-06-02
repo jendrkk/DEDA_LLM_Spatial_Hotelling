@@ -1,0 +1,72 @@
+# env/berlin_full.yaml - Full Berlin demand grid + full supermarket set
+# Covers all Berlin boroughs (not just inner S-Bahn Ringbahn).
+# Uses the sparse catchment CSR representation instead of a dense (M,N) distance
+# matrix; demand kernels from Prompt 4 consume the CSR directly.
+
+name: "berlin_full"
+epsg: 3035
+
+demand_grid_resolution_m: 100
+site_grid_resolution_m: 250
+
+transport_cost: 0.5               # t: LINEAR transit-time disutility (€/min). See ADR-020.
+logit_scale: 0.25                 # μ: logit scale parameter
+outside_option: -1.0              # a0: outside-option utility (normalised)
+
+bounding_box:
+  lat_min: 52.35   # southern extent of full Berlin grid (WGS84)
+  lat_max: 52.68   # northern extent
+  lon_min: 13.09   # western extent
+  lon_max: 13.76   # eastern extent
+
+# ── Data file paths (relative to repo root) ──────────────────────────────────
+# Confirm actual filenames against the GEO pipeline output directory.
+# Default guess: demand_grid_full.parquet, supermarkets_full.parquet,
+# travel_times_full.parquet — adjust if the pipeline uses different names.
+grid_path: data/processed/demand_grid_full.parquet
+stores_path: data/processed/supermarkets_full.parquet
+travel_times_path: data/processed/travel_times_full.parquet
+
+# ── Demand model parameters ───────────────────────────────────────────────────
+lambda_val: 1500.0       # placeholder — replace with calibrated value
+                          # run: python scripts/run_baseline.py --full-grid --calibrate-only
+
+q_S: 0.8
+q_B: 1.5
+
+alpha_L: 0.5
+alpha_H: 1.5
+
+beta_effort: 0.001
+kappa0: 1.0
+
+store_size: 600.0
+
+marginal_cost_D: 0.1
+marginal_cost_S: 0.13
+marginal_cost_B: 0.17
+
+nan_fill_minutes: 120.0
+
+# ── BRW fixed cost (ADR-022) ───────────────────────────────────────────────────
+rent_scale: 0.0
+rent_normalization: mean_ratio
+
+# ── Dense distance matrix ─────────────────────────────────────────────────────
+# Full grid: NEVER materialise the dense (M,N) matrix.
+# Benchmarks (Bertrand-Nash, joint-monopoly) will use the catchment-aware
+# kernels from Prompt 4 once implemented.
+dense_distances: false
+
+# ── Sparse catchment CSR parameters ──────────────────────────────────────────
+# These three values define the demand truncation for the sparse kernel.
+# Validate the choice with the Prompt-4 benchmark harness before runs.
+#
+# catchment_minutes : drop stores farther than this transit time from a cell.
+# catchment_k_min   : always keep at least the K nearest stores per cell
+#                     (ensures no cell has an empty catchment due to the radius
+#                     threshold cutting off all stores — e.g. on the city fringe).
+# catchment_k_max   : hard cap per cell (memory bound; controls NNZ).
+catchment_minutes: 25.0    # keep stores within 25 transit-minutes of a cell
+catchment_k_min: 12        # always keep at least 12 nearest stores
+catchment_k_max: 80        # hard cap: at most 80 stores per cell

@@ -69,6 +69,12 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
     seed = phase0_cfg.get("seed", None)
 
     # --- 1. Load Berlin City and Firms ---
+    _catchment_minutes_raw = env_cfg.get("catchment_minutes", None)
+    _catchment_minutes = (
+        float(_catchment_minutes_raw) if _catchment_minutes_raw is not None else None
+    )
+    _dense_distances = bool(env_cfg.get("dense_distances", True))
+
     city, firms = load_berlin_city(
         grid_path=env_cfg.get("grid_path", "data/processed/demand_grid.parquet"),
         stores_path=env_cfg.get("stores_path", "data/processed/supermarkets.parquet"),
@@ -90,6 +96,12 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
         marginal_cost_D=float(env_cfg.get("marginal_cost_D", 0.0)),
         marginal_cost_S=float(env_cfg.get("marginal_cost_S", 0.0)),
         marginal_cost_B=float(env_cfg.get("marginal_cost_B", 0.0)),
+        rent_scale=float(env_cfg.get("rent_scale", 0.0)),
+        rent_normalization=str(env_cfg.get("rent_normalization", "mean_ratio")),
+        dense_distances=_dense_distances,
+        catchment_minutes=_catchment_minutes,
+        catchment_k_min=int(env_cfg.get("catchment_k_min", 12)),
+        catchment_k_max=int(env_cfg.get("catchment_k_max", 80)),
     )
 
     # --- 1b. Pre-compute benchmarks and derive Calvano price grid ---
@@ -100,7 +112,14 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
     )
     auto_grid = bool(agent_cfg.get("auto_price_grid", True))
     p_nash_pre = p_mono_pre = None
-    if auto_grid:
+
+    # Benchmarks require the dense (M×N) distance matrix.  On the sparse /
+    # full-grid path (dense_distances=False) city.dist2_km2 is None; the
+    # catchment-aware solvers from Prompt 4 will provide these benchmarks once
+    # implemented.  Until then, fall back to manual price-grid bounds from
+    # the agent config and log a clear warning.
+    _can_run_benchmarks = city.dist2_km2 is not None
+    if auto_grid and _can_run_benchmarks:
         p_nash_arr, _ = bertrand_nash(city, transport_cost=tc, cache_path=benchmark_cache_pre)
         p_mono_arr, _ = joint_monopoly(city, transport_cost=tc, cache_path=benchmark_cache_pre)
         p_nash_pre = float(p_nash_arr.mean())
@@ -115,6 +134,14 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
             grid_min = agent_cfg.get("min_price", None)
             grid_max = agent_cfg.get("max_price", None)
     else:
+        if auto_grid and not _can_run_benchmarks:
+            import logging as _log
+            _log.getLogger(__name__).warning(
+                "dense_distances=False: city.dist2_km2 is None — skipping "
+                "Bertrand-Nash / joint-monopoly benchmark computation. "
+                "Set min_price / max_price in the agent config, or implement "
+                "the catchment-aware benchmark solvers (Prompt 4)."
+            )
         grid_min = agent_cfg.get("min_price", None)
         grid_max = agent_cfg.get("max_price", None)
 

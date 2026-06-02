@@ -23,11 +23,29 @@ import numba as nb
 import numpy as np
 
 from hotelling.core.city import City
-from hotelling.core.market import market_clearing
+from hotelling.core.market import catchment_demand, market_clearing
 
 
 def _param_signature(city: City, transport_cost: float) -> str:
-    """Stable short hash of all economic parameters that move the equilibrium."""
+    """Stable short hash of all economic parameters that move the equilibrium.
+
+    Includes catchment geometry stats when the sparse path is active so the
+    benchmark cache is invalidated when ``catchment_minutes / k_min / k_max``
+    change (different truncation → different equilibrium prices).
+    """
+    if city.dist2_km2 is not None:
+        dist_str = f"dist_sum={float(np.asarray(city.dist2_km2).sum()):.6f}"
+    elif city.catch_indptr is not None:
+        nnz = int(city.catch_indptr[-1])
+        if city.catch_tt is not None and nnz > 0:
+            tt_sum = float(city.catch_tt.sum())
+            tt_max = float(city.catch_tt.max())
+        else:
+            tt_sum, tt_max = 0.0, 0.0
+        dist_str = f"catch_nnz={nnz},tt_sum={tt_sum:.3f},tt_max={tt_max:.3f}"
+    else:
+        dist_str = "dist_sum=unknown"
+
     parts = [
         f"tc={transport_cost!r}",
         f"mu={city.mu!r}",
@@ -40,7 +58,7 @@ def _param_signature(city: City, transport_cost: float) -> str:
         f"kappa={[round(f.kappa0,6) for f in city.firms]!r}",
         f"pop_sum={float(np.asarray(city.cell_pop).sum()):.6f}",
         f"lphi_sum={float(np.asarray(city.lambda_phi).sum()):.6f}",
-        f"dist_sum={float(np.asarray(city.dist2_km2).sum()):.6f}",
+        dist_str,
     ]
     raw = "|".join(parts).encode("utf-8")
     return hashlib.sha1(raw).hexdigest()[:12]
@@ -111,6 +129,178 @@ def _monopoly_demand_grad_jit(prices, efforts, costs, dist2, cell_pop, lambda_ph
     return Dc.sum(axis=0), Gc.sum(axis=0)
 
 
+# ---------------------------------------------------------------------------
+# Catchment (sparse CSR) equilibrium kernels
+# ---------------------------------------------------------------------------
+
+@nb.njit(parallel=True, fastmath=True, cache=False)
+def _catchment_demand_and_elasticity_jit(
+    g,          # (N,) float64  beta*efforts - prices
+    A,          # (2, N) float64 alpha_h * quality_j
+    a0_scaled,  # float
+    inv_mu,     # float
+    w_L,        # (M,) float64
+    w_H,        # (M,) float64
+    indptr,     # (M+1,) int64
+    indices,    # (NNZ,) int32
+    catch_C,    # (NNZ,) float64
+    N,          # int
+):
+    """Catchment equivalent of :func:`_demand_and_elasticity_jit`.
+
+    Returns ``(D, E)`` where::
+
+        D[j] = sum_i sum_h w_h(i) * s_ij^h
+        E[j] = sum_i sum_h w_h(i) * s_ij^h * (1 - s_ij^h)
+
+    Used inside the Bertrand-Nash iteration:  p_j - c_j = mu * D_j / E_j.
+    Thread-local partial sums replace the (M, N) cell-contribution arrays.
+    """
+    M = len(indptr) - 1
+    n_threads = nb.get_num_threads()
+    partial_D = np.zeros((n_threads, N))
+    partial_E = np.zeros((n_threads, N))
+
+    for i in nb.prange(M):
+        tid = nb.get_thread_id()
+        start = indptr[i]
+        end   = indptr[i + 1]
+        k = int(end - start)
+        if k == 0:
+            continue
+
+        ev = np.empty(k)
+
+        for h in range(2):
+            w_h = w_L[i] if h == 0 else w_H[i]
+            if w_h == 0.0:
+                continue
+
+            vmax = a0_scaled
+            for q in range(k):
+                p = start + q
+                j = indices[p]
+                v = (A[h, j] + g[j] + catch_C[p]) * inv_mu
+                if v > vmax:
+                    vmax = v
+
+            denom = np.exp(a0_scaled - vmax)
+            for q in range(k):
+                p = start + q
+                j = indices[p]
+                v = (A[h, j] + g[j] + catch_C[p]) * inv_mu
+                ev[q] = np.exp(v - vmax)
+                denom += ev[q]
+
+            inv_d = 1.0 / denom
+            for q in range(k):
+                j = indices[start + q]
+                s = ev[q] * inv_d
+                partial_D[tid, j] += w_h * s
+                partial_E[tid, j] += w_h * s * (1.0 - s)
+
+    D = np.zeros(N)
+    E = np.zeros(N)
+    for t in range(n_threads):
+        for j in range(N):
+            D[j] += partial_D[t, j]
+            E[j] += partial_E[t, j]
+    return D, E
+
+
+@nb.njit(parallel=True, fastmath=True, cache=False)
+def _catchment_monopoly_grad_jit(
+    g,          # (N,) float64  beta*efforts - prices
+    margins,    # (N,) float64  prices - marginal_costs
+    A,          # (2, N) float64
+    a0_scaled,  # float
+    inv_mu,     # float
+    w_L,        # (M,) float64
+    w_H,        # (M,) float64
+    indptr,     # (M+1,) int64
+    indices,    # (NNZ,) int32
+    catch_C,    # (NNZ,) float64
+    N,          # int
+):
+    """Catchment equivalent of :func:`_monopoly_demand_grad_jit`.
+
+    Returns ``(D, G)`` where ``D[j]`` is demand and ``G[j]`` is the gradient
+    contribution ``sum_i sum_h w_h(i) * inv_mu * s_ij^h * (m_h(i) - margin_j)``
+    with ``m_h(i) = sum_j margin_j * s_ij^h`` the weighted average margin at
+    cell *i* for type *h*.  Used inside the joint-monopoly gradient.
+    """
+    M = len(indptr) - 1
+    n_threads = nb.get_num_threads()
+    partial_D = np.zeros((n_threads, N))
+    partial_G = np.zeros((n_threads, N))
+
+    for i in nb.prange(M):
+        tid = nb.get_thread_id()
+        start = indptr[i]
+        end   = indptr[i + 1]
+        k = int(end - start)
+        if k == 0:
+            continue
+
+        ev = np.empty(k)
+
+        for h in range(2):
+            w_h = w_L[i] if h == 0 else w_H[i]
+            if w_h == 0.0:
+                continue
+
+            # Pass 1 — vmax
+            vmax = a0_scaled
+            for q in range(k):
+                p = start + q
+                j = indices[p]
+                v = (A[h, j] + g[j] + catch_C[p]) * inv_mu
+                if v > vmax:
+                    vmax = v
+
+            # Pass 2 — exp values, denom, and weighted average margin
+            denom = np.exp(a0_scaled - vmax)
+            for q in range(k):
+                p = start + q
+                j = indices[p]
+                v = (A[h, j] + g[j] + catch_C[p]) * inv_mu
+                ev[q] = np.exp(v - vmax)
+                denom += ev[q]
+
+            inv_d  = 1.0 / denom
+            m_hi   = 0.0
+            for q in range(k):
+                j     = indices[start + q]
+                m_hi += margins[j] * ev[q] * inv_d
+
+            # Accumulate D and G
+            for q in range(k):
+                j = indices[start + q]
+                s = ev[q] * inv_d
+                partial_D[tid, j] += w_h * s
+                partial_G[tid, j] += w_h * inv_mu * s * (m_hi - margins[j])
+
+    D = np.zeros(N)
+    G = np.zeros(N)
+    for t in range(n_threads):
+        for j in range(N):
+            D[j] += partial_D[t, j]
+            G[j] += partial_G[t, j]
+    return D, G
+
+
+def _ensure_catchment_eq(city: City, transport_cost: float) -> None:
+    """Ensure City has catchment precompute arrays, building them if absent."""
+    from hotelling.core.market import _ensure_catchment_precompute
+    _ensure_catchment_precompute(city, transport_cost)
+
+
+def _catchment_g(city: City, prices: np.ndarray, efforts: np.ndarray) -> np.ndarray:
+    """Compute g = beta*efforts - prices for the catchment kernel."""
+    return city.beta * np.ascontiguousarray(efforts, dtype=np.float64) - \
+           np.ascontiguousarray(prices, dtype=np.float64)
+
+
 def _load_benchmark_cache(
     cache_path: Path,
     prefix: str,
@@ -160,6 +350,14 @@ def bertrand_nash(
     prices : np.ndarray shape (N,) equilibrium prices
     efforts : np.ndarray shape (N,) equilibrium efforts
     """
+    use_catchment = (city.catch_indptr is not None)
+    if city.dist2_km2 is None and not use_catchment:
+        raise ValueError(
+            "bertrand_nash requires either city.dist2_km2 (dense matrix) or "
+            "city.catch_indptr (sparse catchment).  Set dense_distances=True or "
+            "catchment_minutes in load_berlin_city."
+        )
+
     if cache_path is not None:
         cache_path = Path(cache_path)
         _sig = _param_signature(city, transport_cost)
@@ -167,30 +365,54 @@ def bertrand_nash(
         if cached is not None:
             return cached
 
-    firms = city.firms
-    N = len(firms)
-    costs   = np.array([f.marginal_cost for f in firms], dtype=np.float64)
-    kappa0  = np.array([f.kappa0        for f in firms], dtype=np.float64)
-    quals   = np.array([f.quality       for f in firms], dtype=np.float64)
-    beta    = city.beta
+    firms  = city.firms
+    N      = len(firms)
+    costs  = np.array([f.marginal_cost for f in firms], dtype=np.float64)
+    kappa0 = np.array([f.kappa0        for f in firms], dtype=np.float64)
+    quals  = np.array([f.quality       for f in firms], dtype=np.float64)
+    beta   = city.beta
     prices  = costs.copy()
     efforts = np.zeros(N)
     converged = False
 
-    for _ in range(max_iter):
-        D, E = _demand_and_elasticity_jit(
-            prices, efforts, city.dist2_km2, city.cell_pop, city.lambda_phi,
-            city.pi_H, city.pi_H_lambda_phi,
-            float(city.alpha[0]), float(city.alpha[1]),
-            quals, float(beta), float(transport_cost), float(city.mu), float(city.a0),
-            float(getattr(city, "transport_exponent", 1.0)))
-        new_prices  = costs + city.mu * D / np.clip(E, 1e-12, None)
-        new_efforts = beta * D / kappa0
-        converged = (np.max(np.abs(new_prices - prices)) < tol
-                     and np.max(np.abs(new_efforts - efforts)) < tol)
-        prices, efforts = new_prices, new_efforts
-        if converged:
-            break
+    if use_catchment:
+        _ensure_catchment_eq(city, transport_cost)
+        inv_mu    = 1.0 / float(city.mu)
+        a0_scaled = float(city.a0) * inv_mu
+        indptr    = city.catch_indptr.astype(np.int64,  copy=False)
+        indices   = city.catch_indices.astype(np.int32, copy=False)
+        catch_C   = np.ascontiguousarray(city.catch_C,     dtype=np.float64)
+        A         = np.ascontiguousarray(city.A_quality,   dtype=np.float64)
+        w_L       = np.ascontiguousarray(city.w_L,         dtype=np.float64)
+        w_H       = np.ascontiguousarray(city.w_H,         dtype=np.float64)
+
+        for _ in range(max_iter):
+            g = _catchment_g(city, prices, efforts)
+            D, E = _catchment_demand_and_elasticity_jit(
+                g, A, a0_scaled, inv_mu, w_L, w_H, indptr, indices, catch_C, N
+            )
+            new_prices  = costs + city.mu * D / np.clip(E, 1e-12, None)
+            new_efforts = beta * D / kappa0
+            converged = (np.max(np.abs(new_prices - prices)) < tol
+                         and np.max(np.abs(new_efforts - efforts)) < tol)
+            prices, efforts = new_prices, new_efforts
+            if converged:
+                break
+    else:
+        for _ in range(max_iter):
+            D, E = _demand_and_elasticity_jit(
+                prices, efforts, city.dist2_km2, city.cell_pop, city.lambda_phi,
+                city.pi_H, city.pi_H_lambda_phi,
+                float(city.alpha[0]), float(city.alpha[1]),
+                quals, float(beta), float(transport_cost), float(city.mu), float(city.a0),
+                float(getattr(city, "transport_exponent", 1.0)))
+            new_prices  = costs + city.mu * D / np.clip(E, 1e-12, None)
+            new_efforts = beta * D / kappa0
+            converged = (np.max(np.abs(new_prices - prices)) < tol
+                         and np.max(np.abs(new_efforts - efforts)) < tol)
+            prices, efforts = new_prices, new_efforts
+            if converged:
+                break
 
     if not converged:
         warnings.warn(f"Bertrand-Nash not converged after {max_iter} iters")
@@ -219,6 +441,14 @@ def joint_monopoly(
     """
     from scipy.optimize import minimize
 
+    use_catchment = (city.catch_indptr is not None)
+    if city.dist2_km2 is None and not use_catchment:
+        raise ValueError(
+            "joint_monopoly requires either city.dist2_km2 (dense matrix) or "
+            "city.catch_indptr (sparse catchment).  Set dense_distances=True or "
+            "catchment_minutes in load_berlin_city."
+        )
+
     if cache_path is not None:
         cache_path = Path(cache_path)
         _sig = _param_signature(city, transport_cost)
@@ -226,22 +456,44 @@ def joint_monopoly(
         if cached is not None:
             return cached
 
-    firms = city.firms
-    N = len(firms)
+    firms   = city.firms
+    N       = len(firms)
     costs   = np.array([f.marginal_cost for f in firms], dtype=np.float64)
     quals   = np.array([f.quality       for f in firms], dtype=np.float64)
     efforts = np.zeros(N)
 
-    def neg_obj_and_grad(p: np.ndarray) -> Tuple[float, np.ndarray]:
-        D, G = _monopoly_demand_grad_jit(
-            p, efforts, costs, city.dist2_km2, city.cell_pop, city.lambda_phi,
-            city.pi_H, city.pi_H_lambda_phi,
-            float(city.alpha[0]), float(city.alpha[1]),
-            quals, float(city.beta), float(transport_cost), float(city.mu), float(city.a0),
-            float(getattr(city, "transport_exponent", 1.0)))
-        profit_val = float(np.sum((p - costs) * D))
-        grad = D + G
-        return -profit_val, -grad
+    if use_catchment:
+        _ensure_catchment_eq(city, transport_cost)
+        inv_mu    = 1.0 / float(city.mu)
+        a0_scaled = float(city.a0) * inv_mu
+        indptr    = city.catch_indptr.astype(np.int64,  copy=False)
+        indices   = city.catch_indices.astype(np.int32, copy=False)
+        catch_C   = np.ascontiguousarray(city.catch_C,   dtype=np.float64)
+        A         = np.ascontiguousarray(city.A_quality, dtype=np.float64)
+        w_L       = np.ascontiguousarray(city.w_L,       dtype=np.float64)
+        w_H       = np.ascontiguousarray(city.w_H,       dtype=np.float64)
+
+        def neg_obj_and_grad(p: np.ndarray) -> Tuple[float, np.ndarray]:
+            margins = p - costs
+            g = city.beta * efforts - p
+            D, G = _catchment_monopoly_grad_jit(
+                g, margins, A, a0_scaled, inv_mu, w_L, w_H,
+                indptr, indices, catch_C, N
+            )
+            profit_val = float(np.sum(margins * D))
+            grad = D + G
+            return -profit_val, -grad
+    else:
+        def neg_obj_and_grad(p: np.ndarray) -> Tuple[float, np.ndarray]:
+            D, G = _monopoly_demand_grad_jit(
+                p, efforts, costs, city.dist2_km2, city.cell_pop, city.lambda_phi,
+                city.pi_H, city.pi_H_lambda_phi,
+                float(city.alpha[0]), float(city.alpha[1]),
+                quals, float(city.beta), float(transport_cost), float(city.mu), float(city.a0),
+                float(getattr(city, "transport_exponent", 1.0)))
+            profit_val = float(np.sum((p - costs) * D))
+            grad = D + G
+            return -profit_val, -grad
 
     x0 = costs + 3.0 * city.mu
     bounds = [(float(c), float(c) + 50.0 * city.mu) for c in costs]

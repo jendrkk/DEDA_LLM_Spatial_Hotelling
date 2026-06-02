@@ -507,3 +507,432 @@ class TestStubsRaiseNotImplementedError:
 
         with pytest.raises(NotImplementedError):
             SquareGrid().cell_to_metres(0, 0)
+
+
+# ---------------------------------------------------------------------------
+# BRW fixed-cost normalisation — synthetic loader tests
+# ---------------------------------------------------------------------------
+
+class TestBrwFixedCostNormalisation:
+    """Tests for the brw→fixed_cost mapping in load_berlin_city.
+
+    These tests bypass the full loader by exercising the normalisation logic
+    directly through synthetic parquet files written to a tmp_path.  They are
+    skipped when the real GEO data files are absent (expected in CI).
+    """
+
+    @pytest.fixture
+    def synthetic_parquets(self, tmp_path):
+        """Write minimal synthetic parquet files that satisfy load_berlin_city."""
+        import geopandas as gpd
+        import pandas as pd
+        from shapely.geometry import Point
+
+        # ── demand_grid ───────────────────────────────────────────────────
+        n_cells = 4
+        # GITTER_ID_100m must be sortable strings
+        gids = [f"100mN{3300000 + 100*i}E4500000" for i in range(n_cells)]
+        grid_gdf = gpd.GeoDataFrame(
+            {
+                "GITTER_ID_100m": gids,
+                "Einwohner": [100.0] * n_cells,
+                "pi_H_res": [0.5] * n_cells,
+                "phi_i": [0.1] * n_cells,
+            },
+            geometry=[Point(4500050, 3300050 + 100 * i) for i in range(n_cells)],
+            crs="EPSG:3035",
+        )
+        grid_path = tmp_path / "demand_grid.parquet"
+        grid_gdf.to_parquet(grid_path)
+
+        # ── supermarkets ──────────────────────────────────────────────────
+        n_stores = 3
+        brw_values = [1000.0, 2000.0, 3000.0]   # mean = 2000, median = 2000
+        stores_gdf = gpd.GeoDataFrame(
+            {
+                "chain": ["Lidl", "Rewe", "Bio Company"],
+                "chain_type": ["discount", "standard", "bio"],
+                "brw": brw_values,
+            },
+            geometry=[Point(4500050 + 200 * j, 3300050) for j in range(n_stores)],
+            crs="EPSG:3035",
+        )
+        stores_path = tmp_path / "supermarkets.parquet"
+        stores_gdf.to_parquet(stores_path)
+
+        # ── travel_times ──────────────────────────────────────────────────
+        rows = []
+        for cell_id in gids:
+            for store_id in [str(j) for j in range(n_stores)]:
+                rows.append({"from_id": cell_id, "to_id": store_id, "travel_time": 10.0})
+        tt_df = pd.DataFrame(rows)
+        tt_path = tmp_path / "travel_times.parquet"
+        tt_df.to_parquet(tt_path)
+
+        return grid_path, stores_path, tt_path, brw_values
+
+    def _load(self, synthetic_parquets, **kwargs):
+        from hotelling.spatial.loader import load_berlin_city
+
+        grid_path, stores_path, tt_path, brw_values = synthetic_parquets
+        _, firms = load_berlin_city(
+            grid_path=grid_path,
+            stores_path=stores_path,
+            travel_times_path=tt_path,
+            lambda_val=100.0,
+            transport_cost=0.01,
+            **kwargs,
+        )
+        return firms, brw_values
+
+    def test_rent_scale_zero_all_fixed_costs_zero(self, synthetic_parquets):
+        """rent_scale=0 → all fixed_cost values are 0.0."""
+        firms, _ = self._load(synthetic_parquets, rent_scale=0.0)
+        assert all(f.fixed_cost == pytest.approx(0.0) for f in firms)
+
+    def test_mean_ratio_mean_equals_rent_scale(self, synthetic_parquets):
+        """mean_ratio normalisation: mean(fixed_cost) ≈ rent_scale."""
+        rent_scale = 0.1
+        firms, _ = self._load(
+            synthetic_parquets,
+            rent_scale=rent_scale,
+            rent_normalization="mean_ratio",
+        )
+        fc = np.array([f.fixed_cost for f in firms])
+        assert fc.mean() == pytest.approx(rent_scale, rel=1e-6)
+
+    def test_mean_ratio_preserves_relative_ordering(self, synthetic_parquets):
+        """Stores with higher brw have higher fixed_cost under mean_ratio."""
+        firms, brw_values = self._load(
+            synthetic_parquets,
+            rent_scale=0.1,
+            rent_normalization="mean_ratio",
+        )
+        fc = [f.fixed_cost for f in firms]
+        assert fc[0] < fc[1] < fc[2]
+
+    def test_median_ratio_preserves_relative_ordering(self, synthetic_parquets):
+        """median_ratio also preserves brw ordering across stores."""
+        firms, _ = self._load(
+            synthetic_parquets,
+            rent_scale=0.1,
+            rent_normalization="median_ratio",
+        )
+        fc = [f.fixed_cost for f in firms]
+        assert fc[0] < fc[1] < fc[2]
+
+    def test_minmax_range(self, synthetic_parquets):
+        """minmax: min fixed_cost ≈ 0, max ≈ rent_scale."""
+        rent_scale = 0.2
+        firms, _ = self._load(
+            synthetic_parquets,
+            rent_scale=rent_scale,
+            rent_normalization="minmax",
+        )
+        fc = np.array([f.fixed_cost for f in firms])
+        assert fc.min() == pytest.approx(0.0, abs=1e-10)
+        assert fc.max() == pytest.approx(rent_scale, rel=1e-6)
+
+    def test_no_brw_column_returns_zeros(self, tmp_path):
+        """If 'brw' column is absent, fixed_costs are all zero even for rent_scale > 0."""
+        import geopandas as gpd
+        import pandas as pd
+        from shapely.geometry import Point
+        from hotelling.spatial.loader import load_berlin_city
+
+        n_cells = 2
+        gids = [f"100mN{3300000 + 100*i}E4500000" for i in range(n_cells)]
+        grid_gdf = gpd.GeoDataFrame(
+            {
+                "GITTER_ID_100m": gids,
+                "Einwohner": [100.0] * n_cells,
+                "pi_H_res": [0.5] * n_cells,
+                "phi_i": [0.1] * n_cells,
+            },
+            geometry=[Point(4500050, 3300050 + 100 * i) for i in range(n_cells)],
+            crs="EPSG:3035",
+        )
+        grid_path = tmp_path / "demand_grid.parquet"
+        grid_gdf.to_parquet(grid_path)
+
+        # No brw column
+        stores_gdf = gpd.GeoDataFrame(
+            {"chain": ["Lidl"], "chain_type": ["discount"]},
+            geometry=[Point(4500050, 3300050)],
+            crs="EPSG:3035",
+        )
+        stores_path = tmp_path / "supermarkets.parquet"
+        stores_gdf.to_parquet(stores_path)
+
+        tt_df = pd.DataFrame([
+            {"from_id": gid, "to_id": "0", "travel_time": 10.0}
+            for gid in gids
+        ])
+        tt_path = tmp_path / "travel_times.parquet"
+        tt_df.to_parquet(tt_path)
+
+        _, firms = load_berlin_city(
+            grid_path=grid_path,
+            stores_path=stores_path,
+            travel_times_path=tt_path,
+            lambda_val=100.0,
+            transport_cost=0.01,
+            rent_scale=0.1,  # non-zero, but brw absent
+        )
+        assert all(f.fixed_cost == pytest.approx(0.0) for f in firms)
+
+    def test_invalid_normalization_raises(self, synthetic_parquets):
+        """Unrecognised rent_normalization string raises ValueError."""
+        with pytest.raises(ValueError, match="rent_normalization"):
+            self._load(
+                synthetic_parquets,
+                rent_scale=0.1,
+                rent_normalization="bad_method",
+            )
+
+
+# ---------------------------------------------------------------------------
+# Alignment check tests (no real data required)
+# ---------------------------------------------------------------------------
+
+class TestTravelTimeAlignmentCheck:
+    """load_berlin_city raises ValueError when travel_times references store IDs
+    outside the range {0..N-1}, indicating mismatched inner-ring vs. full-grid files."""
+
+    def _make_synthetic_grid(self, tmp_path, n_cells: int = 2):
+        import geopandas as gpd
+        from shapely.geometry import Point
+
+        gids = [f"100mN{3300000 + 100*i}E4500000" for i in range(n_cells)]
+        gdf = gpd.GeoDataFrame(
+            {
+                "GITTER_ID_100m": gids,
+                "Einwohner": [100.0] * n_cells,
+                "pi_H_res": [0.5] * n_cells,
+                "phi_i": [0.1] * n_cells,
+            },
+            geometry=[Point(4500050, 3300050 + 100 * i) for i in range(n_cells)],
+            crs="EPSG:3035",
+        )
+        grid_path = tmp_path / "grid.parquet"
+        gdf.to_parquet(grid_path)
+        return grid_path, gids
+
+    def test_bad_store_ids_raise_value_error(self, tmp_path):
+        """travel_times referencing a store id not in {0..N-1} raises ValueError."""
+        import geopandas as gpd
+        import pandas as pd
+        from shapely.geometry import Point
+        from hotelling.spatial.loader import load_berlin_city
+
+        grid_path, gids = self._make_synthetic_grid(tmp_path)
+
+        # One real store, id "0"
+        stores_gdf = gpd.GeoDataFrame(
+            {"chain": ["Lidl"], "chain_type": ["discount"]},
+            geometry=[Point(4500050, 3300050)],
+            crs="EPSG:3035",
+        )
+        stores_path = tmp_path / "stores.parquet"
+        stores_gdf.to_parquet(stores_path)
+
+        # travel_times references store "999" which doesn't exist
+        tt_df = pd.DataFrame([
+            {"from_id": gids[0], "to_id": "0",   "travel_time": 5.0},
+            {"from_id": gids[0], "to_id": "999", "travel_time": 10.0},
+        ])
+        tt_path = tmp_path / "tt.parquet"
+        tt_df.to_parquet(tt_path)
+
+        with pytest.raises(ValueError, match="store IDs"):
+            load_berlin_city(
+                grid_path=grid_path,
+                stores_path=stores_path,
+                travel_times_path=tt_path,
+                lambda_val=100.0,
+                transport_cost=0.01,
+                dense_distances=True,
+            )
+
+    def test_valid_ids_do_not_raise(self, tmp_path):
+        """Valid store IDs in travel_times do NOT raise an error."""
+        import geopandas as gpd
+        import pandas as pd
+        from shapely.geometry import Point
+        from hotelling.spatial.loader import load_berlin_city
+
+        grid_path, gids = self._make_synthetic_grid(tmp_path)
+
+        stores_gdf = gpd.GeoDataFrame(
+            {"chain": ["Lidl", "Rewe"], "chain_type": ["discount", "standard"]},
+            geometry=[Point(4500050, 3300050), Point(4500150, 3300050)],
+            crs="EPSG:3035",
+        )
+        stores_path = tmp_path / "stores.parquet"
+        stores_gdf.to_parquet(stores_path)
+
+        # Both store IDs "0" and "1" are valid
+        tt_df = pd.DataFrame([
+            {"from_id": gids[0], "to_id": "0", "travel_time": 5.0},
+            {"from_id": gids[0], "to_id": "1", "travel_time": 10.0},
+            {"from_id": gids[1], "to_id": "0", "travel_time": 8.0},
+        ])
+        tt_path = tmp_path / "tt.parquet"
+        tt_df.to_parquet(tt_path)
+
+        # Should not raise
+        city, firms = load_berlin_city(
+            grid_path=grid_path,
+            stores_path=stores_path,
+            travel_times_path=tt_path,
+            lambda_val=100.0,
+            transport_cost=0.01,
+            dense_distances=True,
+        )
+        assert len(firms) == 2
+
+
+# ---------------------------------------------------------------------------
+# build_catchment unit tests (no file I/O — pure function)
+# ---------------------------------------------------------------------------
+
+class TestBuildCatchment:
+    """Unit tests for hotelling.spatial.loader.build_catchment."""
+
+    def _make_tt_df(self, rows):
+        import pandas as pd
+        return pd.DataFrame(rows, columns=["from_id", "to_id", "travel_time"])
+
+    def test_basic_csr_structure(self):
+        from hotelling.spatial.loader import build_catchment
+
+        cell_ids  = ["C0", "C1", "C2"]
+        store_ids = ["0", "1", "2", "3"]
+        rows = [
+            ("C0", "0", 5.0), ("C0", "1", 10.0), ("C0", "2", 20.0),
+            ("C1", "0", 3.0), ("C1", "2", 8.0),
+            # C2 has no entries
+        ]
+        tt_df = self._make_tt_df(rows)
+        indptr, indices, tt_min = build_catchment(
+            tt_df, cell_ids, store_ids,
+            transport_cost=0.1, transport_exponent=1.0,
+            catchment_minutes=25.0, k_min=1, k_max=10,
+        )
+
+        assert len(indptr) == len(cell_ids) + 1
+        assert indptr[0] == 0
+        assert len(indices) == int(indptr[-1])
+        assert len(tt_min)  == int(indptr[-1])
+
+    def test_indptr_monotone(self):
+        from hotelling.spatial.loader import build_catchment
+
+        cell_ids  = ["C0", "C1"]
+        store_ids = ["0", "1", "2"]
+        rows = [("C0", "0", 5.0), ("C0", "1", 12.0), ("C1", "2", 7.0)]
+        tt_df = self._make_tt_df(rows)
+        indptr, _, _ = build_catchment(
+            tt_df, cell_ids, store_ids,
+            transport_cost=0.1, transport_exponent=1.0,
+            catchment_minutes=20.0, k_min=1, k_max=5,
+        )
+        assert np.all(np.diff(indptr) >= 0)
+
+    def test_catchment_radius_excludes_far_stores(self):
+        """Stores beyond catchment_minutes are excluded when k_min is satisfied."""
+        from hotelling.spatial.loader import build_catchment
+
+        cell_ids  = ["C0"]
+        store_ids = ["0", "1", "2"]
+        rows = [
+            ("C0", "0", 5.0),   # within 10 min
+            ("C0", "1", 9.0),   # within 10 min
+            ("C0", "2", 50.0),  # far away
+        ]
+        tt_df = self._make_tt_df(rows)
+        indptr, indices, tt_min = build_catchment(
+            tt_df, cell_ids, store_ids,
+            transport_cost=0.1, transport_exponent=1.0,
+            catchment_minutes=10.0, k_min=1, k_max=10,
+        )
+        assert int(indptr[1]) == 2   # only stores 0 and 1 kept
+        assert 2 not in indices      # store col 2 (50 min) excluded
+
+    def test_k_min_pads_beyond_radius(self):
+        """When fewer than k_min stores are within radius, pad with nearest."""
+        from hotelling.spatial.loader import build_catchment
+
+        cell_ids  = ["C0"]
+        store_ids = ["0", "1", "2"]
+        rows = [
+            ("C0", "0", 5.0),    # within 6 min
+            ("C0", "1", 30.0),   # beyond 6 min
+            ("C0", "2", 40.0),   # beyond 6 min
+        ]
+        tt_df = self._make_tt_df(rows)
+        indptr, indices, tt_min = build_catchment(
+            tt_df, cell_ids, store_ids,
+            transport_cost=0.1, transport_exponent=1.0,
+            catchment_minutes=6.0, k_min=2, k_max=10,
+        )
+        # Only 1 store within radius but k_min=2, so 2 stores should be kept
+        assert int(indptr[1]) == 2
+
+    def test_k_max_caps_entries(self):
+        """Entries per cell are capped at k_max."""
+        from hotelling.spatial.loader import build_catchment
+
+        cell_ids  = ["C0"]
+        store_ids = [str(i) for i in range(10)]
+        rows = [(f"C0", str(i), float(i + 1)) for i in range(10)]
+        tt_df = self._make_tt_df(rows)
+        indptr, indices, tt_min = build_catchment(
+            tt_df, cell_ids, store_ids,
+            transport_cost=0.1, transport_exponent=1.0,
+            catchment_minutes=100.0, k_min=1, k_max=3,
+        )
+        assert int(indptr[1]) == 3   # capped at k_max=3
+
+    def test_empty_cell_has_empty_span(self):
+        """Cells with no tt rows contribute an empty span to the CSR."""
+        from hotelling.spatial.loader import build_catchment
+
+        cell_ids  = ["C0", "C1", "C2"]
+        store_ids = ["0"]
+        rows = [("C0", "0", 5.0)]   # only C0 has entries
+        tt_df = self._make_tt_df(rows)
+        indptr, _, _ = build_catchment(
+            tt_df, cell_ids, store_ids,
+            transport_cost=0.1, transport_exponent=1.0,
+            catchment_minutes=20.0, k_min=1, k_max=5,
+        )
+        assert indptr[2] == indptr[1]   # C1 is empty
+        assert indptr[3] == indptr[2]   # C2 is empty
+
+    def test_output_dtypes(self):
+        from hotelling.spatial.loader import build_catchment
+
+        cell_ids  = ["C0"]
+        store_ids = ["0", "1"]
+        rows = [("C0", "0", 5.0), ("C0", "1", 8.0)]
+        tt_df = self._make_tt_df(rows)
+        indptr, indices, tt_min = build_catchment(
+            tt_df, cell_ids, store_ids,
+            transport_cost=0.1, transport_exponent=1.0,
+            catchment_minutes=20.0, k_min=1, k_max=5,
+        )
+        assert indptr.dtype == np.int64
+        assert indices.dtype == np.int32
+        assert tt_min.dtype == np.float64
+
+    def test_k_min_gt_k_max_raises(self):
+        from hotelling.spatial.loader import build_catchment
+
+        with pytest.raises(ValueError, match="k_min"):
+            build_catchment(
+                self._make_tt_df([("C0", "0", 5.0)]),
+                cell_ids=["C0"], store_ids=["0"],
+                transport_cost=0.1, transport_exponent=1.0,
+                catchment_minutes=20.0, k_min=10, k_max=5,
+            )

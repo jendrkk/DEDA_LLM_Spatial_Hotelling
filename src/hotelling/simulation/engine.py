@@ -252,26 +252,25 @@ class BatchSimulationEngine:
         self._effort_history.clear()
         self._step_history.clear()
 
-        obs, _infos = self.env.reset(seed=seed)
+        _obs, _infos = self.env.reset(seed=seed)
         self.batch_agent.reset()
-        neighbor_actions = self._obs_dict_to_matrix(obs)
+        # Obtain initial neighbor actions from the array state (no dict parse)
+        neighbor_actions = self.env.get_neighbor_actions_arr()
 
         n_steps = 0
         for step in range(self.max_steps):
-            neighbor_actions, _rewards_arr, done, step_infos = self._batch_step(
+            neighbor_actions, _rewards_arr, done = self._batch_step(
                 neighbor_actions, step
             )
             n_steps = step + 1
             if done:
                 break
 
+        # Read final prices from the array state (dict is stale on the array path)
+        final_pidxs = self.env._current_joint_actions_arr // self.env.m_effort
         final_prices = {
-            aid: float(
-                self.env.price_grid[
-                    self.env._current_joint_actions.get(aid, 0) // self.env.m_effort
-                ]
-            )
-            for aid in self.env.possible_agents
+            self.env.possible_agents[i]: float(self.env.price_grid[final_pidxs[i]])
+            for i in range(len(self.env.possible_agents))
         }
 
         if self.recorder is not None:
@@ -291,7 +290,12 @@ class BatchSimulationEngine:
         return result
 
     def _obs_dict_to_matrix(self, obs_dict: Dict[str, Any]) -> np.ndarray:
-        """Convert observation dicts to (N, k) neighbor action indices."""
+        """Convert observation dicts to (N, k) neighbor action indices.
+
+        Retained for external callers that still use the dict API; not used
+        in the hot loop.  Prefer :meth:`~hotelling.env.market_env.HotellingMarketEnv.get_neighbor_actions_arr`
+        for the array path.
+        """
         return np.array(
             [
                 obs_dict[str(f.id)]["neighbor_prev_actions"]
@@ -304,41 +308,38 @@ class BatchSimulationEngine:
         self,
         neighbor_actions_batch: np.ndarray,
         step: int,
-    ) -> Tuple[np.ndarray, np.ndarray, bool, Dict[str, Any]]:
-        """Execute one vectorized environment step."""
+    ) -> Tuple[np.ndarray, np.ndarray, bool]:
+        """Execute one vectorized environment step via the array hot path.
+
+        Calls ``env.step_array`` directly — no action dict construction and no
+        dict reparse of rewards or demands.
+
+        Parameters
+        ----------
+        neighbor_actions_batch : (N, k) int64
+            Previous period's neighbor action indices.
+        step : int
+            Current 0-based step index.
+
+        Returns
+        -------
+        next_neighbor_actions : (N, k) int64
+        rewards_arr : (N,) float64
+        done : bool — always False (firms never terminate mid-episode).
+        """
         actions = self.batch_agent.act(neighbor_actions_batch)
 
-        action_dict = {
-            str(f.id): int(actions[i]) for i, f in enumerate(self.env.firms)
-        }
-        next_obs_dict, rewards_dict, terminations, truncations, infos = self.env.step(
-            action_dict
-        )
-
-        next_neighbor_actions = self._obs_dict_to_matrix(next_obs_dict)
+        # Single env call: returns arrays directly, no dict overhead
+        next_neighbor_actions, rewards_arr, demands_arr = self.env.step_array(actions)
 
         states = self.batch_agent._encode_states(neighbor_actions_batch)
         next_states = self.batch_agent._encode_states(next_neighbor_actions)
-
-        rewards_arr = np.array(
-            [float(rewards_dict.get(str(f.id), 0.0)) for f in self.env.firms],
-            dtype=np.float64,
-        )
-
         self.batch_agent.update(states, actions, rewards_arr, next_states)
 
         price_idxs = actions // self.env.m_effort
         effort_idxs = actions % self.env.m_effort
         prices_arr = self.env.price_grid[price_idxs]
         efforts_arr = self.env.effort_grid[effort_idxs]
-        demands_arr = np.array(
-            [
-                infos.get(str(f.id), {}).get("demand", np.nan)
-                for f in self.env.firms
-            ],
-            dtype=np.float64,
-        )
-        profits_arr = rewards_arr
 
         if self.dense_log is not None:
             self.dense_log.write_step(
@@ -346,20 +347,19 @@ class BatchSimulationEngine:
                 price_idxs,
                 effort_idxs,
                 demands_arr,
-                profits_arr,
+                rewards_arr,  # profits == rewards
             )
 
         if self.recorder is not None:
             for i, firm in enumerate(self.env.firms):
                 aid = str(firm.id)
-                step_info = infos.get(aid, {})
                 self.recorder.record_step(
                     period=step,
                     agent_id=aid,
                     price=float(prices_arr[i]),
                     effort=float(efforts_arr[i]),
-                    demand=float(step_info.get("demand", float("nan"))),
-                    profit=float(profits_arr[i]),
+                    demand=float(demands_arr[i]),
+                    profit=float(rewards_arr[i]),
                     price_idx=int(price_idxs[i]),
                     effort_idx=int(effort_idxs[i]),
                 )
@@ -369,13 +369,7 @@ class BatchSimulationEngine:
             self._effort_history.append(float(efforts_arr.mean()))
             self._step_history.append(step + 1)
 
-        done = (
-            all(
-                terminations.get(a, False) or truncations.get(a, False)
-                for a in self.env.agents
-            )
-            if self.env.agents
-            else True
-        )
+        # Firms never terminate mid-episode in this model
+        done = len(self.env.agents) == 0
 
-        return next_neighbor_actions, rewards_arr, done, infos
+        return next_neighbor_actions, rewards_arr, done

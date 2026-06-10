@@ -29,6 +29,11 @@ Usage
     # Use custom lambda (override the config file value):
     python scripts/run_baseline.py --lambda-val 1234.5
 
+    # Run against the calibrated config:
+    python scripts/run_baseline.py \\
+        --env-config configs/env/berlin_inner_ring_calibrated.yaml \\
+        --T-burnin 1000000 --seed 42
+
 Calibration note
 ----------------
 Before the first full run, calibrate λ:
@@ -224,6 +229,16 @@ def main() -> None:
     parser.add_argument("--T-burnin",       type=int,   default=None,
                         help="Override T_burnin (e.g. 10000 for a quick test)")
     parser.add_argument(
+        "--env-config",
+        type=str,
+        default=None,
+        help=(
+            "Path to an env YAML to use instead of the default inner-ring / "
+            "--full-grid config (e.g. configs/env/berlin_inner_ring_calibrated.yaml). "
+            "Overrides --full-grid when both are given."
+        ),
+    )
+    parser.add_argument(
         "--full-grid",
         action="store_true",
         help=(
@@ -258,16 +273,28 @@ def main() -> None:
     args = parser.parse_args()
 
     # --- Load config ---
-    # --full-grid selects berlin_full.yaml; otherwise inner-ring.
+    # --env-config overrides --full-grid and the default inner-ring env.
     # --with-effort selects the effort-activated agent config.
-    _env_yaml = _ENV_YAMLS["full"] if args.full_grid else _ENV_YAMLS["inner_ring"]
-    _env_name = "berlin_full" if args.full_grid else "berlin_inner_ring"
+    if args.env_config is not None:
+        _env_yaml = Path(args.env_config)
+        if not _env_yaml.is_absolute():
+            _env_yaml = _REPO_ROOT / _env_yaml
+        if not _env_yaml.exists():
+            raise FileNotFoundError(f"--env-config not found: {_env_yaml}")
+        _env_name = _env_yaml.stem
+    elif args.full_grid:
+        _env_yaml = _ENV_YAMLS["full"]
+        _env_name = "berlin_full"
+    else:
+        _env_yaml = _ENV_YAMLS["inner_ring"]
+        _env_name = "berlin_inner_ring"
     _agents_yaml = (
         _REPO_ROOT / "configs" / "agents" / "qlearning_effort.yaml"
         if args.with_effort
         else _REPO_ROOT / "configs" / "agents" / "qlearning_baseline.yaml"
     )
     config = load_config(env_yaml=_env_yaml, agents_yaml=_agents_yaml)
+    config["env_config_path"] = str(_env_yaml)
 
     # --- Apply CLI overrides ---
     if args.seed is not None:
@@ -305,6 +332,12 @@ def main() -> None:
             config["env"]["lambda_val"] = lam
         except Exception as exc:
             logger.warning("Auto-calibration failed: %s. Using placeholder λ=1500.", exc)
+
+    logger.info(
+        "Final lambda_val = %.4f (env config: %s)",
+        float(config["env"]["lambda_val"]),
+        _env_yaml,
+    )
 
     # --- Run simulation ---
     from hotelling.simulation.runner import run_single_session

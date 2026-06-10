@@ -264,6 +264,7 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
     metadata = {
         "run_id": run_id,
         "run_name": run_name,
+        "env_config_path": config.get("env_config_path"),
         "seed": seed,
         "converged": phase0_result.get("converged", False),
         "n_steps": phase0_result.get("n_steps", 0),

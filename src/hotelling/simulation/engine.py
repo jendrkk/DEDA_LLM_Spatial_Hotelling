@@ -245,12 +245,24 @@ class BatchSimulationEngine:
         self._price_history: List[float] = []
         self._effort_history: List[float] = []
         self._step_history: List[int] = []
+        self._chain_masks = {
+            ct: np.array(
+                [getattr(f, "chain_type", None) == ct for f in self.env.firms],
+                dtype=bool,
+            )
+            for ct in ("discount", "standard", "bio")
+        }
+        self._price_history_by_chain: Dict[str, List[float]] = {
+            ct: [] for ct in ("discount", "standard", "bio")
+        }
 
     def run(self, seed: Optional[int] = None) -> Dict[str, Any]:
         """Execute a full batch simulation session."""
         self._price_history.clear()
         self._effort_history.clear()
         self._step_history.clear()
+        for ct in self._price_history_by_chain:
+            self._price_history_by_chain[ct].clear()
 
         _obs, _infos = self.env.reset(seed=seed)
         self.batch_agent.reset()
@@ -284,6 +296,9 @@ class BatchSimulationEngine:
             "price_history": list(self._price_history),
             "effort_history": list(self._effort_history),
             "step_history": list(self._step_history),
+            "price_history_by_chain": {
+                ct: list(v) for ct, v in self._price_history_by_chain.items()
+            },
         }
         if hasattr(self.batch_agent, "epsilon_mean"):
             result["epsilon_mean"] = self.batch_agent.epsilon_mean
@@ -368,6 +383,13 @@ class BatchSimulationEngine:
             self._price_history.append(float(prices_arr.mean()))
             self._effort_history.append(float(efforts_arr.mean()))
             self._step_history.append(step + 1)
+            for ct, mask in self._chain_masks.items():
+                if mask.any():
+                    self._price_history_by_chain[ct].append(
+                        float(prices_arr[mask].mean())
+                    )
+                else:
+                    self._price_history_by_chain[ct].append(float("nan"))
 
         # Firms never terminate mid-episode in this model
         done = len(self.env.agents) == 0

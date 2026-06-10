@@ -8,7 +8,10 @@ T_burnin: 1_000_000          # maximum burn-in steps (~Calvano training length)
 convergence_window: 100      # number of price-history samples to test for convergence
                               # (samples are taken every record_every steps, so this
                               # corresponds to record_every * 100 actual steps = 100k)
-convergence_threshold: 0.01  # rolling std of mean price < this → converged
+convergence_threshold: 0.01  # 1% coefficient of variation (std/mean) when relative
+convergence_relative: true   # interpret convergence_threshold as relative CoV
+                              # (std/mean of the price window), scale-free across
+                              # normalized (~0.7) and euro (~40) price scales
 check_interval: 1_000        # check convergence every this many steps
 record_every: 1_000          # record mean price/effort every this many steps
 seed: 42

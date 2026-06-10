@@ -198,6 +198,47 @@ def print_summary(result: dict) -> None:
     print(f"  Δ (Calvano index):  {result.get('delta', float('nan')):.4f}")
     print(f"    (Δ≈0 = competitive, Δ≈1 = monopoly, Δ>1 = super-monopoly)")
     print()
+
+    deltas_by_chain = result.get("deltas_by_chain")
+    if deltas_by_chain:
+        parts = []
+        for key in ("global", "discount", "standard", "bio"):
+            val = deltas_by_chain.get(key)
+            if val is not None and val == val:  # skip NaN
+                parts.append(f"{key}={val:.4f}")
+        if parts:
+            print("  Chain-specific Calvano Δ:")
+            print(f"    {' / '.join(parts)}")
+            print()
+
+    chain_price_table = result.get("chain_price_table")
+    if chain_price_table:
+        print("  Per-chain prices (n | learned | Nash | mono)")
+        print(f"  {'chain':<10} {'n':>5} {'learned':>10} {'Nash':>10} {'mono':>10}")
+        for ct in ("global", "discount", "standard", "bio"):
+            row = chain_price_table.get(ct)
+            if row:
+                print(
+                    f"  {ct:<10} {row['n']:5d} "
+                    f"{row['learned']:10.4f} {row['nash']:10.4f} {row['mono']:10.4f}"
+                )
+        print()
+
+    if result.get("realized_outside_share") is not None:
+        ros = result.get("realized_outside_share")
+        rcs = result.get("realized_chain_shares") or {}
+        if ros == ros or rcs:  # has outside share or chain shares
+            print("  Realized Bertrand-Nash moments (calibration check)")
+            if ros == ros:
+                print(f"    outside share = {ros:.4f}  (calibration target ~0.04)")
+            if rcs:
+                print(
+                    f"    chain shares  discount / standard / bio = "
+                    f"{rcs.get('discount', float('nan')):.4f} / "
+                    f"{rcs.get('standard', float('nan')):.4f} / "
+                    f"{rcs.get('bio', float('nan')):.4f}"
+                )
+            print()
     print(f"  Mean final price:   {result.get('mean_final_price', float('nan')):.4f}")
     print(f"  Bertrand-Nash p:    {result.get('p_nash',           float('nan')):.4f}")
     print(f"  Joint-monopoly p:   {result.get('p_mono',           float('nan')):.4f}")

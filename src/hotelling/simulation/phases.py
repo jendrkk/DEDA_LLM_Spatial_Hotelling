@@ -80,6 +80,7 @@ class Phase0BurnIn:
         T_burnin = int(cfg.get("T_burnin", 1_000_000))
         convergence_window = int(cfg.get("convergence_window", 100))
         convergence_threshold = float(cfg.get("convergence_threshold", 0.01))
+        convergence_relative = bool(cfg.get("convergence_relative", True))
         check_interval = int(cfg.get("check_interval", 1_000))
         record_every = int(cfg.get("record_every", check_interval))
 
@@ -114,7 +115,14 @@ class Phase0BurnIn:
         converged = False
         if len(price_history) >= convergence_window:
             window_prices = price_history[-convergence_window:]
-            if float(np.std(window_prices)) < convergence_threshold:
+            std = float(np.std(window_prices))
+            mean = float(np.mean(window_prices))
+            metric = (
+                std / abs(mean)
+                if (convergence_relative and abs(mean) > 1e-12)
+                else std
+            )
+            if metric < convergence_threshold:
                 converged = True
 
         mean_final_price = (
@@ -181,6 +189,7 @@ class Phase0BurnIn:
         }
         if "epsilon_mean" in result:
             out["epsilon_mean"] = result["epsilon_mean"]
+        out["price_history_by_chain"] = result.get("price_history_by_chain", {})
         return out
 
 

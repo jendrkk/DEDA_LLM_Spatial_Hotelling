@@ -114,6 +114,8 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
     )
     auto_grid = bool(agent_cfg.get("auto_price_grid", True))
     p_nash_pre = p_mono_pre = None
+    p_nash_arr = None
+    p_mono_arr = None
 
     # Benchmarks require the dense (M×N) distance matrix.  On the sparse /
     # full-grid path (dense_distances=False) city.dist2_km2 is None; the
@@ -260,6 +262,88 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
     if dense_log is not None:
         dense_log.flush()
 
+    import numpy as np
+
+    deltas_by_chain: Dict[str, float] = {}
+    chain_price_table: Dict[str, Any] = {}
+    realized_outside_share = float("nan")
+    realized_chain_shares: Dict[str, float] = {}
+
+    if p_nash_arr is not None and p_mono_arr is not None:
+        N = len(firms)
+        final_prices = phase0_result.get("final_prices", {})
+        p_learned = np.array(
+            [float(final_prices.get(str(f.id), np.nan)) for f in firms],
+            dtype=np.float64,
+        )
+        chain_types = np.array([f.chain_type for f in firms], dtype=object)
+
+        def _delta(mask: np.ndarray) -> float:
+            if mask.sum() == 0:
+                return float("nan")
+            pl = float(np.nanmean(p_learned[mask]))
+            pn = float(p_nash_arr[mask].mean())
+            pm = float(p_mono_arr[mask].mean())
+            denom = pm - pn
+            if abs(denom) < 1e-9:
+                return float("nan")
+            return float(np.clip((pl - pn) / denom, -0.5, 1.5))
+
+        deltas_by_chain = {
+            "global": _delta(np.ones(N, dtype=bool)),
+            "discount": _delta(chain_types == "discount"),
+            "standard": _delta(chain_types == "standard"),
+            "bio": _delta(chain_types == "bio"),
+        }
+        chain_price_table = {}
+        for ct in ("discount", "standard", "bio", "global"):
+            m = np.ones(N, bool) if ct == "global" else (chain_types == ct)
+            if m.sum() > 0:
+                chain_price_table[ct] = {
+                    "n": int(m.sum()),
+                    "learned": float(np.nanmean(p_learned[m])),
+                    "nash": float(p_nash_arr[m].mean()),
+                    "mono": float(p_mono_arr[m].mean()),
+                }
+
+        from hotelling.core.market import cell_choice_mass
+
+        _qual = np.array([f.quality for f in firms], dtype=np.float64)
+        _eff = np.zeros(N, dtype=np.float64)
+        try:
+            inside, outside = cell_choice_mass(
+                prices=p_nash_arr,
+                efforts=_eff,
+                dist2_km2=city.dist2_km2,
+                cell_pop=city.cell_pop,
+                lambda_phi=city.lambda_phi,
+                pi_H=city.pi_H,
+                pi_H_lambda_phi=city.pi_H_lambda_phi,
+                alpha=city.alpha,
+                quality=_qual,
+                beta=city.beta,
+                transport_cost=tc,
+                mu=city.mu,
+                a0=city.a0,
+                transport_exponent=getattr(city, "transport_exponent", 1.0),
+            )
+            total_mass = float((city.cell_pop + city.lambda_phi).sum())
+            realized_outside_share = float(outside.sum() / total_mass)
+            D = inside.sum(axis=0)
+            tot_inside = float(D.sum())
+            realized_chain_shares = {
+                ct: float(D[chain_types == ct].sum() / tot_inside)
+                for ct in ("discount", "standard", "bio")
+            }
+        except Exception:
+            realized_outside_share = float("nan")
+            realized_chain_shares = {}
+
+    phase0_result["deltas_by_chain"] = deltas_by_chain
+    phase0_result["chain_price_table"] = chain_price_table
+    phase0_result["realized_outside_share"] = realized_outside_share
+    phase0_result["realized_chain_shares"] = realized_chain_shares
+
     # Save metadata.json
     metadata = {
         "run_id": run_id,
@@ -281,6 +365,10 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
         if dense_log is not None
         else None,
         "use_batch": use_batch,
+        "deltas_by_chain": deltas_by_chain,
+        "chain_price_table": chain_price_table,
+        "realized_outside_share": realized_outside_share,
+        "realized_chain_shares": realized_chain_shares,
     }
     with (output_dir / "metadata.json").open("w") as _f:
         json.dump(metadata, _f, indent=2)
@@ -291,6 +379,12 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
         "mean_price": phase0_result.get("price_history", []),
         "mean_effort": phase0_result.get("effort_history", []),
     })
+    pbc = phase0_result.get("price_history_by_chain", {})
+    for ct in ("discount", "standard", "bio"):
+        col = list(pbc.get(ct, []))
+        if len(col) < len(agg_df):
+            col = col + [float("nan")] * (len(agg_df) - len(col))
+        agg_df[f"mean_price_{ct}"] = col[: len(agg_df)]
     agg_df.to_parquet(output_dir / "aggregate.parquet", index=False)
 
     # Append one row to the global index CSV

@@ -16,7 +16,10 @@
 
 T_burnin: 1_000_000
 convergence_window: 100
-convergence_threshold: 0.01
+convergence_threshold: 0.01  # 1% coefficient of variation (std/mean) when relative
+convergence_relative: true   # interpret convergence_threshold as relative CoV
+                              # (std/mean of the price window), scale-free across
+                              # normalized (~0.7) and euro (~40) price scales
 check_interval: 1_000
 record_every: 1_000
 seed: 42

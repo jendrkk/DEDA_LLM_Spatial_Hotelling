@@ -1,0 +1,35 @@
+name: berlin_inner_ring
+epsg: 3035
+demand_grid_resolution_m: 100
+site_grid_resolution_m: 250
+transport_cost: 0.39471057884231536
+logit_scale: 8.907394676863934
+outside_option: -21.65577209813694
+bounding_box:
+  lat_min: 52.46
+  lat_max: 52.55
+  lon_min: 13.32
+  lon_max: 13.49
+grid_path: data/processed/demand_grid.parquet
+stores_path: data/processed/supermarkets.parquet
+travel_times_path: data/processed/travel_times.parquet
+lambda_val: 1500.0
+q_S: 6.0
+q_B: 18.0
+alpha_L: 0.48658969307380623
+alpha_H: 1.2164742326845155
+beta_effort: 0.001
+kappa0: 1.0
+store_size: 600.0
+marginal_cost_D: 26.52
+marginal_cost_S: 31.200000000000003
+marginal_cost_B: 40.56
+nan_fill_minutes: 120.0
+dense_distances: true
+rent_scale: 0.0
+rent_normalization: mean_ratio
+catchment_minutes: 20.0
+catchment_k_min: 12
+catchment_k_max: 60
+precompute_expweights: true
+low_precision_storage: false

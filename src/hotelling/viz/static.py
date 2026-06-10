@@ -4,8 +4,8 @@ Responsibility: generate publication-quality static figures for the seminar
 report and notebooks.  All functions return matplotlib Figure objects and
 optionally save to a file.
 
-Public API: plot_price_timeseries, plot_irf, plot_profit_heatmap,
-    plot_dose_response, plot_spatial_voronoi
+Public API: plot_price_timeseries, plot_price_trajectories_by_chain,
+    plot_irf, plot_profit_heatmap, plot_dose_response, plot_spatial_voronoi
 
 Key dependencies: matplotlib, numpy, pandas, scipy (for Voronoi)
 
@@ -42,6 +42,112 @@ def plot_price_timeseries(
     matplotlib.figure.Figure
     """
     raise NotImplementedError
+
+
+def plot_price_trajectories_by_chain(
+    run_dir: str | Path,
+    *,
+    ax=None,
+    show_benchmarks: bool = True,
+):
+    """Plot mean price over simulation steps: one line for the total market
+    mean and one per chain type (discount/standard/bio), read from
+    <run_dir>/aggregate.parquet (columns: step, mean_price,
+    mean_price_discount, mean_price_standard, mean_price_bio).
+
+    If show_benchmarks and <run_dir>/metadata.json contains a
+    chain_price_table, draw dashed horizontal Nash and monopoly reference
+    lines for the GLOBAL benchmark (and, if present, faint per-chain Nash
+    lines). Returns the matplotlib Axes.
+    """
+    import json
+    import logging
+
+    import matplotlib.pyplot as plt
+
+    logger = logging.getLogger(__name__)
+    run_path = Path(run_dir)
+    agg_path = run_path / "aggregate.parquet"
+    agg = pd.read_parquet(agg_path)
+
+    created_fig = ax is None
+    if created_fig:
+        fig, ax = plt.subplots(figsize=(11, 5))
+    else:
+        fig = ax.figure
+
+    ax.plot(
+        agg["step"],
+        agg["mean_price"],
+        color="black",
+        lw=2,
+        label="Total mean",
+    )
+
+    chain_cols = {
+        "discount": ("mean_price_discount", "tab:green", "Discount"),
+        "standard": ("mean_price_standard", "tab:blue", "Standard"),
+        "bio": ("mean_price_bio", "tab:red", "Bio"),
+    }
+    has_chain_cols = all(col in agg.columns for _, col, _ in chain_cols.values())
+    if has_chain_cols:
+        for _ct, (col, color, label) in chain_cols.items():
+            ax.plot(agg["step"], agg[col], color=color, lw=1.3, label=label)
+    else:
+        msg = (
+            f"Run {run_path.name} predates per-chain price logging; "
+            "plotting total mean only (missing mean_price_discount/standard/bio)."
+        )
+        logger.info(msg)
+        print(msg)
+
+    if show_benchmarks:
+        meta_path = run_path / "metadata.json"
+        if meta_path.exists():
+            with meta_path.open(encoding="utf-8") as f:
+                meta = json.load(f)
+            cpt = meta.get("chain_price_table") or {}
+            global_row = cpt.get("global")
+            if global_row:
+                ax.axhline(
+                    global_row["nash"],
+                    color="grey",
+                    ls="--",
+                    lw=1.2,
+                    label="Nash (global)",
+                )
+                ax.axhline(
+                    global_row["mono"],
+                    color="lightcoral",
+                    ls="--",
+                    lw=1.2,
+                    label="Mono (global)",
+                )
+            for ct, color in (
+                ("discount", "tab:green"),
+                ("standard", "tab:blue"),
+                ("bio", "tab:red"),
+            ):
+                row = cpt.get(ct)
+                if row and "nash" in row:
+                    ax.axhline(
+                        row["nash"],
+                        color=color,
+                        ls=":",
+                        lw=0.8,
+                        alpha=0.45,
+                        label=f"Nash ({ct})",
+                    )
+
+    ax.set_xlabel("Simulation step")
+    ax.set_ylabel("Mean price (EUR)")
+    ax.set_title(f"Price trajectories by chain — {run_path.name}")
+    ax.legend(fontsize=9)
+    ax.grid(alpha=0.3)
+    if created_fig:
+        fig.tight_layout()
+
+    return ax
 
 
 def plot_irf(

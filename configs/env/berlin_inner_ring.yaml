@@ -7,7 +7,7 @@ epsg: 3035                        # EPSG projection for all coordinates and dist
 demand_grid_resolution_m: 100      # Zensus 2022 population raster cell size (metres)
 site_grid_resolution_m: 250        # candidate entry site grid resolution (metres)
 
-transport_cost: 0.5                # t: LINEAR transit-time disutility (€/min). See ADR-020.
+transport_cost: 0.39               # t: LINEAR transit-time disutility (€/min). Old: 0.5, 0.035. See ADR-020.
 logit_scale: 0.25                  # μ: logit scale parameter
 outside_option: -1.0               # a0: outside-option utility (normalised)
 
@@ -43,9 +43,9 @@ kappa0: 1.0              # quadratic effort cost coefficient κ₀ (chain-invari
 store_size: 600.0        # typical inner-Berlin LEH floor space in m² (used with rent)
 
 # Marginal cost (ADR-014: normalised to zero for baseline)
-marginal_cost_D: 0.1
-marginal_cost_S: 0.13
-marginal_cost_B: 0.17
+marginal_cost_D: 0.10    # Old: 0.1
+marginal_cost_S: 0.13    # Old: 0.13
+marginal_cost_B: 0.17    # Old: 0.17
 
 # Distance matrix parameters
 nan_fill_minutes: 120.0  # travel-time fill value for unreachable (cell, store) pairs

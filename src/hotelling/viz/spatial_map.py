@@ -48,6 +48,30 @@ from hotelling.core.market import cell_metrics
 _REPO_ROOT: Path = Path(__file__).resolve().parents[3]
 
 # ---------------------------------------------------------------------------
+# Chain-type marker registry (for scatter grouping)
+# ---------------------------------------------------------------------------
+
+#: Matplotlib marker code keyed by normalised chain-type string.
+#: "discount" → ▼ downward triangle (cheap/basic tier)
+#: "standard" → ● circle (mid tier, neutral)
+#: "bio"      → ■ square (premium/differentiated tier)
+_CHAIN_TYPE_MARKERS: dict[str, str] = {
+    "discount": "v",
+    "standard": "o",
+    "bio":      "s",
+}
+
+#: Human-readable legend label keyed by normalised chain-type string.
+_CHAIN_TYPE_LABELS: dict[str, str] = {
+    "discount": "Discount (D)",
+    "standard": "Standard (S)",
+    "bio":      "Bio (B)",
+}
+
+#: Canonical iteration order for grouped scatter (controls legend entry order).
+_CHAIN_TYPE_ORDER: list[str] = ["discount", "standard", "bio"]
+
+# ---------------------------------------------------------------------------
 # Lazy-import guards
 # ---------------------------------------------------------------------------
 
@@ -98,6 +122,104 @@ def _require_gpd():
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+def _get_chain_types(stores_gdf: Any, n_stores: int) -> np.ndarray:
+    """Return a length-N object array of normalised chain-type strings.
+
+    Reads the ``chain_type`` column from *stores_gdf* if present (row *j*
+    must correspond to store *j* — i.e. the GDF has been
+    ``reset_index(drop=True)``), normalises each value to lowercase-stripped,
+    and maps anything outside ``{'discount', 'standard', 'bio'}`` to
+    ``'standard'``.
+
+    Parameters
+    ----------
+    stores_gdf : GeoDataFrame of stores (any CRS), row *j* == store *j*.
+    n_stores : expected length N; used only for the all-standard fallback
+        when ``chain_type`` column is absent.
+
+    Returns
+    -------
+    np.ndarray of shape (N,) with dtype ``object``; every element is one of
+    ``'discount'``, ``'standard'``, or ``'bio'``.
+    """
+    _known = {"discount", "standard", "bio"}
+    if "chain_type" in stores_gdf.columns:
+        raw = stores_gdf["chain_type"].fillna("standard").astype(str)
+        normalised = raw.str.strip().str.lower().to_numpy()
+        out = np.where(np.isin(normalised, list(_known)), normalised, "standard")
+        return out.astype(object)
+    # Fallback: column absent (should not happen for supermarkets.parquet v2+
+    # which requires chain_type per loader.py).
+    return np.full(n_stores, "standard", dtype=object)
+
+
+def _scatter_by_chain(
+    ax: Any,
+    sx: np.ndarray,
+    sy: np.ndarray,
+    colors: np.ndarray,
+    sizes: Any,
+    chain_types: np.ndarray,
+    cmap: Any,
+    norm: Any,
+) -> Tuple[list, Optional[Any]]:
+    """Plot the store scatter grouped by chain type, one call per group.
+
+    Each chain type is rendered with a distinct marker from
+    ``_CHAIN_TYPE_MARKERS`` while sharing the same *cmap* / *norm* so the
+    colour scale is globally consistent across all groups.  All groups use
+    ``zorder=5``, black edge colour, and ``linewidths=0.4``.  The ``label=``
+    attribute on each ``PathCollection`` is set so that a subsequent
+    ``ax.legend(title="Chain type", ...)`` call picks them up automatically.
+
+    Parameters
+    ----------
+    ax : ``matplotlib.axes.Axes`` to draw on.
+    sx, sy : (N,) float64 arrays — store x/y coordinates in EPSG:3857.
+    colors : (N,) float64 array — values mapped through *cmap* / *norm*;
+        typically ``prices_t``.
+    sizes : (N,) float64 numpy array **or** a plain Python/NumPy scalar.
+        If a NumPy array, each group receives ``sizes[mask]``.
+        If a scalar, that value is broadcast identically across all groups.
+    chain_types : (N,) object array produced by :func:`_get_chain_types`.
+    cmap : matplotlib ``Colormap`` object.
+    norm : matplotlib ``Normalize`` (or ``BoundaryNorm``) object.
+
+    Returns
+    -------
+    artists : list of ``matplotlib.collections.PathCollection``
+        One element per non-empty chain type, in ``_CHAIN_TYPE_ORDER``
+        order (discount → standard → bio).  May be an empty list if every
+        mask is False (degenerate input).
+    colorbar_source : first element of *artists*, or ``None`` when *artists*
+        is empty.  Suitable as the first positional argument to
+        ``plt.colorbar(colorbar_source, ax=ax, ...)``.
+    """
+    artists: list = []
+    for ct in _CHAIN_TYPE_ORDER:
+        mask = (chain_types == ct)
+        if not mask.any():
+            continue
+        # Per-element sizes when sizes is a NumPy array; scalar broadcast otherwise.
+        s = sizes[mask] if isinstance(sizes, np.ndarray) else sizes
+        sc = ax.scatter(
+            sx[mask],
+            sy[mask],
+            c=colors[mask],
+            cmap=cmap,
+            norm=norm,
+            s=s,
+            zorder=5,
+            edgecolors="k",
+            linewidths=0.4,
+            marker=_CHAIN_TYPE_MARKERS.get(ct, "o"),
+            label=_CHAIN_TYPE_LABELS.get(ct, ct),
+        )
+        artists.append(sc)
+    colorbar_source: Optional[Any] = artists[0] if artists else None
+    return artists, colorbar_source
+
 
 def _get_env_cfg(cfg: dict) -> dict:
     """Extract the env sub-dict from a run config, falling back to flat layout."""
@@ -518,6 +640,8 @@ def _plot_snapshot_from_loaded(
     # The scatter always shows store *prices* coloured on the price-grid range
     # so the store dots are frame-consistent regardless of the choropleth metric.
     # Exception: expected_price shares the choropleth norm (both are price-valued).
+    # Stores are grouped by chain type (discount/standard/bio) and rendered with
+    # distinct marker shapes: ▼ (v), ● (o), ■ (s) respectively.
     sx = stores_gdf.geometry.x.values
     sy = stores_gdf.geometry.y.values
 
@@ -541,17 +665,38 @@ def _plot_snapshot_from_loaded(
     else:
         sizes = 80.0
 
-    sc = ax.scatter(
-        sx, sy,
-        c=prices_t, cmap=sc_cmap, norm=sc_norm,
-        s=sizes, zorder=5, edgecolors="k", linewidths=0.4,
+    # Extract chain type per store (N,) → 'discount' | 'standard' | 'bio'.
+    chain_types = _get_chain_types(stores_gdf, len(firms))
+
+    # One scatter call per chain type; distinct marker per group.
+    scatter_artists, colorbar_sc = _scatter_by_chain(
+        ax, sx, sy, prices_t, sizes, chain_types, sc_cmap, sc_norm
     )
 
     # --- Colorbar / legend --------------------------------------------------
+    # Chain-type marker legend (always present regardless of metric).
+    # Uses the label= attributes set in _scatter_by_chain.
+    if scatter_artists:
+        chain_type_leg = ax.legend(
+            title="Chain type",
+            loc="lower right",
+            fontsize=8,
+            title_fontsize=9,
+            framealpha=0.8,
+        )
+        if is_categorical:
+            # For dominant_chain we also need the brand-level legend at upper
+            # right. Preserve chain_type_leg via add_artist BEFORE the second
+            # ax.legend() call (which would otherwise replace it).
+            ax.add_artist(chain_type_leg)
+
     if is_categorical:
+        # Brand-level categorical legend at upper right (calls ax.legend internally).
         _add_dominant_chain_legend(ax, firms, cmap_obj, norm_obj)
-        cbar = plt.colorbar(sc, ax=ax, shrink=0.45, pad=0.01)
-        cbar.set_label("Store price (€)", fontsize=9)
+        # Colorbar for the store-price scatter (independent of the choropleth).
+        if colorbar_sc is not None:
+            cbar = plt.colorbar(colorbar_sc, ax=ax, shrink=0.45, pad=0.01)
+            cbar.set_label("Store price (€)", fontsize=9)
     elif metric == "expected_price":
         # Single shared colorbar covers both choropleth and scatter.
         cbar = plt.colorbar(poly_coll, ax=ax, shrink=0.6, pad=0.01)
@@ -560,8 +705,9 @@ def _plot_snapshot_from_loaded(
         # Two colorbars: one for the choropleth metric, one for store prices.
         cbar = plt.colorbar(poly_coll, ax=ax, shrink=0.6, pad=0.01)
         cbar.set_label(metric.replace("_", " ").title(), fontsize=9)
-        cbar2 = plt.colorbar(sc, ax=ax, shrink=0.35, pad=0.06)
-        cbar2.set_label("Store price (€)", fontsize=8)
+        if colorbar_sc is not None:
+            cbar2 = plt.colorbar(colorbar_sc, ax=ax, shrink=0.35, pad=0.06)
+            cbar2.set_label("Store price (€)", fontsize=8)
 
     # --- Title --------------------------------------------------------------
     run_name = Path(dense_log.run_dir).name
@@ -712,6 +858,10 @@ def animate_market(
     N_firms = len(firms)
     run_name = run_dir.name
 
+    # Extract chain type per store once — static for the whole animation.
+    # Values are 'discount' | 'standard' | 'bio' in canonical store order 0..N-1.
+    _anim_chain_types = _get_chain_types(stores_gdf, N_firms)
+
     # ── Determine frame list ────────────────────────────────────────────────
     if timesteps is not None:
         frames_list = list(timesteps)
@@ -794,22 +944,58 @@ def animate_market(
     ax.set_xlim(minx, maxx)
     ax.set_ylim(miny, maxy)
 
-    # ── Store scatter (built once) ──────────────────────────────────────────
+    # ── Store scatter (built once, grouped by chain type) ───────────────────
+    # Each chain type gets its own PathCollection with a distinct marker shape.
+    # All groups share sc_cmap / sc_norm so the colour (= price) scale is uniform.
+    # _chain_sc_list holds (mask, PathCollection) pairs for the _update closure.
     sx = stores_gdf.geometry.x.values
     sy = stores_gdf.geometry.y.values
     demands_0 = dense_log.demands[frames_list[0]].astype(np.float64)
     init_sizes = np.clip(np.sqrt(np.clip(demands_0, 0, None)) * 3.0, 20, 600)
 
-    sc = ax.scatter(
-        sx, sy,
-        c=prices_0, cmap=sc_cmap, norm=sc_norm,
-        s=init_sizes, zorder=5, edgecolors="k", linewidths=0.4,
-    )
+    _chain_sc_list: list = []   # list of (boolean mask, PathCollection) tuples
+    for _ct in _CHAIN_TYPE_ORDER:
+        _mask = (_anim_chain_types == _ct)
+        if not _mask.any():
+            continue
+        _sc_ct = ax.scatter(
+            sx[_mask],
+            sy[_mask],
+            c=prices_0[_mask],
+            cmap=sc_cmap,
+            norm=sc_norm,
+            s=init_sizes[_mask],
+            zorder=5,
+            edgecolors="k",
+            linewidths=0.4,
+            marker=_CHAIN_TYPE_MARKERS.get(_ct, "o"),
+            label=_CHAIN_TYPE_LABELS.get(_ct, _ct),
+        )
+        _chain_sc_list.append((_mask, _sc_ct))
+
+    # Reference to the first non-empty scatter artist, used for the colorbar.
+    _sc_for_cbar = _chain_sc_list[0][1] if _chain_sc_list else None
 
     # ── Colorbar / legend ───────────────────────────────────────────────────
+    # Chain-type marker legend (always present regardless of metric).
+    if _chain_sc_list:
+        _chain_type_leg = ax.legend(
+            title="Chain type",
+            loc="lower right",
+            fontsize=8,
+            title_fontsize=9,
+            framealpha=0.8,
+        )
+        if is_categorical:
+            # Preserve chain_type_leg before the brand-level legend call
+            # replaces ax._legend via its own ax.legend() invocation.
+            ax.add_artist(_chain_type_leg)
+
     if is_categorical:
         _add_dominant_chain_legend(ax, firms, cmap_obj, norm_obj)
-        plt.colorbar(sc, ax=ax, shrink=0.45, pad=0.01, label="Store price (€)")
+        if _sc_for_cbar is not None:
+            plt.colorbar(_sc_for_cbar, ax=ax, shrink=0.45, pad=0.01,
+                         label="Store price (€)")
     else:
         plt.colorbar(poly_coll, ax=ax, shrink=0.6, pad=0.01,
                      label=metric.replace("_", " ").title())
@@ -830,12 +1016,15 @@ def animate_market(
 
         poly_coll.set_array(metric_t)
 
-        sc.set_array(prices_t)
+        # Update each per-chain-type scatter independently.
         sizes_t = np.clip(np.sqrt(np.clip(demands_t, 0, None)) * 3.0, 20, 600)
-        sc.set_sizes(sizes_t)
+        for _mask, _sc_ct in _chain_sc_list:
+            _sc_ct.set_array(prices_t[_mask])
+            _sc_ct.set_sizes(sizes_t[_mask])
 
         title_artist.set_text(f"{run_name} | t = {t} | {metric}")
-        return poly_coll, sc, title_artist
+        # blit=True requires returning ALL artists that changed this frame.
+        return (poly_coll, *[_sc_ct for _, _sc_ct in _chain_sc_list], title_artist)
 
     anim = FuncAnimation(
         fig,

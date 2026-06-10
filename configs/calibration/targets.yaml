@@ -1,0 +1,73 @@
+# ---------------------------------------------------------------------------
+# configs/calibration/targets.yaml
+# Empirical calibration targets for the structural parameters.
+# Each value is an external moment; sources in comments. The calibration
+# scripts read ONLY this file for empirical inputs.
+# ---------------------------------------------------------------------------
+#
+# scale anchor: representative STANDARD-chain basket price, euros per trip.
+# Free normalization (model is scale-covariant); set for interpretability.
+basket_price_standard_eur: 40.0
+#
+# Chain-type price-level indices, relative to standard = 1.0.
+# Source: German grocery basket price studies (discounter vs full-range;
+# organic premium). Transcribe from Statista / Thünen-Institut / BÖLW.
+price_index:
+  discount: 0.85
+  standard: 1.00
+  bio:      1.30
+#
+# Gross margin = (price - COGS) / price, per chain type.
+# Baseline uses ONE common margin (parsimonious). Chain-specific values
+# are provided for the sensitivity run. Source: EHI Handel aktuell;
+# REWE Group / Ahold Delhaize annual reports.
+gross_margin_common: 0.22
+gross_margin_by_chain:
+  discount: 0.18
+  standard: 0.24
+  bio:      0.30
+use_common_margin: true        # true -> baseline; false -> chain-specific
+#
+# Value of travel time.
+# wage_monthly_gross_eur: Berlin median gross monthly wage of full-time
+#   employees. Source: Amt für Statistik Berlin-Brandenburg / the PLR median
+#   income file (Medianeinkommen_Berlin-2023.xlsx, Berlin-wide median).
+# work_hours_per_month: 4.33 weeks * weekly full-time hours.
+# vtt_wage_ratio (theta): fraction of the gross wage used as value of travel
+#   time for personal/shopping trips. Source: Wardman et al. (2016) European
+#   VTT meta-analysis; German BVWP 2030 methodology. Typical 0.35-0.50.
+# round_trip_factor: 2.0 because travel_times are ONE-WAY and a shopping
+#   occasion is a round trip. Set to 1.0 only if travel_times become round-trip.
+wage_monthly_gross_eur: 3955.0
+work_hours_per_month: 167.0
+vtt_wage_ratio: 0.5
+round_trip_factor: 2.0
+#
+# Outside-option target: aggregate share of consumer mass choosing NO
+# inner-ring store (online delivery + out-of-area + non-purchase).
+# Source: German online-grocery share is 5-10% nationally (ECDB 2025), but
+# inner-Berlin physical density is very high and most online food spend is
+# non-perishable; the substitution-away share for routine grocery trips in
+# inner Berlin is lower. Default 0.04; document range 0.02-0.06.
+outside_share_target: 0.04
+#
+# Chain-type market-share targets (composition of INSIDE demand, i.e. excluding
+# the outside option), used to identify q_S and q_B.
+# Baseline proxy: store-count shares from supermarkets.parquet
+#   (standard 207, discount 196, bio 91 of 494 -> 0.419 / 0.397 / 0.184).
+# If a better revenue/floorspace proxy becomes available, replace these.
+chain_share_target:
+  discount: 0.397
+  standard: 0.419
+  bio:      0.184
+#
+# Income gradient of premium-store (bio) patronage, used to identify the
+# consumer-type spread alpha_H / alpha_L.
+# Definition: ratio of bio inside-share among HIGH-pi_H cells (top quartile of
+# pi_H) to bio inside-share among LOW-pi_H cells (bottom quartile of pi_H).
+# Source: organic consumption rises strongly with SES/income — German NVS II
+# and EsKiMo II social-gradient findings; BMEL Ökobarometer. A high-vs-low SES
+# ratio of organic consumption of ~2-3x is consistent with that literature.
+# Default 2.5; document range 2.0-3.0.
+bio_share_income_gradient_target: 2.5
+# ---------------------------------------------------------------------------

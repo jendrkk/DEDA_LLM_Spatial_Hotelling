@@ -19,7 +19,9 @@
 #             ADR-017: kappa0 is chain-invariant.
 
 # Action space dimensions
-m: 15             # number of discrete price levels  (unchanged from baseline)
+# Union grid spans every chain's [Nash, monopoly] (~2x wider than global mean);
+# raise m so each chain still gets ~1 EUR resolution within its sub-band.
+m: 25             # number of discrete price levels (was 15 under global grid)
 m_effort: 5       # number of discrete effort levels; activates joint action space
                   # Raise further only after interior calibration is confirmed.
 e_max: 10.0       # maximum effort level (effort_grid = linspace(0, e_max, m_effort))
@@ -34,8 +36,10 @@ local_sum_n: null          # local_summary only: null/0 -> demand-overlap set
                            # (stores sharing >=1 catchment cell); N>0 -> N nearest
 n_price_bins: 15           # B: bins per price-summary statistic
 summary_stats: ["mean"]    # subset of ["mean","min"]; state_size = B^len(stats)
+local_summary_detailed: false   # true -> two channels: total local market
+                                # + same-chain-type local market (state=B^2)
 k_neighbors: 1    # number of nearest-rival joint actions in the Q-table state
-                  # State space size = (m * m_effort)^k = (15*5)^1 = 75
+                  # State space size = (m * m_effort)^k = (25*5)^1 = 125
 
 # Q-learning hyperparameters — identical to qlearning_baseline.yaml (Calvano 2020)
 alpha_lr: 0.15         # learning rate α
@@ -47,6 +51,10 @@ update_mode: sync      # "sync" (Calvano-style) or "async"
 min_price: 0.0
 max_price: 2.0
 auto_price_grid: true
+price_grid_mode: union   # "union" spans every chain's own [Nash, monopoly]
+                         # (correct for the vertically differentiated market);
+                         # "global" = legacy single-mean grid (clips discount
+                         # floor / bio ceiling — kept only for reproducing old runs)
 price_grid_xi: 0.1
 
 # Agent type

@@ -123,20 +123,46 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
     # implemented.  Until then, fall back to manual price-grid bounds from
     # the agent config and log a clear warning.
     _can_run_benchmarks = city.dist2_km2 is not None
+    grid_mode = str(agent_cfg.get("price_grid_mode", "union"))
     if auto_grid and _can_run_benchmarks:
         p_nash_arr, _ = bertrand_nash(city, transport_cost=tc, cache_path=benchmark_cache_pre)
         p_mono_arr, _ = joint_monopoly(city, transport_cost=tc, cache_path=benchmark_cache_pre)
         p_nash_pre = float(p_nash_arr.mean())
         p_mono_pre = float(p_mono_arr.mean())
         xi = float(agent_cfg.get("price_grid_xi", 0.1))
-        span = p_mono_pre - p_nash_pre
-        if span > 1e-6:
-            mc_min = min(getattr(f, "marginal_cost", 0.0) for f in firms)
-            grid_min = max(mc_min, p_nash_pre - xi * span)
-            grid_max = p_mono_pre + xi * span
+        mc_min = min(getattr(f, "marginal_cost", 0.0) for f in firms)
+        if grid_mode == "union":
+            nash_lo = float(p_nash_arr.min())
+            mono_hi = float(p_mono_arr.max())
+            uspan = mono_hi - nash_lo
+            if uspan > 1e-6:
+                grid_min = max(mc_min, nash_lo - xi * uspan)
+                grid_max = mono_hi + xi * uspan
+            else:
+                grid_min = agent_cfg.get("min_price", None)
+                grid_max = agent_cfg.get("max_price", None)
+            import logging as _log
+
+            _m = int(agent_cfg.get("m", 15))
+            _log.getLogger(__name__).info(
+                "Price grid (union): [%.2f, %.2f] spans per-store Nash..mono "
+                "[%.2f, %.2f]; m=%d -> step=%.3f EUR. Recommend m>=21 for adequate "
+                "per-chain resolution.",
+                grid_min,
+                grid_max,
+                nash_lo,
+                mono_hi,
+                _m,
+                (grid_max - grid_min) / max(_m - 1, 1),
+            )
         else:
-            grid_min = agent_cfg.get("min_price", None)
-            grid_max = agent_cfg.get("max_price", None)
+            span = p_mono_pre - p_nash_pre
+            if span > 1e-6:
+                grid_min = max(mc_min, p_nash_pre - xi * span)
+                grid_max = p_mono_pre + xi * span
+            else:
+                grid_min = agent_cfg.get("min_price", None)
+                grid_max = agent_cfg.get("max_price", None)
     else:
         if auto_grid and not _can_run_benchmarks:
             import logging as _log
@@ -164,6 +190,9 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
         local_sum_n=agent_cfg.get("local_sum_n", None),
         n_price_bins=int(agent_cfg.get("n_price_bins", 15)),
         summary_stats=tuple(agent_cfg.get("summary_stats", ("mean",))),
+        local_summary_detailed=bool(
+            agent_cfg.get("local_summary_detailed", False)
+        ),
     )
 
     use_batch = bool(agent_cfg.get("use_batch", True))
@@ -375,6 +404,13 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
         "local_sum_n": agent_cfg.get("local_sum_n", None),
         "n_price_bins": agent_cfg.get("n_price_bins", 15),
         "summary_stats": agent_cfg.get("summary_stats", ["mean"]),
+        "local_summary_detailed": bool(
+            agent_cfg.get("local_summary_detailed", False)
+        ),
+        "local_summary_channels": [list(ch) for ch in env._ls_channels],
+        "price_grid_mode": agent_cfg.get("price_grid_mode", "union"),
+        "grid_min": float(grid_min) if grid_min is not None else None,
+        "grid_max": float(grid_max) if grid_max is not None else None,
         "deltas_by_chain": deltas_by_chain,
         "chain_price_table": chain_price_table,
         "realized_outside_share": realized_outside_share,

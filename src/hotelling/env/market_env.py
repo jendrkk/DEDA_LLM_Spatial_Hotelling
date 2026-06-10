@@ -96,6 +96,7 @@ class HotellingMarketEnv:
         local_sum_n: int | None = None,
         n_price_bins: int = 15,
         summary_stats: tuple | list = ("mean",),
+        local_summary_detailed: bool = False,
     ) -> None:
         self.city = city
         self.firms = firms
@@ -117,6 +118,8 @@ class HotellingMarketEnv:
                 f"summary_stats must be a subset of {_valid_stats}, got {summary_stats}"
             )
         self.summary_stats = [s for s in ("mean", "min") if s in stats_set]
+        self.local_summary_detailed = bool(local_summary_detailed)
+        self._ls_channels: list[tuple[str, str]] = []
 
         if self.state_mode not in ("neighbors", "local_summary"):
             raise ValueError(
@@ -167,12 +170,16 @@ class HotellingMarketEnv:
         self._firm_arrays: FirmArrays = precompute_firm_arrays(firms)
 
         if self.state_mode == "local_summary":
+            if self.local_summary_detailed:
+                self._ls_channels = [("all", "mean"), ("same_type", "mean")]
+            else:
+                self._ls_channels = [("all", s) for s in self.summary_stats]
             self._init_local_summary_competitors()
 
     @property
     def state_size(self) -> int:
         if self.state_mode == "local_summary":
-            return int(self.n_price_bins ** len(self.summary_stats))
+            return int(self.n_price_bins ** len(self._ls_channels))
         return int(self._action_size ** self.k_neighbors)
 
     def _init_local_summary_competitors(self) -> None:
@@ -210,19 +217,42 @@ class HotellingMarketEnv:
 
         from scipy.sparse import csr_matrix
 
+        needs_same_type = any(sn == "same_type" for sn, _ in self._ls_channels)
+
         comp_csr = csr_matrix(adj)
         self._comp_indptr = comp_csr.indptr.astype(np.int64)
         self._comp_indices = comp_csr.indices.astype(np.int64)
         self._price_bin_edges = np.linspace(
             self.price_grid.min(), self.price_grid.max(), self.n_price_bins + 1
         )
-        mean_deg = float(comp_csr.sum(axis=1).mean()) if N > 0 else 0.0
-        logger.info(
-            "local_summary competitors: mode=%s, mean=%.1f/store, state_size=%d",
-            mode_label,
-            mean_deg,
-            self.state_size,
-        )
+
+        if needs_same_type:
+            ct = np.array(
+                [getattr(f, "chain_type", "") for f in self.firms], dtype=object
+            )
+            same_adj = adj & (ct[:, None] == ct[None, :])
+            same_csr = csr_matrix(same_adj)
+            self._comp_indptr_same = same_csr.indptr.astype(np.int64)
+            self._comp_indices_same = same_csr.indices.astype(np.int64)
+
+        if self.local_summary_detailed:
+            mean_all = float(comp_csr.sum(axis=1).mean()) if N > 0 else 0.0
+            mean_same = float(same_csr.sum(axis=1).mean()) if N > 0 else 0.0
+            logger.info(
+                "local_summary_detailed: all=%.1f/store, same_type=%.1f/store, "
+                "state_size=%d",
+                mean_all,
+                mean_same,
+                self.state_size,
+            )
+        else:
+            mean_deg = float(comp_csr.sum(axis=1).mean()) if N > 0 else 0.0
+            logger.info(
+                "local_summary competitors: mode=%s, mean=%.1f/store, state_size=%d",
+                mode_label,
+                mean_deg,
+                self.state_size,
+            )
 
     def _euclidean_neighbor_adjacency(self, n_nearest: int) -> np.ndarray:
         """Boolean (N, N) adjacency: each row has up to n_nearest competitors."""
@@ -251,19 +281,18 @@ class HotellingMarketEnv:
             return self.get_neighbor_actions_arr()
         pidx = self._current_joint_actions_arr // self.m_effort
         prices = self.price_grid[pidx].astype(np.float64)
-        mean_c, min_c = _local_price_summary(
-            prices, self._comp_indptr, self._comp_indices
-        )
         B = self.n_price_bins
-
-        def _bin(v: np.ndarray) -> np.ndarray:
-            return np.clip(
-                np.digitize(v, self._price_bin_edges) - 1, 0, B - 1
-            )
-
         bins = []
-        for s in self.summary_stats:
-            bins.append(_bin(mean_c) if s == "mean" else _bin(min_c))
+        for set_name, stat in self._ls_channels:
+            if set_name == "all":
+                indptr, indices = self._comp_indptr, self._comp_indices
+            else:
+                indptr, indices = self._comp_indptr_same, self._comp_indices_same
+            mean_c, min_c = _local_price_summary(prices, indptr, indices)
+            v = mean_c if stat == "mean" else min_c
+            bins.append(
+                np.clip(np.digitize(v, self._price_bin_edges) - 1, 0, B - 1)
+            )
         mult = B ** np.arange(len(bins), dtype=np.int64)
         return (np.stack(bins, axis=1).astype(np.int64) * mult[None, :]).sum(axis=1)
 

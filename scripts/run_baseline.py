@@ -347,6 +347,19 @@ def main() -> None:
              "definition); --local-sum N = the N nearest stores. Omit to keep "
              "the k-neighbors state. Composes with --with-effort.",
     )
+    parser.add_argument(
+        "--local-sum-d",
+        type=int,
+        nargs="?",
+        const=0,
+        default=None,
+        metavar="N",
+        help="Detailed local-summary state: condition on TWO binned price "
+             "summaries — the total local market AND the same-chain-type "
+             "local market (state_size = n_price_bins^2, ~ like k=2). Bare = "
+             "demand-overlap set; N = N nearest. Mutually exclusive with "
+             "--local-sum.",
+    )
     args = parser.parse_args()
 
     # --- Load config ---
@@ -396,7 +409,21 @@ def main() -> None:
     if args.dense_tail is not None:
         config["phase0"]["dense_tail"] = args.dense_tail
         logger.info("dense_tail override: %d", args.dense_tail)
-    if args.local_sum is not None:
+    if args.local_sum is not None and args.local_sum_d is not None:
+        parser.error("--local-sum and --local-sum-d are mutually exclusive.")
+    if args.local_sum_d is not None:
+        config["agents"]["state_mode"] = "local_summary"
+        config["agents"]["local_summary_detailed"] = True
+        config["agents"]["local_sum_n"] = (
+            None if args.local_sum_d == 0 else args.local_sum_d
+        )
+        logger.info(
+            "state_mode=local_summary (DETAILED: total + same-type), "
+            "local_sum_n=%s, n_price_bins=%s",
+            config["agents"]["local_sum_n"],
+            config["agents"].get("n_price_bins", 15),
+        )
+    elif args.local_sum is not None:
         config["agents"]["state_mode"] = "local_summary"
         config["agents"]["local_sum_n"] = (
             None if args.local_sum == 0 else args.local_sum

@@ -266,13 +266,12 @@ class BatchSimulationEngine:
 
         _obs, _infos = self.env.reset(seed=seed)
         self.batch_agent.reset()
-        # Obtain initial neighbor actions from the array state (no dict parse)
-        neighbor_actions = self.env.get_neighbor_actions_arr()
+        state_signal = self.env.current_state_signal()
 
         n_steps = 0
         for step in range(self.max_steps):
-            neighbor_actions, _rewards_arr, done = self._batch_step(
-                neighbor_actions, step
+            state_signal, _rewards_arr, done = self._batch_step(
+                state_signal, step
             )
             n_steps = step + 1
             if done:
@@ -321,7 +320,7 @@ class BatchSimulationEngine:
 
     def _batch_step(
         self,
-        neighbor_actions_batch: np.ndarray,
+        state_signal: np.ndarray,
         step: int,
     ) -> Tuple[np.ndarray, np.ndarray, bool]:
         """Execute one vectorized environment step via the array hot path.
@@ -331,24 +330,24 @@ class BatchSimulationEngine:
 
         Parameters
         ----------
-        neighbor_actions_batch : (N, k) int64
-            Previous period's neighbor action indices.
+        state_signal : (N, k) int64 in neighbors mode, or (N,) int64 in local_summary
         step : int
             Current 0-based step index.
 
         Returns
         -------
-        next_neighbor_actions : (N, k) int64
+        next_signal : same shape/dtype as state_signal
         rewards_arr : (N,) float64
         done : bool — always False (firms never terminate mid-episode).
         """
-        actions = self.batch_agent.act(neighbor_actions_batch)
+        actions = self.batch_agent.act(state_signal)
 
         # Single env call: returns arrays directly, no dict overhead
-        next_neighbor_actions, rewards_arr, demands_arr = self.env.step_array(actions)
+        _next_neighbor_actions, rewards_arr, demands_arr = self.env.step_array(actions)
 
-        states = self.batch_agent._encode_states(neighbor_actions_batch)
-        next_states = self.batch_agent._encode_states(next_neighbor_actions)
+        next_signal = self.env.current_state_signal()
+        states = self.batch_agent._encode_states(state_signal)
+        next_states = self.batch_agent._encode_states(next_signal)
         self.batch_agent.update(states, actions, rewards_arr, next_states)
 
         price_idxs = actions // self.env.m_effort
@@ -394,4 +393,4 @@ class BatchSimulationEngine:
         # Firms never terminate mid-episode in this model
         done = len(self.env.agents) == 0
 
-        return next_neighbor_actions, rewards_arr, done
+        return next_signal, rewards_arr, done

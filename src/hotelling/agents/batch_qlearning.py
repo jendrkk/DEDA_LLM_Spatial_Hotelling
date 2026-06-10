@@ -1,7 +1,11 @@
 """Vectorized batch Q-learning: all N agents in one (N, S, A) Q-table."""
 from __future__ import annotations
 
+import logging
+
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 class BatchQLearningAgent:
@@ -17,6 +21,9 @@ class BatchQLearningAgent:
         beta_decay: float,
         delta: float,
         seed: int | None = None,
+        max_qtable_gib: float = 8.0,
+        state_mode: str = "neighbors",
+        state_size: int | None = None,
     ) -> None:
         self.n = n_agents
         self.m = m
@@ -25,8 +32,32 @@ class BatchQLearningAgent:
         self.alpha = alpha
         self.beta_decay = beta_decay
         self.delta = delta
+        self.state_mode = state_mode
         self.action_size = m * m_effort
-        self.state_size = self.action_size ** k
+        self.state_size = (
+            int(state_size) if state_size is not None else self.action_size ** k
+        )
+
+        n_qvals = n_agents * self.state_size * self.action_size
+        gib = n_qvals * 8 / (1024**3)
+        logger.info(
+            "Q-table: %d agents x %d states x %d actions = %.3g values "
+            "(%.2f GiB, k=%d, action_size=%d)",
+            n_agents,
+            self.state_size,
+            self.action_size,
+            n_qvals,
+            gib,
+            k,
+            self.action_size,
+        )
+        if gib > max_qtable_gib:
+            raise MemoryError(
+                f"Q-table would need {gib:.1f} GiB > max_qtable_gib={max_qtable_gib} "
+                f"(k={k}, action_size={self.action_size}, states={self.state_size}). "
+                f"Reduce k_neighbors, freeze effort (m_effort=1), or raise "
+                f"max_qtable_gib explicitly."
+            )
 
         self._rng = np.random.default_rng(seed)
         self._t = np.zeros(n_agents, dtype=np.int64)
@@ -40,8 +71,15 @@ class BatchQLearningAgent:
         self._q[:] = 0.0
         self._t[:] = 0
 
-    def _encode_states(self, neighbor_actions: np.ndarray) -> np.ndarray:
-        """Mixed-radix encoding: neighbor_actions shape (N, k) → state indices (N,)."""
+    def _encode_states(self, signal: np.ndarray) -> np.ndarray:
+        """Encode state signal → flat state indices (N,)."""
+        if self.state_mode == "local_summary":
+            s = np.asarray(signal, dtype=np.int64)
+            assert s.ndim == 1 and s.shape[0] == self.n, (
+                "local_summary signal must be (N,)"
+            )
+            return s
+        neighbor_actions = signal
         if self.k == 1:
             return neighbor_actions[:, 0].astype(np.int64)
         multipliers = self.action_size ** np.arange(self.k, dtype=np.int64)

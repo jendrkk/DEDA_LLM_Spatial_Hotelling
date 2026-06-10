@@ -28,6 +28,12 @@ e_max: 10.0       # maximum effort level (effort_grid = linspace(0, e_max, m_eff
                   # printed by check_effort_calibration.py.
 
 # State space
+state_mode: neighbors      # "neighbors" (k-nearest rival actions, default)
+                           # or "local_summary" (discretized local price index)
+local_sum_n: null          # local_summary only: null/0 -> demand-overlap set
+                           # (stores sharing >=1 catchment cell); N>0 -> N nearest
+n_price_bins: 15           # B: bins per price-summary statistic
+summary_stats: ["mean"]    # subset of ["mean","min"]; state_size = B^len(stats)
 k_neighbors: 1    # number of nearest-rival joint actions in the Q-table state
                   # State space size = (m * m_effort)^k = (15*5)^1 = 75
 

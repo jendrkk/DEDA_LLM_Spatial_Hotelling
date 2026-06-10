@@ -148,7 +148,11 @@ def _get_firm_arrays(city: City) -> FirmArrays:
 # Catchment (sparse CSR) demand kernels
 # ---------------------------------------------------------------------------
 
-@nb.njit(parallel=True, fastmath=True, cache=True)
+# cache=False: this parallel kernel uses nb.get_thread_id()/thread-local
+# reduction, which Numba cannot disk-cache (it would warn and recompile
+# regardless). Explicit cache=False silences the misleading warning; the
+# one-time ~1-2s recompile per process is unchanged. See market.py kernels.
+@nb.njit(parallel=True, fastmath=True, cache=False)
 def _catchment_demand_jit(
     g,          # (N,) float64  beta*efforts - prices  [per-period]
     A,          # (2, N) float64  alpha_h * quality_j  [invariant]
@@ -239,7 +243,11 @@ def _catchment_demand_jit(
     return result
 
 
-@nb.njit(parallel=True, fastmath=True, cache=True)
+# cache=False: this parallel kernel uses nb.get_thread_id()/thread-local
+# reduction, which Numba cannot disk-cache (it would warn and recompile
+# regardless). Explicit cache=False silences the misleading warning; the
+# one-time ~1-2s recompile per process is unchanged. See market.py kernels.
+@nb.njit(parallel=True, fastmath=True, cache=False)
 def _catchment_demand_expw_jit(
     g,       # (N,) float64  beta*efforts - prices  [per-period]
     Kexp_L,  # (NNZ,) precomputed exp((A[0,idx]+C)*inv_mu)

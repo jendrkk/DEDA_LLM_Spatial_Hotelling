@@ -160,6 +160,10 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
         transport_cost=float(env_cfg.get("transport_cost", 0.01)),
         min_price=float(grid_min) if grid_min is not None else None,
         max_price=float(grid_max) if grid_max is not None else None,
+        state_mode=str(agent_cfg.get("state_mode", "neighbors")),
+        local_sum_n=agent_cfg.get("local_sum_n", None),
+        n_price_bins=int(agent_cfg.get("n_price_bins", 15)),
+        summary_stats=tuple(agent_cfg.get("summary_stats", ("mean",))),
     )
 
     use_batch = bool(agent_cfg.get("use_batch", True))
@@ -178,6 +182,8 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
             beta_decay=float(agent_cfg.get("beta_decay", 4e-6)),
             delta=float(agent_cfg.get("delta", 0.95)),
             seed=int(seed) if seed is not None else None,
+            state_mode=str(agent_cfg.get("state_mode", "neighbors")),
+            state_size=env.state_size,
         )
     else:
         agents = {
@@ -365,6 +371,10 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
         if dense_log is not None
         else None,
         "use_batch": use_batch,
+        "state_mode": agent_cfg.get("state_mode", "neighbors"),
+        "local_sum_n": agent_cfg.get("local_sum_n", None),
+        "n_price_bins": agent_cfg.get("n_price_bins", 15),
+        "summary_stats": agent_cfg.get("summary_stats", ["mean"]),
         "deltas_by_chain": deltas_by_chain,
         "chain_price_table": chain_price_table,
         "realized_outside_share": realized_outside_share,

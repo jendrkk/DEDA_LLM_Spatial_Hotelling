@@ -34,6 +34,10 @@ Usage
         --env-config configs/env/berlin_inner_ring_calibrated.yaml \\
         --T-burnin 1000000 --seed 42
 
+    # Long run, minimal disk (price animation only):
+    python scripts/run_baseline.py --env-config configs/env/berlin_inner_ring_calibrated.yaml \\
+        --T-burnin 2000000 --lean --seed 42
+
 Calibration note
 ----------------
 Before the first full run, calibrate λ:
@@ -311,6 +315,38 @@ def main() -> None:
             "Applied after --with-effort; default is 1 (price-only Calvano baseline)."
         ),
     )
+    parser.add_argument(
+        "--k-neighbors",
+        type=int,
+        default=None,
+        metavar="INT",
+        help="Override agents.k_neighbors (default from config: 1).",
+    )
+    parser.add_argument("--lean", action="store_true",
+                        help="Save only essential dense-log data: price/effort indices, steps, "
+                             "grids, and aggregate.parquet. Skips the demand & profit arrays "
+                             "(recomputable post-hoc via market_clearing on the stored indices), "
+                             "halving disk and avoiding the >5GB DenseLog warning on long runs. "
+                             "This is exactly what 06_spatial_animations needs (it colours stores "
+                             "by price).")
+    parser.add_argument("--dense-stride", type=int, default=None, metavar="INT",
+                        help="Record only every INT-th step in the dense log (default 1). "
+                             "Use for very long runs, e.g. --dense-stride 20 on a 20M-step run.")
+    parser.add_argument("--dense-tail", type=int, default=None, metavar="INT",
+                        help="Always densely record the last INT steps regardless of stride "
+                             "(captures the converged regime at full resolution).")
+    parser.add_argument(
+        "--local-sum",
+        type=int,
+        nargs="?",
+        const=0,
+        default=None,
+        metavar="N",
+        help="Use the local-market price-summary state instead of k-neighbors. "
+             "Bare --local-sum = demand-overlap competitor set (default "
+             "definition); --local-sum N = the N nearest stores. Omit to keep "
+             "the k-neighbors state. Composes with --with-effort.",
+    )
     args = parser.parse_args()
 
     # --- Load config ---
@@ -347,6 +383,31 @@ def main() -> None:
     if args.m_effort is not None:
         config["agents"]["m_effort"] = args.m_effort
         logger.info("CLI override: agents.m_effort = %d", args.m_effort)
+    if args.k_neighbors is not None:
+        config["agents"]["k_neighbors"] = args.k_neighbors
+        logger.info("k_neighbors override: %d", args.k_neighbors)
+    if args.lean:
+        config["phase0"]["store_demand_profit"] = False
+        logger.info("--lean: store_demand_profit=False "
+                    "(demand/profit arrays not written; recomputable post-hoc).")
+    if args.dense_stride is not None:
+        config["phase0"]["dense_stride"] = args.dense_stride
+        logger.info("dense_stride override: %d", args.dense_stride)
+    if args.dense_tail is not None:
+        config["phase0"]["dense_tail"] = args.dense_tail
+        logger.info("dense_tail override: %d", args.dense_tail)
+    if args.local_sum is not None:
+        config["agents"]["state_mode"] = "local_summary"
+        config["agents"]["local_sum_n"] = (
+            None if args.local_sum == 0 else args.local_sum
+        )
+        logger.info(
+            "state_mode=local_summary, local_sum_n=%s, n_price_bins=%s, "
+            "summary_stats=%s",
+            config["agents"]["local_sum_n"],
+            config["agents"].get("n_price_bins", 15),
+            config["agents"].get("summary_stats", ["mean"]),
+        )
 
     output_dir = _REPO_ROOT / args.output_dir
 

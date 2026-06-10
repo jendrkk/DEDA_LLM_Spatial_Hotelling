@@ -26,8 +26,10 @@ References: ADR-003; docs/agent_simulation_technical_report.md §3.
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 
+import numba as nb
 import numpy as np
 
 from hotelling.core.market import (
@@ -35,6 +37,32 @@ from hotelling.core.market import (
     market_clearing_arrays,
     precompute_firm_arrays,
 )
+
+logger = logging.getLogger(__name__)
+
+
+@nb.njit(cache=True)
+def _local_price_summary(prices, indptr, indices):
+    N = indptr.shape[0] - 1
+    mean = np.empty(N)
+    mn = np.empty(N)
+    for j in range(N):
+        s = 0.0
+        m = 1e18
+        cnt = 0
+        for p in range(indptr[j], indptr[j + 1]):
+            v = prices[indices[p]]
+            s += v
+            cnt += 1
+            if v < m:
+                m = v
+        if cnt > 0:
+            mean[j] = s / cnt
+            mn[j] = m
+        else:
+            mean[j] = prices[j]
+            mn[j] = prices[j]
+    return mean, mn
 
 
 class HotellingMarketEnv:
@@ -64,6 +92,10 @@ class HotellingMarketEnv:
         e_max: float = 10.0,
         k_neighbors: int = 1,
         transport_cost: float = 0.01,
+        state_mode: str = "neighbors",
+        local_sum_n: int | None = None,
+        n_price_bins: int = 15,
+        summary_stats: tuple | list = ("mean",),
     ) -> None:
         self.city = city
         self.firms = firms
@@ -72,6 +104,24 @@ class HotellingMarketEnv:
         self.e_max = e_max
         self.k_neighbors = k_neighbors
         self.transport_cost = transport_cost
+        self.state_mode = state_mode
+        self.local_sum_n = local_sum_n
+        self.n_price_bins = int(n_price_bins)
+
+        _valid_stats = {"mean", "min"}
+        stats_set = set(summary_stats)
+        if not stats_set:
+            raise ValueError("summary_stats must be non-empty")
+        if not stats_set <= _valid_stats:
+            raise ValueError(
+                f"summary_stats must be a subset of {_valid_stats}, got {summary_stats}"
+            )
+        self.summary_stats = [s for s in ("mean", "min") if s in stats_set]
+
+        if self.state_mode not in ("neighbors", "local_summary"):
+            raise ValueError(
+                f"state_mode must be 'neighbors' or 'local_summary', got {state_mode!r}"
+            )
 
         # Price grid
         mc_min = min(getattr(f, "marginal_cost", 0.0) for f in firms)
@@ -115,6 +165,107 @@ class HotellingMarketEnv:
 
         # Precompute per-firm attribute arrays for the market-clearing hot path.
         self._firm_arrays: FirmArrays = precompute_firm_arrays(firms)
+
+        if self.state_mode == "local_summary":
+            self._init_local_summary_competitors()
+
+    @property
+    def state_size(self) -> int:
+        if self.state_mode == "local_summary":
+            return int(self.n_price_bins ** len(self.summary_stats))
+        return int(self._action_size ** self.k_neighbors)
+
+    def _init_local_summary_competitors(self) -> None:
+        """Precompute competitor CSR and price-bin edges for local_summary mode."""
+        N = len(self.firms)
+        n_set = self.local_sum_n
+        use_overlap = n_set is None or n_set == 0
+
+        if use_overlap:
+            catch_indptr = getattr(self.city, "catch_indptr", None)
+            if catch_indptr is not None:
+                mode_label = "demand_overlap"
+                adj = np.zeros((N, N), dtype=bool)
+                M = len(catch_indptr) - 1
+                catch_indices = self.city.catch_indices
+                for i in range(M):
+                    start = int(catch_indptr[i])
+                    end = int(catch_indptr[i + 1])
+                    stores = catch_indices[start:end]
+                    for a in stores:
+                        for b in stores:
+                            if a != b:
+                                adj[int(a), int(b)] = True
+            else:
+                mode_label = "euclidean_nearest_10"
+                logger.warning(
+                    "local_summary demand-overlap requested but city.catch_indptr "
+                    "is None; falling back to 10-nearest Euclidean competitors."
+                )
+                adj = self._euclidean_neighbor_adjacency(10)
+        else:
+            mode_label = f"euclidean_nearest_{int(n_set)}"
+            # Euclidean distance between store locations (demand uses transit time).
+            adj = self._euclidean_neighbor_adjacency(int(n_set))
+
+        from scipy.sparse import csr_matrix
+
+        comp_csr = csr_matrix(adj)
+        self._comp_indptr = comp_csr.indptr.astype(np.int64)
+        self._comp_indices = comp_csr.indices.astype(np.int64)
+        self._price_bin_edges = np.linspace(
+            self.price_grid.min(), self.price_grid.max(), self.n_price_bins + 1
+        )
+        mean_deg = float(comp_csr.sum(axis=1).mean()) if N > 0 else 0.0
+        logger.info(
+            "local_summary competitors: mode=%s, mean=%.1f/store, state_size=%d",
+            mode_label,
+            mean_deg,
+            self.state_size,
+        )
+
+    def _euclidean_neighbor_adjacency(self, n_nearest: int) -> np.ndarray:
+        """Boolean (N, N) adjacency: each row has up to n_nearest competitors."""
+        N = len(self.firms)
+        adj = np.zeros((N, N), dtype=bool)
+        if N <= 1:
+            return adj
+        locations = np.array([f.location for f in self.firms], dtype=np.float64)
+        from scipy.spatial import cKDTree
+
+        tree = cKDTree(locations)
+        k_query = min(n_nearest + 1, N)
+        _, idx = tree.query(locations, k=k_query)
+        if k_query == 1:
+            idx = idx.reshape(N, 1)
+        for j in range(N):
+            for nidx in idx[j]:
+                nidx = int(nidx)
+                if nidx != j:
+                    adj[j, nidx] = True
+        return adj
+
+    def current_state_signal(self) -> np.ndarray:
+        """Return the Q-learning state signal for all agents at the current actions."""
+        if self.state_mode != "local_summary":
+            return self.get_neighbor_actions_arr()
+        pidx = self._current_joint_actions_arr // self.m_effort
+        prices = self.price_grid[pidx].astype(np.float64)
+        mean_c, min_c = _local_price_summary(
+            prices, self._comp_indptr, self._comp_indices
+        )
+        B = self.n_price_bins
+
+        def _bin(v: np.ndarray) -> np.ndarray:
+            return np.clip(
+                np.digitize(v, self._price_bin_edges) - 1, 0, B - 1
+            )
+
+        bins = []
+        for s in self.summary_stats:
+            bins.append(_bin(mean_c) if s == "mean" else _bin(min_c))
+        mult = B ** np.arange(len(bins), dtype=np.int64)
+        return (np.stack(bins, axis=1).astype(np.int64) * mult[None, :]).sum(axis=1)
 
     # ------------------------------------------------------------------
     # Internal helpers

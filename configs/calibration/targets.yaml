@@ -12,6 +12,8 @@ basket_price_standard_eur: 40.0
 # Chain-type price-level indices, relative to standard = 1.0.
 # Source: German grocery basket price studies (discounter vs full-range;
 # organic premium). Transcribe from Statista / Thünen-Institut / BÖLW.
+# q_S and q_B are DERIVED from this ladder in compute_qualities() (ADR-028);
+# they are not solved parameters.
 price_index:
   discount: 0.85
   standard: 1.00
@@ -51,18 +53,15 @@ round_trip_factor: 2.0
 # inner Berlin is lower. Default 0.04; document range 0.02-0.06.
 outside_share_target: 0.04
 #
-# Chain-type market-share targets (composition of INSIDE demand, i.e. excluding
-# the outside option), used to identify q_S and q_B.
-# Baseline proxy: store-count shares from supermarkets.parquet
-#   (standard 207, discount 196, bio 91 of 494 -> 0.419 / 0.397 / 0.184).
-# If a better revenue/floorspace proxy becomes available, replace these.
-chain_share_target:
-  discount: 0.397
-  standard: 0.419
-  bio:      0.184
+# Exogenous consumer-type quality-sensitivity ratio alpha_H / alpha_L.
+# NOT solved: set directly from the organic-consumption income gradient in
+# the German literature (NVS II, EsKiMo II social gradient; BMEL
+# Ökobarometer) — high-SES households consume roughly 2-3x more organic.
+# The model's realised bio income gradient is reported as a VALIDATION
+# output, not a calibration target. Default 2.5; document range 2.0-3.0.
+alpha_ratio: 2.5
 #
-# Income gradient of premium-store (bio) patronage, used to identify the
-# consumer-type spread alpha_H / alpha_L.
+# Reference for validation report only (NOT a solve target).
 # Definition: ratio of bio inside-share among HIGH-pi_H cells (top quartile of
 # pi_H) to bio inside-share among LOW-pi_H cells (bottom quartile of pi_H).
 # Source: organic consumption rises strongly with SES/income — German NVS II

@@ -28,6 +28,7 @@ def _make_firm(
     *,
     x: float,
     marginal_cost: float,
+    chain_type: str,
 ) -> Firm:
     return Firm(
         id=firm_id,
@@ -39,6 +40,7 @@ def _make_firm(
         rent=0.0,
         fixed_cost=0.0,
         chain=firm_id,
+        chain_type=chain_type,
     )
 
 
@@ -56,12 +58,12 @@ def _make_synthetic_city(
         dist2_km2 = rng.uniform(1.0, 15.0, size=(m_cells, n_firms))
 
     firms = [
-        _make_firm("d1", 0.0, x=0.0, marginal_cost=10.0),
-        _make_firm("d2", 0.0, x=1.0, marginal_cost=10.0),
-        _make_firm("s1", _Q_S, x=2.0, marginal_cost=25.0),
-        _make_firm("s2", _Q_S, x=3.0, marginal_cost=25.0),
-        _make_firm("b1", _Q_B, x=4.0, marginal_cost=35.0),
-        _make_firm("b2", _Q_B, x=5.0, marginal_cost=35.0),
+        _make_firm("d1", 0.0, x=0.0, marginal_cost=10.0, chain_type="discount"),
+        _make_firm("d2", 0.0, x=1.0, marginal_cost=10.0, chain_type="discount"),
+        _make_firm("s1", _Q_S, x=2.0, marginal_cost=25.0, chain_type="standard"),
+        _make_firm("s2", _Q_S, x=3.0, marginal_cost=25.0, chain_type="standard"),
+        _make_firm("b1", _Q_B, x=4.0, marginal_cost=35.0, chain_type="bio"),
+        _make_firm("b2", _Q_B, x=5.0, marginal_cost=35.0, chain_type="bio"),
     ]
 
     cell_pop = rng.uniform(50.0, 200.0, size=m_cells)

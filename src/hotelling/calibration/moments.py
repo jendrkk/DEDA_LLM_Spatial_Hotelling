@@ -11,31 +11,19 @@ from hotelling.core.market import cell_choice_mass
 _CHAIN_TYPES = ("discount", "standard", "bio")
 
 
-def _firm_chain_types(city: City, q_S: float, q_B: float) -> np.ndarray:
-    """Return an (N,) array of chain-type labels ('discount'|'standard'|'bio')
-    derived from each firm's quality via np.isclose against {0.0, q_S, q_B}.
-    Unmatched qualities default to 'standard' (should not happen)."""
+def _firm_chain_types(city: City) -> np.ndarray:
+    """Return (N,) array of chain-type labels read directly from
+    firm.chain_type. Raises ValueError if any firm.chain_type is None
+    (loader must populate it) or not in {'discount','standard','bio'}."""
     labels = np.empty(len(city.firms), dtype=object)
-    atol = max(1e-6, 1e-9 * max(abs(q_S), abs(q_B), 1.0))
-    anchors = (
-        (0.0, "discount"),
-        (q_B, "bio"),
-        (q_S, "standard"),
-    )
     for j, firm in enumerate(city.firms):
-        q = firm.quality
-        matched = None
-        for anchor_q, label in anchors:
-            if np.isclose(q, anchor_q, atol=atol, rtol=0.0):
-                matched = label
-                break
-        if matched is None:
-            nearest = min(
-                anchors,
-                key=lambda item: abs(q - item[0]),
+        ct = getattr(firm, "chain_type", None)
+        if ct not in _CHAIN_TYPES:
+            raise ValueError(
+                f"Firm {firm.id} has invalid chain_type={ct!r}; the loader "
+                "must populate chain_type. Re-run with the updated loader."
             )
-            matched = nearest[1]
-        labels[j] = matched
+        labels[j] = ct
     return labels
 
 
@@ -114,8 +102,6 @@ def _outside_share_from(city: City, outside: np.ndarray) -> float:
 
 def _chain_shares_from(
     city: City,
-    q_S: float,
-    q_B: float,
     inside: np.ndarray,
 ) -> Dict[str, float]:
     demand = inside.sum(axis=0)
@@ -123,7 +109,7 @@ def _chain_shares_from(
     if total_inside <= 0.0:
         raise ValueError("Total inside demand is zero; cannot compute chain shares")
 
-    chain_types = _firm_chain_types(city, q_S, q_B)
+    chain_types = _firm_chain_types(city)
     shares: Dict[str, float] = {}
     for tau in _CHAIN_TYPES:
         mask = chain_types == tau
@@ -133,15 +119,13 @@ def _chain_shares_from(
 
 def _bio_income_gradient_from(
     city: City,
-    q_S: float,
-    q_B: float,
     inside: np.ndarray,
     n_quantile_bins: int = 4,
 ) -> float:
     if n_quantile_bins < 4:
         raise ValueError("n_quantile_bins must be at least 4 for quartile bins")
 
-    chain_types = _firm_chain_types(city, q_S, q_B)
+    chain_types = _firm_chain_types(city)
     bio_cols = chain_types == "bio"
     if not np.any(bio_cols):
         raise ValueError("No bio stores found; cannot compute bio income gradient")
@@ -213,7 +197,7 @@ def chain_shares(
     total inside demand sum_j D_j (so the three shares sum to 1)."""
     prices, efforts = _resolve_nash(city, transport_cost, None, None)
     inside, _outside = _choice_mass(city, transport_cost, prices, efforts)
-    return _chain_shares_from(city, q_S, q_B, inside)
+    return _chain_shares_from(city, inside)
 
 
 def bio_income_gradient(
@@ -240,7 +224,7 @@ def bio_income_gradient(
     prices, efforts = _resolve_nash(city, transport_cost, None, None)
     inside, _outside = _choice_mass(city, transport_cost, prices, efforts)
     return _bio_income_gradient_from(
-        city, q_S, q_B, inside, n_quantile_bins=n_quantile_bins
+        city, inside, n_quantile_bins=n_quantile_bins
     )
 
 
@@ -258,14 +242,12 @@ def all_model_moments(
     prices, efforts = bertrand_nash(city, transport_cost, cache_path=None)
     inside, outside = _choice_mass(city, transport_cost, prices, efforts)
 
-    shares = _chain_shares_from(city, q_S, q_B, inside)
+    shares = _chain_shares_from(city, inside)
     return {
         "mean_gross_margin": _mean_gross_margin_from(city, prices, inside),
         "outside_share": _outside_share_from(city, outside),
         "chain_share_discount": shares["discount"],
         "chain_share_standard": shares["standard"],
         "chain_share_bio": shares["bio"],
-        "bio_income_gradient": _bio_income_gradient_from(
-            city, q_S, q_B, inside
-        ),
+        "bio_income_gradient": _bio_income_gradient_from(city, inside),
     }

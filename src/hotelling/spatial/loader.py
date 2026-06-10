@@ -815,6 +815,7 @@ def load_berlin_city(
             rent=0.0,  # ADR-015 baseline; rent*size channel stays inert
             fixed_cost=float(fixed_costs_arr[i]),
             chain=str(row["chain"]) if pd.notna(row.get("chain")) else None,
+            chain_type=ct,
         )
         firms.append(firm)
     logger.info("Built %d Firm objects.", len(firms))

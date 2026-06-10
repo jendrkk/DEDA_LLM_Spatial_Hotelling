@@ -1,18 +1,18 @@
 #!/usr/bin/env python
-"""Structural calibration CLI — method-of-moments for (mu, a0, q_S, q_B, alpha_ratio).
+"""Structural calibration CLI — method-of-moments for (mu, a0) only.
 
 Loads empirical targets from configs/calibration/targets.yaml, fixes transport
-cost t and marginal costs c from external data (ADR-024/025), then solves for the
-five structural parameters by matching model moments to targets (ADR-026).
+cost t, marginal costs c, qualities q_S/q_B, and alpha_ratio from external data
+(ADR-024/025/028), then solves for logit scale mu and outside option a0.
 
 Usage
 -----
     conda activate py314
 
     # Smoke test (no YAML write):
-    python scripts/calibrate_structural.py --dry-run --max-nfev 8
+    python scripts/calibrate_structural.py --dry-run --max-nfev 25
 
-    # Full calibration:
+    # Full calibration (~1-2 min; City built once):
     python scripts/calibrate_structural.py
 
     # Custom output path:
@@ -99,41 +99,64 @@ def _resolve_lambda(env_cfg: dict, cli_lambda: float | None) -> float:
 def _print_report(result: dict) -> None:
     t = result["t"]
     c = result["c"]
+    validation = result["validation_targets"]
     print("\n" + "=" * 72)
     print("  STRUCTURAL CALIBRATION REPORT")
     print("=" * 72)
+
     print("\n  Data-only parameters (fixed before solve)")
     print(f"    transport_cost t:     {t:.6f}  EUR/min (one-way minutes)")
     print(f"    marginal_cost_D:      {c['discount']:.4f}  EUR/basket")
     print(f"    marginal_cost_S:      {c['standard']:.4f}  EUR/basket")
     print(f"    marginal_cost_B:      {c['bio']:.4f}  EUR/basket")
+    print(f"    q_S:                  {result['q_S']:.4f}  EUR (price ladder)")
+    print(f"    q_B:                  {result['q_B']:.4f}  EUR (price ladder)")
+    print(f"    alpha_L:              {result['alpha_L']:.6f}")
+    print(f"    alpha_H:              {result['alpha_H']:.6f}")
+    print(f"    alpha_ratio (H/L):    {result['alpha_ratio']:.4f}  (exogenous)")
+    print(f"    pi_H_bar:             {result['pi_H_bar']:.6f}")
 
     print("\n  Solved structural parameters")
     print(f"    logit_scale (mu):     {result['mu']:.6f}")
     print(f"    outside_option (a0):  {result['a0']:.6f}")
-    print(f"    q_S:                  {result['q_S']:.6f}")
-    print(f"    q_B:                  {result['q_B']:.6f}")
-    print(f"    alpha_L:              {result['alpha_L']:.6f}")
-    print(f"    alpha_H:              {result['alpha_H']:.6f}")
-    print(f"    alpha_ratio (H/L):    {result['alpha_ratio']:.6f}")
-    print(f"    pi_H_bar:             {result['pi_H_bar']:.6f}")
 
-    print("\n  Moment fit")
+    print("\n  Moment fit (objective)")
     print(f"  {'Moment':<28} {'Target':>12} {'Model':>12} {'Rel.err':>12}")
     print("  " + "-" * 66)
-
-    rows = [
+    for label, key in (
         ("mean_gross_margin", "mean_gross_margin"),
         ("outside_share", "outside_share"),
-        ("chain_share_discount", "chain_share_discount"),
-        ("chain_share_bio", "chain_share_bio"),
-        ("bio_income_gradient", "bio_income_gradient"),
-    ]
-    for label, key in rows:
+    ):
         target = result["moments_target"][key]
         model = result["moments_model"][key]
         rel_err = (model - target) / target if target != 0 else float("nan")
         print(f"  {label:<28} {target:12.6f} {model:12.6f} {rel_err:12.6f}")
+
+    print("\n  Validation (not targeted)")
+    print(f"  {'Moment':<28} {'Reference':>12} {'Model':>12}")
+    print("  " + "-" * 66)
+    model = result["moments_model"]
+    print(
+        f"  {'chain_share_discount':<28} "
+        f"{validation['chain_share_discount']:12.6f} "
+        f"{model['chain_share_discount']:12.6f}"
+    )
+    print(
+        f"  {'chain_share_standard':<28} "
+        f"{validation['chain_share_standard']:12.6f} "
+        f"{model['chain_share_standard']:12.6f}"
+    )
+    print(
+        f"  {'chain_share_bio':<28} "
+        f"{validation['chain_share_bio']:12.6f} "
+        f"{model['chain_share_bio']:12.6f}"
+    )
+    print(
+        f"  {'bio_income_gradient':<28} "
+        f"{validation['bio_income_gradient_ref']:12.6f} "
+        f"{model['bio_income_gradient']:12.6f}"
+    )
+    print("  (chain shares: store-count proxy reference; not in objective)")
 
     print(f"\n  residual_norm: {result['residual_norm']:.6e}")
     print(f"  success:       {result['success']}")
@@ -178,8 +201,8 @@ def main() -> None:
     parser.add_argument(
         "--max-nfev",
         type=int,
-        default=60,
-        help="Maximum residual evaluations for scipy least_squares (default: 60)",
+        default=40,
+        help="Maximum residual evaluations for scipy least_squares (default: 40)",
     )
     parser.add_argument(
         "--output-yaml",
@@ -234,6 +257,10 @@ def main() -> None:
         "Note: benchmarks_cache.npz will be auto-invalidated because "
         "_param_signature includes mu/alpha/costs; the next run_baseline.py "
         "recomputes Nash/monopoly automatically."
+    )
+    print(
+        "Note: City is built once and mu/a0 are mutated in place — full "
+        "calibration is ~1-2 minutes, not ~30."
     )
 
 

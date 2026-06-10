@@ -11,6 +11,12 @@ from hotelling.spatial.loader import load_berlin_city
 
 logger = logging.getLogger(__name__)
 
+_CHAIN_SHARE_COUNT_PROXY = {
+    "discount": 0.397,
+    "standard": 0.419,
+    "bio": 0.184,
+}
+
 
 def compute_transport_cost(
     wage_monthly_gross_eur: float,
@@ -70,6 +76,34 @@ def compute_marginal_costs(
     return c
 
 
+def compute_qualities(
+    basket_price_standard_eur: float,
+    price_index: Dict[str, float],
+) -> tuple[float, float]:
+    """Return (q_S, q_B) in euros from the observed price ladder.
+
+    With the population-weighted normalization alpha_bar = 1, the average
+    consumer's willingness-to-pay premium for a chain type equals its market
+    price premium over discount:
+        q_S = p_S - p_D
+        q_B = p_B - p_D
+    where p_tau = basket_price_standard_eur * price_index[tau].
+
+    Asserts 0 < q_S < q_B; raises ValueError otherwise. See ADR-028.
+    """
+    p_D = basket_price_standard_eur * price_index["discount"]
+    p_S = basket_price_standard_eur * price_index["standard"]
+    p_B = basket_price_standard_eur * price_index["bio"]
+    q_S = p_S - p_D
+    q_B = p_B - p_D
+    if not (0.0 < q_S < q_B):
+        raise ValueError(
+            f"Quality ordering violated: q_S={q_S}, q_B={q_B} "
+            f"(from price ladder {price_index})"
+        )
+    return q_S, q_B
+
+
 def _alphas_from_ratio(alpha_ratio: float, pi_H_bar: float) -> tuple[float, float]:
     """Return (alpha_L, alpha_H) given the ratio and the mass-weighted mean
     high-type share, normalized so pi_L_bar*alpha_L + pi_H_bar*alpha_H = 1."""
@@ -91,56 +125,27 @@ def _pi_H_bar(city) -> float:
 def _margin_target(targets: dict) -> float:
     if targets.get("use_common_margin", True):
         return float(targets["gross_margin_common"])
-    shares = targets["chain_share_target"]
     margins = targets["gross_margin_by_chain"]
     return float(
-        sum(shares[tau] * margins[tau] for tau in ("discount", "standard", "bio"))
+        sum(margins[tau] for tau in ("discount", "standard", "bio")) / 3.0
     )
 
 
 def _moment_targets(targets: dict) -> Dict[str, float]:
-    chain = targets["chain_share_target"]
     return {
         "mean_gross_margin": _margin_target(targets),
         "outside_share": float(targets["outside_share_target"]),
-        "chain_share_discount": float(chain["discount"]),
-        "chain_share_bio": float(chain["bio"]),
-        "bio_income_gradient": float(targets["bio_share_income_gradient_target"]),
     }
 
 
-def _pack_params(
-    mu: float,
-    a0: float,
-    q_S: float,
-    q_B: float,
-    alpha_ratio: float,
-) -> np.ndarray:
-    if q_B <= q_S:
-        q_B = q_S + 1e-3
-    if alpha_ratio <= 1.0:
-        alpha_ratio = 1.0 + 1e-3
-    if mu <= 0.0 or q_S <= 0.0:
-        raise ValueError("mu and q_S must be positive for parameter packing")
-    return np.array(
-        [
-            np.log(mu),
-            a0,
-            np.log(q_S),
-            np.log(q_B - q_S),
-            np.log(alpha_ratio - 1.0),
-        ],
-        dtype=np.float64,
-    )
-
-
-def _unpack_params(x: np.ndarray) -> tuple[float, float, float, float, float]:
-    mu = float(np.exp(x[0]))
-    a0 = float(x[1])
-    q_S = float(np.exp(x[2]))
-    q_B = q_S + float(np.exp(x[3]))
-    alpha_ratio = 1.0 + float(np.exp(x[4]))
-    return mu, a0, q_S, q_B, alpha_ratio
+def _verify_firm_chain_types(city) -> None:
+    for firm in city.firms:
+        if firm.chain_type not in ("discount", "standard", "bio"):
+            raise ValueError(
+                f"Firm {firm.id} has chain_type={firm.chain_type!r}; the loader "
+                "must populate chain_type on every store. Re-run with the "
+                "updated loader (ADR-028 / Firm.chain_type)."
+            )
 
 
 def _build_calibration_city(
@@ -193,13 +198,10 @@ def calibrate_structural(
     travel_times_path: str,
     lambda_val: float,
     x0: dict | None = None,
-    max_nfev: int = 60,
+    max_nfev: int = 40,
 ) -> dict:
-    """Run the full structural calibration and return a dict with the final
-    calibrated parameters and the achieved vs target moments.
-
-    See module docstring in ADR-026 for the five-moment just-identified design.
-    """
+    """Run structural calibration: fix t, c, q_S, q_B, alpha_ratio from data;
+    solve only (mu, a0) by method of moments. See ADR-028."""
     t = compute_transport_cost(
         wage_monthly_gross_eur=float(targets["wage_monthly_gross_eur"]),
         work_hours_per_month=float(targets["work_hours_per_month"]),
@@ -213,10 +215,16 @@ def calibrate_structural(
         gross_margin_by_chain=targets["gross_margin_by_chain"],
         use_common_margin=bool(targets.get("use_common_margin", True)),
     )
+    q_S, q_B = compute_qualities(
+        float(targets["basket_price_standard_eur"]),
+        targets["price_index"],
+    )
+    alpha_ratio = float(targets["alpha_ratio"])
 
-    moment_target = _moment_targets(targets)
+    mu0 = float((x0 or {}).get("mu", 6.0))
+    a00 = float((x0 or {}).get("a0", -5.0))
 
-    init_city = _build_calibration_city(
+    city = _build_calibration_city(
         grid_path=grid_path,
         stores_path=stores_path,
         travel_times_path=travel_times_path,
@@ -224,124 +232,80 @@ def calibrate_structural(
         env_cfg=env_cfg,
         transport_cost=t,
         costs=costs,
-        mu=float((x0 or {}).get("mu", env_cfg.get("logit_scale", 5.0))),
-        a0=float((x0 or {}).get("a0", env_cfg.get("outside_option", -5.0))),
-        q_S=float((x0 or {}).get("q_S", env_cfg.get("q_S", 3.0))),
-        q_B=float((x0 or {}).get("q_B", env_cfg.get("q_B", 8.0))),
-        alpha_L=float(env_cfg.get("alpha_L", 0.5)),
-        alpha_H=float(env_cfg.get("alpha_H", 1.5)),
+        mu=mu0,
+        a0=a00,
+        q_S=q_S,
+        q_B=q_B,
+        alpha_L=1.0,
+        alpha_H=1.0,
     )
-    pi_H_bar = _pi_H_bar(init_city)
+    _verify_firm_chain_types(city)
 
-    if x0 is not None and "alpha_ratio" in x0:
-        alpha_ratio0 = float(x0["alpha_ratio"])
-    else:
-        alpha_L0 = float(env_cfg.get("alpha_L", 0.5))
-        alpha_H0 = float(env_cfg.get("alpha_H", 1.5))
-        alpha_ratio0 = alpha_H0 / alpha_L0
+    pi_H_bar = _pi_H_bar(city)
+    alpha_L, alpha_H = _alphas_from_ratio(alpha_ratio, pi_H_bar)
+    city.alpha = np.array([alpha_L, alpha_H], dtype=np.float64)
 
-    x0_vec = _pack_params(
-        mu=float((x0 or {}).get("mu", env_cfg.get("logit_scale", 5.0))),
-        a0=float((x0 or {}).get("a0", env_cfg.get("outside_option", -5.0))),
-        q_S=float((x0 or {}).get("q_S", env_cfg.get("q_S", 3.0))),
-        q_B=float((x0 or {}).get("q_B", env_cfg.get("q_B", 8.0))),
-        alpha_ratio=alpha_ratio0,
-    )
+    moment_target = _moment_targets(targets)
+    tgt_margin = moment_target["mean_gross_margin"]
+    tgt_outside = moment_target["outside_share"]
 
     eval_count = 0
 
-    def residuals(x: np.ndarray) -> np.ndarray:
+    def residuals(y: np.ndarray) -> np.ndarray:
         nonlocal eval_count
         eval_count += 1
-        mu, a0, q_S, q_B, alpha_ratio = _unpack_params(x)
-        alpha_L, alpha_H = _alphas_from_ratio(alpha_ratio, pi_H_bar)
+        mu = float(np.exp(y[0]))
+        a0 = float(y[1])
         try:
-            city = _build_calibration_city(
-                grid_path=grid_path,
-                stores_path=stores_path,
-                travel_times_path=travel_times_path,
-                lambda_val=lambda_val,
-                env_cfg=env_cfg,
-                transport_cost=t,
-                costs=costs,
-                mu=mu,
-                a0=a0,
-                q_S=q_S,
-                q_B=q_B,
-                alpha_L=alpha_L,
-                alpha_H=alpha_H,
-            )
+            city.mu = mu
+            city.a0 = a0
             moments = all_model_moments(city, t, q_S, q_B)
             r = np.array(
                 [
-                    (moments["mean_gross_margin"] - moment_target["mean_gross_margin"])
-                    / moment_target["mean_gross_margin"],
-                    (moments["outside_share"] - moment_target["outside_share"])
-                    / moment_target["outside_share"],
-                    (
-                        moments["chain_share_discount"]
-                        - moment_target["chain_share_discount"]
-                    )
-                    / moment_target["chain_share_discount"],
-                    (moments["chain_share_bio"] - moment_target["chain_share_bio"])
-                    / moment_target["chain_share_bio"],
-                    (
-                        moments["bio_income_gradient"]
-                        - moment_target["bio_income_gradient"]
-                    )
-                    / moment_target["bio_income_gradient"],
+                    (moments["mean_gross_margin"] - tgt_margin) / tgt_margin,
+                    (moments["outside_share"] - tgt_outside) / tgt_outside,
                 ],
                 dtype=np.float64,
             )
         except (ValueError, FloatingPointError, RuntimeError) as exc:
             logger.warning(
-                "eval %d failed (mu=%.4f a0=%.4f q_S=%.4f q_B=%.4f): %s",
+                "eval %d failed (mu=%.4f a0=%.4f): %s",
                 eval_count,
                 mu,
                 a0,
-                q_S,
-                q_B,
                 exc,
             )
-            r = np.full(5, 1e3, dtype=np.float64)
+            r = np.full(2, 1e3, dtype=np.float64)
         logger.info(
-            "eval %d: mu=%.4f a0=%.4f q_S=%.4f q_B=%.4f alpha_ratio=%.4f "
-            "|res|=%.6f",
+            "eval %d: mu=%.4f a0=%.4f "
+            "rel[margin]=%.6f rel[outside]=%.6f |res|=%.6f",
             eval_count,
             mu,
             a0,
-            q_S,
-            q_B,
-            alpha_ratio,
+            float(r[0]),
+            float(r[1]),
             float(np.linalg.norm(r)),
         )
         return r
 
+    y0 = np.array([np.log(mu0), a00], dtype=np.float64)
+    lower = np.array([np.log(0.5), -50.0], dtype=np.float64)
+    upper = np.array([np.log(25.0), 0.0], dtype=np.float64)
+
     result = least_squares(
         residuals,
-        x0_vec,
+        y0,
         method="trf",
+        bounds=(lower, upper),
         max_nfev=max_nfev,
+        diff_step=0.05,
     )
 
-    mu, a0, q_S, q_B, alpha_ratio = _unpack_params(result.x)
-    alpha_L, alpha_H = _alphas_from_ratio(alpha_ratio, pi_H_bar)
-    final_city = _build_calibration_city(
-        grid_path=grid_path,
-        stores_path=stores_path,
-        travel_times_path=travel_times_path,
-        lambda_val=lambda_val,
-        env_cfg=env_cfg,
-        transport_cost=t,
-        costs=costs,
-        mu=mu,
-        a0=a0,
-        q_S=q_S,
-        q_B=q_B,
-        alpha_L=alpha_L,
-        alpha_H=alpha_H,
-    )
-    moments_model = all_model_moments(final_city, t, q_S, q_B)
+    mu = float(np.exp(result.x[0]))
+    a0 = float(result.x[1])
+    city.mu = mu
+    city.a0 = a0
+    moments_model = all_model_moments(city, t, q_S, q_B)
 
     return {
         "t": t,
@@ -356,6 +320,14 @@ def calibrate_structural(
         "pi_H_bar": pi_H_bar,
         "moments_model": moments_model,
         "moments_target": moment_target,
+        "validation_targets": {
+            "chain_share_discount": _CHAIN_SHARE_COUNT_PROXY["discount"],
+            "chain_share_standard": _CHAIN_SHARE_COUNT_PROXY["standard"],
+            "chain_share_bio": _CHAIN_SHARE_COUNT_PROXY["bio"],
+            "bio_income_gradient_ref": float(
+                targets["bio_share_income_gradient_target"]
+            ),
+        },
         "residual_norm": float(np.linalg.norm(result.fun)),
         "success": bool(result.success),
         "nfev": int(result.nfev),

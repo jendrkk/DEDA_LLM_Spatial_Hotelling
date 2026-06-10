@@ -36,6 +36,9 @@ class Firm:
         at the entry/exit margin (Phase 1+).  Included here for correct profit
         accounting and forward-compatibility.  See ADR-022.
     chain: Optional[str] - brand/chain label (e.g. "Rewe", "Lidl")
+    chain_type: Optional[str] - chain TYPE classification
+        ('discount' | 'standard' | 'bio'), stored explicitly so demand /
+        calibration code never re-infers it from the quality value.
     """
 
     id: str
@@ -47,3 +50,4 @@ class Firm:
     rent: float
     fixed_cost: float = 0.0
     chain: Optional[str] = None
+    chain_type: Optional[str] = None

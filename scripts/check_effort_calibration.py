@@ -1,52 +1,17 @@
 #!/usr/bin/env python
-"""Effort margin calibration guard for the Berlin spatial Hotelling model.
+"""Exact verification of effort calibration (ADR-031).
 
-Verifies that the (beta_effort, kappa0, e_max) triple in
-configs/env/berlin_inner_ring.yaml produces an **interior** single-firm effort
-best response — i.e. the profit-maximising effort level is strictly between 0
-and e_max, so the effort dimension of the Q-table is non-degenerate.
-
-Algorithm
----------
-1. Load City + Firms from the Berlin parquet files using the env config.
-2. Choose a representative symmetric price:  midpoint of the auto price grid
-   (average of Bertrand-Nash and joint-monopoly benchmarks for all stores equal).
-3. For a sample of up to N_SAMPLE stores (default 30), sweep effort
-   e ∈ linspace(0, e_max, N_SWEEP=200) for that store while fixing all other
-   stores at effort=0.  Compute profit_j(e) = (p - c) * D_j(e) - 0.5*κ₀*e²
-   using core.market.market_clearing.
-4. Report argmax e* for each sampled store, the median e*, and a verdict:
-   - INTERIOR   : median e* ∈ (0.05·e_max, 0.95·e_max)
-   - CORNER-LOW  : median e* ≤ 0.05·e_max  → lower kappa0 or raise beta_effort
-   - CORNER-HIGH : median e* ≥ 0.95·e_max  → raise kappa0 or lower beta_effort
-5. Print the closed-form FOC target from the spatial logit first-order condition:
-       e*_foc = (p - c) · (β/μ) · D_j · (1 - s_j_local) / κ₀
-   approximated numerically using central-difference dD_j/de at the sweep argmax.
-
-This script is diagnostic only: it prints results and exits 0 regardless of the
-verdict.  The verdict should be checked manually before launching an effort-
-activated training run.
+Solves the joint price-effort Bertrand-Nash equilibrium with calibrated
+(beta_effort, kappa0) and checks that equilibrium efforts are interior and
+that price-side moments drift only slightly when effort is activated.
 
 Usage
 -----
     conda activate py314
-    python scripts/check_effort_calibration.py
 
-    # Override lambda (if not yet set in config):
-    python scripts/check_effort_calibration.py --lambda-val 1800.0
-
-    # Adjust e_max for the sweep independently of the config:
-    python scripts/check_effort_calibration.py --e-max 5.0
-
-    # Sample more stores:
-    python scripts/check_effort_calibration.py --n-sample 60
-
-References
-----------
-Calvano et al. (2020 AER) §II.A — profit function and effort FOC.
-ADR-014: marginal cost = 0 for all chain types.
-ADR-017: kappa0 is chain-invariant.
-ADR-021: effort activation and calibration guard design.
+    python scripts/check_effort_calibration.py \\
+        --env-config configs/env/berlin_inner_ring_calibrated.yaml \\
+        --m-effort 5 --e-max 1.0 --lambda-val 429.2
 """
 from __future__ import annotations
 
@@ -58,7 +23,6 @@ from pathlib import Path
 import numpy as np
 import yaml
 
-# ── Ensure repo src is on path ────────────────────────────────────────────────
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT / "src"))
@@ -70,285 +34,219 @@ logging.basicConfig(
 )
 logger = logging.getLogger("check_effort_calibration")
 
-# ── Constants ─────────────────────────────────────────────────────────────────
-N_SWEEP   = 200   # effort grid points in the numerical sweep
-N_SAMPLE  = 30    # maximum number of stores to sample
-CORNER_LO = 0.05  # fraction of e_max below which result is CORNER-LOW
-CORNER_HI = 0.95  # fraction of e_max above which result is CORNER-HIGH
+_TARGETS_YAML = _REPO_ROOT / "configs" / "calibration" / "targets.yaml"
+_DEFAULT_ENV = _REPO_ROOT / "configs" / "env" / "berlin_inner_ring_calibrated.yaml"
 
 
-# ---------------------------------------------------------------------------
-# Config loading (mirrors load_config in run_baseline.py)
-# ---------------------------------------------------------------------------
-
-def _load_yaml(p: Path) -> dict:
-    if not p.exists():
-        raise FileNotFoundError(f"Config not found: {p}")
-    with p.open() as f:
+def _load_yaml(path: Path) -> dict:
+    if not path.exists():
+        raise FileNotFoundError(f"Config not found: {path}")
+    with path.open(encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
 
 
-def load_env_and_agents_cfg() -> tuple[dict, dict]:
-    env_cfg    = _load_yaml(_REPO_ROOT / "configs" / "env"    / "berlin_inner_ring.yaml")
-    agents_cfg = _load_yaml(_REPO_ROOT / "configs" / "agents" / "qlearning_effort.yaml")
-    env_cfg.setdefault("mu",  env_cfg.pop("logit_scale",    0.25))
-    env_cfg.setdefault("a0",  env_cfg.pop("outside_option", -1.0))
-    return env_cfg, agents_cfg
+def _margin_target(targets: dict) -> float:
+    if targets.get("use_common_margin", True):
+        return float(targets["gross_margin_common"])
+    margins = targets["gross_margin_by_chain"]
+    return float(
+        sum(margins[tau] for tau in ("discount", "standard", "bio")) / 3.0
+    )
 
 
-# ---------------------------------------------------------------------------
-# Core sweep
-# ---------------------------------------------------------------------------
-
-def run_sweep(
+def run_check(
     env_cfg: dict,
-    agents_cfg: dict,
-    e_max_override: float | None = None,
-    n_sample: int = N_SAMPLE,
-    n_sweep: int = N_SWEEP,
-) -> None:
-    """Load city, sweep effort for sampled stores, print calibration verdict."""
+    targets: dict,
+    *,
+    e_max: float,
+    m_effort: int,
+) -> str:
+    """Solve joint Nash, report effort distribution and moment drift."""
+    from hotelling.calibration.moments import (
+        _choice_mass,
+        _mean_gross_margin_from,
+        _outside_share_from,
+    )
+    from hotelling.core.equilibrium import bertrand_nash
     from hotelling.spatial.loader import load_berlin_city
-    from hotelling.core.market import market_clearing
-    from hotelling.core.equilibrium import bertrand_nash, joint_monopoly
 
-    # ── Extract parameters ────────────────────────────────────────────────────
+    if m_effort <= 1:
+        logger.warning(
+            "m_effort=%d — effort grid collapses to {0}; "
+            "use m_effort>1 for effort-activated verification.",
+            m_effort,
+        )
+
     beta_effort = float(env_cfg.get("beta_effort", 0.001))
-    kappa0      = float(env_cfg.get("kappa0",      1.0))
+    kappa0 = float(env_cfg.get("kappa0", 1.0))
     transport_cost = float(env_cfg.get("transport_cost", 0.01))
-    e_max       = float(e_max_override or agents_cfg.get("e_max", 10.0))
-    mu          = float(env_cfg.get("mu",  0.25))
+    basket = float(targets["basket_price_standard_eur"])
+    tgt_margin = _margin_target(targets)
+    tgt_outside = float(targets["outside_share_target"])
 
-    print("\n" + "="*65)
-    print("  EFFORT CALIBRATION CHECK")
-    print("="*65)
-    print(f"  beta_effort = {beta_effort}")
-    print(f"  kappa0      = {kappa0}")
+    print("\n" + "=" * 72)
+    print("  EFFORT CALIBRATION VERIFICATION (ADR-031)")
+    print("=" * 72)
+    print(f"  beta_effort = {beta_effort:.6f}")
+    print(f"  kappa0      = {kappa0:.6f}")
     print(f"  e_max       = {e_max}")
-    print(f"  mu          = {mu}")
+    print(f"  m_effort    = {m_effort}")
     print(f"  transport_cost = {transport_cost}")
     print()
 
-    # ── Load City ────────────────────────────────────────────────────────────
-    logger.info("Loading Berlin city from parquet files …")
-    city, firms = load_berlin_city(
-        grid_path           = _REPO_ROOT / env_cfg.get("grid_path",
-                                "data/processed/demand_grid.parquet"),
-        stores_path         = _REPO_ROOT / env_cfg.get("stores_path",
-                                "data/processed/supermarkets.parquet"),
-        travel_times_path   = _REPO_ROOT / env_cfg.get("travel_times_path",
-                                "data/processed/travel_times.parquet"),
-        lambda_val          = float(env_cfg["lambda_val"]),
-        q_S                 = float(env_cfg.get("q_S",  0.8)),
-        q_B                 = float(env_cfg.get("q_B",  1.5)),
-        alpha_L             = float(env_cfg.get("alpha_L", 0.5)),
-        alpha_H             = float(env_cfg.get("alpha_H", 1.5)),
-        beta_effort         = beta_effort,
-        kappa0              = kappa0,
-        transport_cost      = transport_cost,
-        a0                  = float(env_cfg.get("a0", -1.0)),
-        mu                  = mu,
-        nan_fill_minutes    = float(env_cfg.get("nan_fill_minutes", 120.0)),
-        marginal_cost_D     = float(env_cfg.get("marginal_cost_D", 0.0)),
-        marginal_cost_S     = float(env_cfg.get("marginal_cost_S", 0.0)),
-        marginal_cost_B     = float(env_cfg.get("marginal_cost_B", 0.0)),
+    grid_path = _REPO_ROOT / env_cfg.get("grid_path", "data/processed/demand_grid.parquet")
+    stores_path = _REPO_ROOT / env_cfg.get("stores_path", "data/processed/supermarkets.parquet")
+    travel_times_path = _REPO_ROOT / env_cfg.get(
+        "travel_times_path", "data/processed/travel_times.parquet"
     )
-    N = len(firms)
-    logger.info("City loaded: %d stores.", N)
 
-    # ── Symmetric representative price ───────────────────────────────────────
-    # Use midpoint of Bertrand-Nash and joint-monopoly benchmarks.
-    logger.info("Computing Bertrand-Nash and joint-monopoly benchmarks …")
-    try:
-        p_nash_arr, _ = bertrand_nash(city, transport_cost=transport_cost)
-        p_mono_arr, _ = joint_monopoly(city, transport_cost=transport_cost)
-        p_rep = float(0.5 * (p_nash_arr.mean() + p_mono_arr.mean()))
-        logger.info(
-            "Benchmarks: p_Nash=%.4f, p_Mono=%.4f → p_rep=%.4f",
-            p_nash_arr.mean(), p_mono_arr.mean(), p_rep,
-        )
-    except Exception as exc:
-        logger.warning("Benchmark computation failed (%s); using p_rep=1.0.", exc)
-        p_rep = 1.0
+    logger.info("Loading Berlin city …")
+    city, firms = load_berlin_city(
+        grid_path=grid_path,
+        stores_path=stores_path,
+        travel_times_path=travel_times_path,
+        lambda_val=float(env_cfg["lambda_val"]),
+        q_S=float(env_cfg.get("q_S", 6.0)),
+        q_B=float(env_cfg.get("q_B", 18.0)),
+        alpha_L=float(env_cfg.get("alpha_L", 0.5)),
+        alpha_H=float(env_cfg.get("alpha_H", 1.5)),
+        beta_effort=beta_effort,
+        kappa0=kappa0,
+        transport_cost=transport_cost,
+        a0=float(env_cfg.get("outside_option", env_cfg.get("a0", -1.0))),
+        mu=float(env_cfg.get("logit_scale", env_cfg.get("mu", 0.25))),
+        nan_fill_minutes=float(env_cfg.get("nan_fill_minutes", 120.0)),
+        marginal_cost_D=float(env_cfg.get("marginal_cost_D", 0.0)),
+        marginal_cost_S=float(env_cfg.get("marginal_cost_S", 0.0)),
+        marginal_cost_B=float(env_cfg.get("marginal_cost_B", 0.0)),
+        store_size=float(env_cfg.get("store_size", 600.0)),
+        rent_scale=float(env_cfg.get("rent_scale", 0.0)),
+        rent_normalization=str(env_cfg.get("rent_normalization", "mean_ratio")),
+        dense_distances=bool(env_cfg.get("dense_distances", True)),
+    )
+    logger.info("City loaded: %d stores.", len(firms))
 
-    prices_base = np.full(N, p_rep, dtype=np.float64)
-    efforts_zero = np.zeros(N, dtype=np.float64)
-    marginal_costs = np.array([f.marginal_cost for f in firms], dtype=np.float64)
+    logger.info("Solving joint price-effort Bertrand-Nash …")
+    p_nash, e_nash = bertrand_nash(city, transport_cost=transport_cost, cache_path=None)
 
-    # ── Store sample ─────────────────────────────────────────────────────────
-    rng = np.random.default_rng(42)
-    sample_idx = rng.choice(N, size=min(n_sample, N), replace=False)
-    sample_idx.sort()
+    interior_mask = (e_nash > 1e-9) & (e_nash < e_max)
+    interior_fraction = float(interior_mask.mean())
+    e_mean = float(e_nash.mean())
+    e_min = float(e_nash.min())
+    e_max_actual = float(e_nash.max())
 
-    # ── Effort sweep per sampled store ───────────────────────────────────────
-    effort_grid_sweep = np.linspace(0.0, e_max, n_sweep)
-    star_efforts = np.empty(len(sample_idx))
+    wtp_full_pct = beta_effort * e_max / basket
+    wtp_equil_pct = beta_effort * e_mean / basket
 
-    print(f"  {'Store':>5}  {'chain':>12}  {'e*':>8}  {'e*/e_max':>10}  {'profit@e*':>12}")
-    print("  " + "-"*55)
+    print("  Joint Nash equilibrium effort")
+    print(f"    e* mean/min/max:   {e_mean:.4f} / {e_min:.4f} / {e_max_actual:.4f}")
+    print(f"    interior_fraction: {interior_fraction:.4f}  "
+          f"(target >= 0.80, 0 < e* < {e_max})")
+    print(f"    wtp_full_pct:      {wtp_full_pct:.4f}  (beta*e_max/basket)")
+    print(f"    wtp_equil_pct:     {wtp_equil_pct:.4f}  (beta*mean(e*)/basket)")
+    print(f"    p_nash mean:       {float(p_nash.mean()):.4f}")
 
-    for idx_pos, j in enumerate(sample_idx):
-        profits_sweep = np.empty(n_sweep)
-        efforts_j = efforts_zero.copy()
-        mc_j = marginal_costs[j]
-        for k, e_j in enumerate(effort_grid_sweep):
-            efforts_j[j] = e_j
-            demands, profs = market_clearing(
-                prices=prices_base,
-                efforts=efforts_j,
-                city=city,
-                transport_cost=transport_cost,
-            )
-            # profit = (p - c) * D - 0.5 * kappa0 * e²   (rent=0 by ADR-015)
-            profits_sweep[k] = (
-                (prices_base[j] - mc_j) * demands[j]
-                - 0.5 * kappa0 * e_j ** 2
-            )
-        efforts_j[j] = 0.0  # reset
+    inside, outside = _choice_mass(city, transport_cost, p_nash, e_nash)
+    model_margin = _mean_gross_margin_from(city, p_nash, inside)
+    model_outside = _outside_share_from(city, outside)
+    margin_drift = model_margin - tgt_margin
+    outside_drift = model_outside - tgt_outside
 
-        best_k = int(np.argmax(profits_sweep))
-        e_star = effort_grid_sweep[best_k]
-        star_efforts[idx_pos] = e_star
-        chain_label = getattr(firms[j], "chain", None) or firms[j].id
-        print(
-            f"  {j:>5}  {chain_label:>12}  {e_star:>8.4f}  "
-            f"{e_star/e_max:>10.3f}  {profits_sweep[best_k]:>12.4f}"
-        )
+    print("\n  Price-side moment drift (effort ON vs calibration targets)")
+    print(f"  {'Moment':<28} {'Target':>12} {'Model':>12} {'Drift':>12}")
+    print("  " + "-" * 66)
+    print(
+        f"  {'mean_gross_margin':<28} {tgt_margin:12.6f} "
+        f"{model_margin:12.6f} {margin_drift:12.6f}"
+    )
+    print(
+        f"  {'outside_share':<28} {tgt_outside:12.6f} "
+        f"{model_outside:12.6f} {outside_drift:12.6f}"
+    )
 
-    median_e_star = float(np.median(star_efforts))
-    frac = median_e_star / e_max
-
-    # ── Verdict ───────────────────────────────────────────────────────────────
     print()
-    print(f"  Median e* = {median_e_star:.4f}  ({frac:.3f} × e_max = {e_max})")
-    print()
-    if frac <= CORNER_LO:
-        verdict = "CORNER-LOW"
+    verdict_parts = []
+    if interior_fraction >= 0.80:
+        verdict_parts.append("interior_fraction OK")
+    else:
+        verdict_parts.append("interior_fraction LOW")
+
+    if abs(margin_drift) < 0.02:
+        verdict_parts.append("margin drift OK")
+    else:
+        verdict_parts.append("margin drift LARGE")
+
+    if interior_fraction >= 0.80 and abs(margin_drift) < 0.02:
+        verdict = "PASS"
         guidance = (
-            "→ Effort is always zero. "
-            "Raise beta_effort (increase demand sensitivity to effort) "
-            "and/or lower kappa0 (reduce effort cost) in berlin_inner_ring.yaml."
-        )
-    elif frac >= CORNER_HI:
-        verdict = "CORNER-HIGH"
-        guidance = (
-            "→ Effort is always maximal. "
-            "Raise kappa0 (increase effort cost) "
-            "and/or lower beta_effort in berlin_inner_ring.yaml. "
-            "Alternatively lower e_max so the cost curve bends earlier."
+            "Joint Nash effort is interior and price moments are stable. "
+            "Proceed with effort-activated Q-learning runs."
         )
     else:
-        verdict = "INTERIOR"
-        guidance = (
-            "→ Best-response effort is in the interior of [0, e_max]. "
-            "The effort Q-table dimension is non-degenerate. "
-            "Proceed with --with-effort runs."
-        )
+        verdict = "WARN"
+        hints = []
+        if interior_fraction < 0.80:
+            hints.append(
+                "lower effort_interior_target_rho or effort_importance_X in "
+                "targets.yaml and re-run calibrate_structural.py"
+            )
+        if abs(margin_drift) >= 0.02:
+            hints.append(
+                "re-solve mu/a0 with effort ON if outside-share drift is large"
+            )
+        guidance = " ".join(hints) if hints else "Review calibration parameters."
 
-    width = 65
-    print("  " + "─" * (width - 2))
-    print(f"  VERDICT: {verdict}")
+    print(f"  VERDICT: {verdict}  ({'; '.join(verdict_parts)})")
     print(f"  {guidance}")
-    print("  " + "─" * (width - 2))
+    print("=" * 72 + "\n")
+    return verdict
 
-    # ── Closed-form FOC target ────────────────────────────────────────────────
-    # FOC: (p - c) * dD_j/de = kappa0 * e
-    # => e*_foc = (p - c) * dD_j/de(e=0) / kappa0
-    # Approximate dD_j/de at e=0 via central difference on the median store.
-    j_median = int(sample_idx[len(sample_idx) // 2])
-    mc_jm = marginal_costs[j_median]
-    h = e_max / n_sweep
-    efforts_h = efforts_zero.copy()
-    efforts_h[j_median] = h
-    dem_hi, _ = market_clearing(prices_base, efforts_h, city, transport_cost)
-    efforts_h[j_median] = 0.0
-    dem_lo, _ = market_clearing(prices_base, efforts_h, city, transport_cost)
-    dd_de = (dem_hi[j_median] - dem_lo[j_median]) / h
-    e_star_foc = (p_rep - mc_jm) * dd_de / kappa0 if kappa0 > 0 else float("inf")
-
-    # Logit-based analytic approximation: dD/de ≈ (β/μ) * D * (1 - s_j)
-    dem_base, _ = market_clearing(prices_base, efforts_zero, city, transport_cost)
-    total_pop = float((city.cell_pop + city.lambda_phi).sum())
-    s_j = dem_base[j_median] / total_pop if total_pop > 0 else 0.0
-    dd_de_analytic = (beta_effort / mu) * dem_base[j_median] * (1.0 - s_j)
-    e_star_analytic = (p_rep - mc_jm) * dd_de_analytic / kappa0 if kappa0 > 0 else float("inf")
-
-    print()
-    print("  Closed-form FOC target (median store):")
-    print(f"    e*_foc (numerical ∂D/∂e)  = {e_star_foc:.4f}")
-    print(f"    e*_foc (logit analytic)   = {e_star_analytic:.4f}")
-    print(f"    ∂D_j/∂e  (numerical)      = {dd_de:.6f}")
-    print(f"    ∂D_j/∂e  (logit approx)   = {dd_de_analytic:.6f}")
-    print()
-    print("  Calibration guidance:")
-    target_frac_lo, target_frac_hi = 0.3, 0.6
-    foc_frac = e_star_analytic / e_max if e_max > 0 else float("nan")
-    print(f"    e*_foc / e_max = {foc_frac:.3f}  (target: {target_frac_lo}–{target_frac_hi})")
-    if foc_frac < target_frac_lo:
-        print(
-            f"    → e*_foc is below {target_frac_lo*100:.0f}% of e_max. "
-            "Consider reducing e_max to ≈ 2 × e*_foc, or raise beta_effort / lower kappa0."
-        )
-    elif foc_frac > target_frac_hi:
-        print(
-            f"    → e*_foc is above {target_frac_hi*100:.0f}% of e_max. "
-            "Consider raising e_max to ≈ 2 × e*_foc, or lower beta_effort / raise kappa0."
-        )
-    else:
-        print(
-            f"    → e*_foc sits comfortably in [{target_frac_lo*100:.0f}%, "
-            f"{target_frac_hi*100:.0f}%] of e_max. Current e_max is well-calibrated."
-        )
-    print("="*65 + "\n")
-
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Check effort best-response is interior (not a corner solution).",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__,
+        description="Verify effort calibration via joint Bertrand-Nash solve (ADR-031).",
     )
     parser.add_argument(
-        "--lambda-val", type=float, default=None,
-        help="Override lambda_val in env config (use calibrated value).",
+        "--env-config",
+        type=str,
+        default=str(_DEFAULT_ENV),
+        help="Calibrated env YAML with beta_effort and kappa0",
     )
     parser.add_argument(
-        "--e-max", type=float, default=None, dest="e_max",
-        help="Override e_max for the sweep (does not modify the config file).",
+        "--m-effort",
+        type=int,
+        default=5,
+        help="Discrete effort grid size (must be >1 to activate effort; default 5)",
     )
     parser.add_argument(
-        "--n-sample", type=int, default=N_SAMPLE,
-        help=f"Number of stores to sample for the sweep (default {N_SAMPLE}).",
+        "--e-max",
+        type=float,
+        default=1.0,
+        help="Effort upper bound (must match targets.effort_e_max; default 1.0)",
     )
     parser.add_argument(
-        "--n-sweep", type=int, default=N_SWEEP,
-        help=f"Number of effort grid points in each store's sweep (default {N_SWEEP}).",
+        "--lambda-val",
+        type=float,
+        default=None,
+        help="Override lambda_val in env config",
     )
     args = parser.parse_args()
 
-    env_cfg, agents_cfg = load_env_and_agents_cfg()
+    env_cfg_path = Path(args.env_config)
+    if not env_cfg_path.is_absolute():
+        env_cfg_path = _REPO_ROOT / env_cfg_path
+    env_cfg = _load_yaml(env_cfg_path)
 
     if args.lambda_val is not None:
         env_cfg["lambda_val"] = args.lambda_val
         logger.info("CLI override: lambda_val = %.4f", args.lambda_val)
 
-    if float(env_cfg.get("lambda_val", 0)) <= 0:
-        logger.warning(
-            "lambda_val is 0 or not set. Run "
-            "  python scripts/run_baseline.py --calibrate-only\n"
-            "and set lambda_val in configs/env/berlin_inner_ring.yaml first."
-        )
-
-    run_sweep(
-        env_cfg=env_cfg,
-        agents_cfg=agents_cfg,
-        e_max_override=args.e_max,
-        n_sample=args.n_sample,
-        n_sweep=args.n_sweep,
+    targets = _load_yaml(_TARGETS_YAML)
+    run_check(
+        env_cfg,
+        targets,
+        e_max=args.e_max,
+        m_effort=args.m_effort,
     )
 
 

@@ -69,4 +69,17 @@ alpha_ratio: 2.5
 # ratio of organic consumption of ~2-3x is consistent with that literature.
 # Default 2.5; document range 2.0-3.0.
 bio_share_income_gradient_target: 2.5
+#
+# --- Effort (service quality) calibration — ADR-031 ---
+# No clean dataset for retail service elasticity exists; X is a structural
+# assumption (store-choice literature; German grocery is price-dominant).
+# beta_effort is set so beta*e_max = X * basket_price_standard_eur, i.e.
+# consumers would pay up to X% of the basket for a store at MAX service.
+effort_importance_X: 0.10          # WTP(full effort)/basket; range 0.05-0.15
+# kappa0 set so MEAN equilibrium effort = rho * e_max (interior -> a live
+# lever the learners can move up and down).
+effort_interior_target_rho: 0.40   # range 0.25-0.50
+# Effort grid upper bound (normalization). 1.0 = effort as a [0,1] service
+# intensity. MUST equal e_max in configs/agents/qlearning_effort.yaml.
+effort_e_max: 1.0
 # ---------------------------------------------------------------------------

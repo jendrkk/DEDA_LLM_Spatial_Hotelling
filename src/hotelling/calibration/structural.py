@@ -190,6 +190,73 @@ def _build_calibration_city(
     return city
 
 
+def compute_effort_params(
+    city,
+    transport_cost: float,
+    basket_price_standard_eur: float,
+    e_max: float,
+    X: float,
+    rho: float,
+) -> dict:
+    """Calibrate (beta_effort, kappa0) at the euro scale. ADR-031.
+
+    beta = X * basket_price / e_max  (price-scale anchor: WTP for full
+    effort = X% of basket). kappa0 = beta * D_bar / (rho * e_max) where
+    D_bar = mean store demand at the PRICE-ONLY Nash, so mean(e*)=rho*e_max.
+    """
+    from hotelling.core.equilibrium import bertrand_nash
+    from hotelling.core.market import logit_demand
+
+    N = len(city.firms)
+    saved_beta = city.beta
+    city.beta = 0.0
+    try:
+        p_nash, _ = bertrand_nash(
+            city, transport_cost=transport_cost, cache_path=None
+        )
+        quals = np.array([f.quality for f in city.firms], dtype=np.float64)
+        D = logit_demand(
+            p_nash,
+            np.zeros(N),
+            city.dist2_km2,
+            city.cell_pop,
+            city.lambda_phi,
+            city.pi_H,
+            city.pi_H_lambda_phi,
+            city.alpha,
+            quals,
+            beta=0.0,
+            transport_cost=transport_cost,
+            mu=city.mu,
+            a0=city.a0,
+            transport_exponent=getattr(city, "transport_exponent", 1.0),
+        )
+    finally:
+        city.beta = saved_beta
+
+    D_bar = float(D.mean())
+    beta = X * basket_price_standard_eur / e_max
+    kappa0 = beta * D_bar / (rho * e_max)
+    e_star = beta * D / kappa0
+    interior = float(np.mean((e_star > 1e-9) & (e_star < e_max)))
+    return {
+        "beta_effort": float(beta),
+        "kappa0": float(kappa0),
+        "e_max": float(e_max),
+        "X": float(X),
+        "rho": float(rho),
+        "D_bar": D_bar,
+        "e_star_mean": float(e_star.mean()),
+        "e_star_min": float(e_star.min()),
+        "e_star_max": float(e_star.max()),
+        "interior_fraction": interior,
+        "wtp_full_pct": float(beta * e_max / basket_price_standard_eur),
+        "wtp_equil_pct": float(
+            beta * e_star.mean() / basket_price_standard_eur
+        ),
+    }
+
+
 def calibrate_structural(
     targets: dict,
     env_cfg: dict,
@@ -307,6 +374,15 @@ def calibrate_structural(
     city.a0 = a0
     moments_model = all_model_moments(city, t, q_S, q_B)
 
+    effort = compute_effort_params(
+        city,
+        transport_cost=t,
+        basket_price_standard_eur=float(targets["basket_price_standard_eur"]),
+        e_max=float(targets.get("effort_e_max", 1.0)),
+        X=float(targets.get("effort_importance_X", 0.10)),
+        rho=float(targets.get("effort_interior_target_rho", 0.40)),
+    )
+
     return {
         "t": t,
         "c": costs,
@@ -331,4 +407,5 @@ def calibrate_structural(
         "residual_norm": float(np.linalg.norm(result.fun)),
         "success": bool(result.success),
         "nfev": int(result.nfev),
+        "effort": effort,
     }

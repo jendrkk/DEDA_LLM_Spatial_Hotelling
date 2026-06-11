@@ -4,16 +4,12 @@
 #   m=15, m_effort=5  →  15 * 5 = 75 joint actions per agent
 #   State space (k_neighbors=1): 75^1 = 75 Q-table entries per agent
 #
-# Before enabling this config for a full run, verify that the effort
-# best response is interior (not a corner solution) using:
-#   python scripts/check_effort_calibration.py
-# Recalibrate beta_effort and/or kappa0 in configs/env/berlin_inner_ring.yaml
-# until check_effort_calibration.py reports INTERIOR.
-#
-# TODO: calibrate e_max jointly with beta_effort and kappa0 so that the FOC
-#   e* = (p - c) * (beta_effort / mu) * D_j * (1 - s_j_local) / kappa0
-# places the argmax effort at ~0.3–0.6 * e_max for a representative store.
-# See check_effort_calibration.py for the numerical sweep and FOC guidance.
+# Before enabling this config for a full run, verify joint Nash effort
+# calibration using:
+#   python scripts/check_effort_calibration.py \
+#       --env-config configs/env/berlin_inner_ring_calibrated.yaml
+# beta_effort and kappa0 come from the calibrated env YAML (ADR-031);
+# do NOT duplicate them here.
 #
 # References: Calvano et al. (2020 AER) Table 1 (price-only baseline).
 #             ADR-017: kappa0 is chain-invariant.
@@ -24,10 +20,10 @@
 m: 25             # number of discrete price levels (was 15 under global grid)
 m_effort: 5       # number of discrete effort levels; activates joint action space
                   # Raise further only after interior calibration is confirmed.
-e_max: 10.0       # maximum effort level (effort_grid = linspace(0, e_max, m_effort))
-                  # TODO: recalibrate e_max; a reasonable starting point:
-                  # e_max = 2 * e*_foc where e*_foc is the closed-form FOC target
-                  # printed by check_effort_calibration.py.
+e_max: 1.0        # MUST match effort_e_max in configs/calibration/targets.yaml
+                  # (effort_grid = linspace(0, e_max, m_effort))
+                  # beta_effort and kappa0 are set by calibrate_structural.py
+                  # in the calibrated env YAML — do not duplicate here.
 
 # State space
 state_mode: neighbors      # "neighbors" (k-nearest rival actions, default)

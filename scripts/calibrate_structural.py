@@ -161,6 +161,31 @@ def _print_report(result: dict) -> None:
     print(f"\n  residual_norm: {result['residual_norm']:.6e}")
     print(f"  success:       {result['success']}")
     print(f"  nfev:          {result['nfev']}")
+
+    effort = result["effort"]
+    print("\n  Effort calibration (ADR-031)")
+    print(f"    beta_effort:        {effort['beta_effort']:.6f}")
+    print(f"    kappa0:             {effort['kappa0']:.6f}")
+    print(f"    e_max:              {effort['e_max']:.4f}")
+    print(f"    X (importance):     {effort['X']:.4f}")
+    print(f"    rho (interior):     {effort['rho']:.4f}")
+    print(f"    D_bar:              {effort['D_bar']:.6f}")
+    print(f"    e* mean/min/max:    {effort['e_star_mean']:.4f} / "
+          f"{effort['e_star_min']:.4f} / {effort['e_star_max']:.4f}")
+    print(f"    interior_fraction:  {effort['interior_fraction']:.4f}")
+    print(f"    wtp_full_pct:       {effort['wtp_full_pct']:.4f}  "
+          f"(target X = {effort['X']:.4f})")
+    print(f"    wtp_equil_pct:      {effort['wtp_equil_pct']:.4f}  "
+          f"(target X*rho = {effort['X'] * effort['rho']:.4f})")
+    if effort["interior_fraction"] < 0.80:
+        print(
+            "    WARNING: interior_fraction < 0.80 — consider lowering "
+            "effort_interior_target_rho or effort_importance_X in targets.yaml"
+        )
+    print(
+        f"\n  Set e_max: {effort['e_max']} and m_effort>1 in "
+        "configs/agents/qlearning_effort.yaml to activate effort."
+    )
     print("=" * 72 + "\n")
 
 
@@ -180,6 +205,9 @@ def _write_calibrated_yaml(
     out_cfg["marginal_cost_D"] = float(result["c"]["discount"])
     out_cfg["marginal_cost_S"] = float(result["c"]["standard"])
     out_cfg["marginal_cost_B"] = float(result["c"]["bio"])
+    effort = result["effort"]
+    out_cfg["beta_effort"] = float(effort["beta_effort"])
+    out_cfg["kappa0"] = float(effort["kappa0"])
 
     output_path = output_path.resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)

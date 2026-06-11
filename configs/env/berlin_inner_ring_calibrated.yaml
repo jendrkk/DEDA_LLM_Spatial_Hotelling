@@ -18,8 +18,8 @@ q_S: 6.0
 q_B: 18.0
 alpha_L: 0.48658969307380623
 alpha_H: 1.2164742326845155
-beta_effort: 0.001
-kappa0: 1.0
+beta_effort: 4.0
+kappa0: 34062.74573804226
 store_size: 600.0
 marginal_cost_D: 26.52
 marginal_cost_S: 31.200000000000003

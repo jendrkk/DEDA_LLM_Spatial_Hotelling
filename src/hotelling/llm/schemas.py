@@ -34,9 +34,9 @@ class GroupEnvelope(BaseModel):
     """
 
     p_bar: float = Field(..., description="Target price midpoint (€)")
-    delta_p: float = Field(..., description="Price half-width (€); minimum 0.05")
+    delta_p: float = Field(..., description="Price half-width (€); must be positive")
     e_bar: float = Field(..., description="Target effort midpoint [0, 1]")
-    delta_e: float = Field(..., description="Effort half-width; minimum 0.05")
+    delta_e: float = Field(..., description="Effort half-width; must be positive")
     epsilon: float = Field(..., description="RL exploration rate for this group (0, 0.5)")
 
     @field_validator("p_bar")
@@ -48,16 +48,26 @@ class GroupEnvelope(BaseModel):
 
     @field_validator("delta_p")
     @classmethod
-    def delta_p_min(cls, v: float) -> float:
-        if v < 0.05:
-            raise ValueError("delta_p must be >= 0.05")
+    def delta_p_positive(cls, v: float) -> float:
+        # Euro-scale band: any positive half-width is structurally valid.
+        # Grid feasibility (>= 1 price-grid point inside the band) is enforced
+        # downstream in hotelling.envelope.masking via snap-to-nearest.
+        if v <= 0:
+            raise ValueError("delta_p must be positive")
         return v
 
     @field_validator("delta_e")
     @classmethod
-    def delta_e_min(cls, v: float) -> float:
-        if v < 0.05:
-            raise ValueError("delta_e must be >= 0.05")
+    def delta_e_positive(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("delta_e must be positive")
+        return v
+
+    @field_validator("e_bar")
+    @classmethod
+    def e_bar_unit_interval(cls, v: float) -> float:
+        if not (0.0 <= v <= 1.0):
+            raise ValueError("e_bar must be in [0, 1]")
         return v
 
     @field_validator("epsilon")

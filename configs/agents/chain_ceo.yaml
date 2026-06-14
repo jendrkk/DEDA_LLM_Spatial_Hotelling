@@ -1,9 +1,15 @@
-# agents/chain_ceo.yaml - LLM chain CEO agent parameters
-# IMPORTANT: model must be pinned to a full snapshot string before any experiment
-# run (e.g. "gemma-3-27b-it-20250401"). Never use aliases. See ADR-002.
+# agents/chain_ceo.yaml - LLM chain CEO agent parameters (v1: Google AI Studio Gemini)
+# LiteLLM routes "gemini/<model>" to Google AI Studio when GEMINI_API_KEY is set
+# (NOT Vertex). Record the exact model string in metadata for reproducibility:
+# Gemini free-tier exposes alias-like names rather than dated snapshots (ADR-002 caveat).
+model: "gemini/gemini-2.5-flash"   # set GEMINI_API_KEY in the environment
+ceo_mode: "single"                 # "single" v1; "decomposed" (analyst sub-agents) reserved
+temperature: 0                     # deterministic
+max_tokens: 512
+max_retries: 3
+log_path: "results/llm_calls.jsonl"
 
-model: "gemma-3-27b-it-YYYYMMDD"  # placeholder — pin to snapshot before first run
-temperature: 0                     # deterministic output; do not raise above 0 for experiments
-max_retries: 3                     # LiteLLM retry attempts on API error
-retry_delay_s: 5.0                 # seconds between retry attempts
-log_path: "results/llm_calls.jsonl"  # JSONL log for all CEO LLM calls
+# Euro-basket envelope guidance shown to the CEO and used by the safe-default
+# fallback. min_delta_p ~ a couple of union-grid steps; min_delta_e for effort runs.
+min_delta_p: 1.5
+min_delta_e: 0.1

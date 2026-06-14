@@ -76,10 +76,57 @@ class BatchQLearningAgent:
             dtype=np.float64,
         )
 
+        # Envelope enforcement (set externally by the CEO layer in Phase 2).
+        # _action_mask: (N, action_size) bool — True = action allowed for that store.
+        # _epsilon_override: (N,) float — per-store exploration rate overriding the
+        # exp(-beta_decay*t) schedule. Both None => unconstrained baseline behaviour.
+        self._action_mask: np.ndarray | None = None
+        self._epsilon_override: np.ndarray | None = None
+
     def reset(self) -> None:
         """Reset Q-table and exploration counters."""
         self._q[:] = 0.0
         self._t[:] = 0
+        self._action_mask = None
+        self._epsilon_override = None
+
+    def set_action_mask(self, mask: np.ndarray | None) -> None:
+        """Restrict each store's selectable joint actions to an in-envelope subset.
+
+        Parameters
+        ----------
+        mask : (N, action_size) bool array, or None to clear.
+            ``mask[i, a] == True`` means store ``i`` may play joint action ``a``.
+            Every row must contain at least one True (guaranteed by the Step-2
+            mask builder via snap-to-nearest). The Q-table itself is unchanged;
+            only selection in ``act()`` is constrained, so learned Q-values stay
+            valid across envelope (epoch) changes — the grid is never re-discretised.
+        """
+        if mask is None:
+            self._action_mask = None
+            return
+        mask = np.ascontiguousarray(mask, dtype=bool)
+        if mask.shape != (self.n, self.action_size):
+            raise ValueError(
+                f"action mask shape {mask.shape} != (N={self.n}, A={self.action_size})"
+            )
+        self._action_mask = mask
+
+    def set_epsilon_override(self, eps: np.ndarray | None) -> None:
+        """Override the exp(-beta_decay*t) exploration schedule with per-store epsilon.
+
+        Parameters
+        ----------
+        eps : (N,) float array in (0, 1), or None to revert to the decay schedule.
+            Used in Phase 2 where the CEO sets exploration per store group.
+        """
+        if eps is None:
+            self._epsilon_override = None
+            return
+        eps = np.ascontiguousarray(eps, dtype=np.float64)
+        if eps.shape != (self.n,):
+            raise ValueError(f"epsilon override shape {eps.shape} != (N={self.n},)")
+        self._epsilon_override = eps
 
     def _encode_states(self, signal: np.ndarray) -> np.ndarray:
         """Encode state signal → flat state indices (N,)."""
@@ -101,19 +148,36 @@ class BatchQLearningAgent:
         Parameters
         ----------
         neighbor_actions : (N, k) int array of neighbors' joint action indices
+            in ``neighbors`` mode, or (N,) state-index vector in ``local_summary``.
 
         Returns
         -------
-        (N,) int array of chosen joint action indices
+        (N,) int array of chosen joint action indices. When an action mask is
+        set, all chosen actions lie in the masked (in-envelope) subset.
         """
         states = self._encode_states(neighbor_actions)
-        epsilons = np.exp(-self.beta_decay * self._t)
 
+        # Exploration rate: CEO override if set, else Calvano time-decay.
+        if self._epsilon_override is not None:
+            epsilons = self._epsilon_override
+        else:
+            epsilons = np.exp(-self.beta_decay * self._t)
+
+        # Greedy action: argmax over (optionally masked) Q-row + tie-break noise.
         q_rows = self._q[np.arange(self.n), states]
-        noise = self._rng.random((self.n, self.action_size)) * 1e-10
-        greedy_actions = np.argmax(q_rows + noise, axis=1)
+        scored = q_rows + self._rng.random((self.n, self.action_size)) * 1e-10
+        if self._action_mask is not None:
+            scored = np.where(self._action_mask, scored, -np.inf)
+        greedy_actions = np.argmax(scored, axis=1)
 
-        random_actions = self._rng.integers(0, self.action_size, size=self.n)
+        # Exploratory action: uniform over allowed actions per store.
+        if self._action_mask is None:
+            random_actions = self._rng.integers(0, self.action_size, size=self.n)
+        else:
+            rand_scores = self._rng.random((self.n, self.action_size))
+            rand_scores = np.where(self._action_mask, rand_scores, -np.inf)
+            random_actions = np.argmax(rand_scores, axis=1)
+
         explore_mask = self._rng.random(self.n) < epsilons
         actions = np.where(explore_mask, random_actions, greedy_actions).astype(np.int64)
 
@@ -136,5 +200,7 @@ class BatchQLearningAgent:
 
     @property
     def epsilon_mean(self) -> float:
-        """Mean exploration probability across agents."""
+        """Mean exploration probability across agents (override if set, else decay)."""
+        if self._epsilon_override is not None:
+            return float(self._epsilon_override.mean())
         return float(np.exp(-self.beta_decay * self._t).mean())

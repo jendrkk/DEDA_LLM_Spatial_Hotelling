@@ -487,3 +487,266 @@ def run_sweep(
     list of result dicts from all sessions, one per parameter combination
     """
     raise NotImplementedError
+
+
+def _build_components(config: dict) -> dict:
+    """Build City, Firms, env, warmed-ready batch agent, benchmarks, union grid.
+
+    Mirrors run_single_session's construction (kept separate so the Phase-0
+    baseline stays untouched). Returns a dict of components for the strategic run.
+    """
+    from pathlib import Path
+
+    import geopandas as gpd
+    import numpy as np
+
+    from hotelling.agents.batch_qlearning import BatchQLearningAgent
+    from hotelling.core.equilibrium import bertrand_nash, joint_monopoly
+    from hotelling.env.market_env import HotellingMarketEnv
+    from hotelling.spatial.loader import load_berlin_city
+
+    env_cfg = config["env"]
+    agent_cfg = config["agents"]
+    seed = config["phase2"].get("seed", None)
+
+    _cm_raw = env_cfg.get("catchment_minutes", None)
+    city, firms = load_berlin_city(
+        grid_path=env_cfg.get("grid_path", "data/processed/demand_grid.parquet"),
+        stores_path=env_cfg.get("stores_path", "data/processed/supermarkets.parquet"),
+        travel_times_path=env_cfg.get("travel_times_path", "data/processed/travel_times.parquet"),
+        lambda_val=float(env_cfg["lambda_val"]),
+        q_S=float(env_cfg.get("q_S", 0.8)), q_B=float(env_cfg.get("q_B", 1.5)),
+        alpha_L=float(env_cfg.get("alpha_L", 0.5)), alpha_H=float(env_cfg.get("alpha_H", 1.5)),
+        beta_effort=float(env_cfg.get("beta_effort", 0.001)),
+        kappa0=float(env_cfg.get("kappa0", 1.0)),
+        store_size=float(env_cfg.get("store_size", 600.0)),
+        transport_cost=float(env_cfg.get("transport_cost", 0.01)),
+        a0=float(env_cfg.get("a0", -1.0)), mu=float(env_cfg.get("mu", 0.25)),
+        nan_fill_minutes=float(env_cfg.get("nan_fill_minutes", 120.0)),
+        marginal_cost_D=float(env_cfg.get("marginal_cost_D", 0.0)),
+        marginal_cost_S=float(env_cfg.get("marginal_cost_S", 0.0)),
+        marginal_cost_B=float(env_cfg.get("marginal_cost_B", 0.0)),
+        rent_scale=float(env_cfg.get("rent_scale", 0.0)),
+        rent_normalization=str(env_cfg.get("rent_normalization", "mean_ratio")),
+        dense_distances=bool(env_cfg.get("dense_distances", True)),
+        catchment_minutes=(float(_cm_raw) if _cm_raw is not None else None),
+        catchment_k_min=int(env_cfg.get("catchment_k_min", 12)),
+        catchment_k_max=int(env_cfg.get("catchment_k_max", 80)),
+        precompute_expweights=bool(env_cfg.get("precompute_expweights", False)),
+        low_precision_storage=bool(env_cfg.get("low_precision_storage", False)),
+    )
+
+    tc = float(env_cfg.get("transport_cost", 0.01))
+    bench_cache = (
+        Path(env_cfg.get("grid_path", "data/processed/demand_grid.parquet")).parent
+        / "benchmarks_cache.npz"
+    )
+    auto_grid = bool(agent_cfg.get("auto_price_grid", True))
+    grid_mode = str(agent_cfg.get("price_grid_mode", "union"))
+    p_nash_arr = p_mono_arr = None
+    grid_min = agent_cfg.get("min_price", None)
+    grid_max = agent_cfg.get("max_price", None)
+
+    if auto_grid and city.dist2_km2 is not None:
+        p_nash_arr, _ = bertrand_nash(city, transport_cost=tc, cache_path=bench_cache)
+        p_mono_arr, _ = joint_monopoly(city, transport_cost=tc, cache_path=bench_cache)
+        xi = float(agent_cfg.get("price_grid_xi", 0.1))
+        mc_min = min(getattr(f, "marginal_cost", 0.0) for f in firms)
+        if grid_mode == "union":
+            nash_lo, mono_hi = float(p_nash_arr.min()), float(p_mono_arr.max())
+            span = mono_hi - nash_lo
+        else:
+            nash_lo, mono_hi = float(p_nash_arr.mean()), float(p_mono_arr.mean())
+            span = mono_hi - nash_lo
+        if span > 1e-6:
+            grid_min = max(mc_min, nash_lo - xi * span)
+            grid_max = mono_hi + xi * span
+
+    env = HotellingMarketEnv(
+        city=city, firms=firms,
+        m=int(agent_cfg.get("m", 25)), m_effort=int(agent_cfg.get("m_effort", 1)),
+        e_max=float(agent_cfg.get("e_max", 10.0)),
+        k_neighbors=int(agent_cfg.get("k_neighbors", 1)), transport_cost=tc,
+        min_price=float(grid_min) if grid_min is not None else None,
+        max_price=float(grid_max) if grid_max is not None else None,
+        state_mode=str(agent_cfg.get("state_mode", "neighbors")),
+        local_sum_n=agent_cfg.get("local_sum_n", None),
+        n_price_bins=int(agent_cfg.get("n_price_bins", 15)),
+        summary_stats=tuple(agent_cfg.get("summary_stats", ("mean",))),
+        local_summary_detailed=bool(agent_cfg.get("local_summary_detailed", False)),
+    )
+    batch_agent = BatchQLearningAgent(
+        n_agents=len(firms), m=int(agent_cfg.get("m", 25)),
+        m_effort=int(agent_cfg.get("m_effort", 1)), k=int(agent_cfg.get("k_neighbors", 1)),
+        alpha=float(agent_cfg.get("alpha_lr", 0.15)),
+        beta_decay=float(agent_cfg.get("beta_decay", 4e-6)),
+        delta=float(agent_cfg.get("delta", 0.95)),
+        seed=int(seed) if seed is not None else None,
+        state_mode=str(agent_cfg.get("state_mode", "neighbors")),
+        state_size=env.state_size,
+    )
+    grid_gdf = gpd.read_parquet(env_cfg.get("grid_path", "data/processed/demand_grid.parquet"))
+    return {
+        "city": city, "firms": firms, "env": env, "batch_agent": batch_agent,
+        "p_nash_arr": p_nash_arr, "p_mono_arr": p_mono_arr,
+        "grid_min": grid_min, "grid_max": grid_max, "grid_gdf": grid_gdf,
+    }
+
+
+def run_strategic_session(config: dict) -> dict:
+    """Phase-0 burn-in -> Phase-2 CEO-only strategic game; write a run folder.
+
+    config keys: env, agents, groups, ceo, phase2, output_dir.
+    """
+    import json
+    import time
+    import uuid
+    from datetime import datetime
+    from pathlib import Path
+
+    import numpy as np
+    import pandas as pd
+    import yaml
+
+    from hotelling.simulation.engine import BatchSimulationEngine
+    from hotelling.simulation.phases import Phase2StrategicGame
+    from hotelling.agents.chain_ceo import build_chain_ceos
+    from hotelling.llm.client import LLMClient
+    from hotelling.llm.ceo_state import build_consumer_zones
+    from hotelling.envelope.groups import (
+        assign_groups, composite_group_keys, build_store_metadata,
+    )
+
+    t_start = time.time()
+    run_id = str(uuid.uuid4())[:8]
+    run_name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{run_id}"
+    out_root = Path(config.get("output_dir", "results/strategic_runs"))
+    output_dir = out_root / "runs" / run_name
+    output_dir.mkdir(parents=True, exist_ok=True)
+    with (output_dir / "config.yaml").open("w") as f:
+        yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
+
+    comp = _build_components(config)
+    env, batch_agent, firms = comp["env"], comp["batch_agent"], comp["firms"]
+    p_nash_arr, p_mono_arr = comp["p_nash_arr"], comp["p_mono_arr"]
+
+    phase2_cfg = config["phase2"]
+    seed = phase2_cfg.get("seed", None)
+    T_burnin = int(phase2_cfg.get("T_burnin", 200_000))
+    T_game = int(phase2_cfg.get("T_game", 5_000))
+    T_CEO = int(phase2_cfg.get("T_CEO", 100))
+    record_every = int(phase2_cfg.get("record_every", max(1, T_CEO)))
+    no_ceo = bool(phase2_cfg.get("no_ceo", False))
+
+    # ── Phase 0: warm the per-store Q-tables (resets agent+env internally) ──
+    burn = BatchSimulationEngine(
+        env=env, batch_agent=batch_agent, max_steps=T_burnin,
+        record_every=record_every, recorder=None, dense_log=None,
+    )
+    burn_result = burn.run(seed=seed)
+
+    # ── Groups, zones, CEOs ────────────────────────────────────────────────
+    groups_cfg = config.get("groups", {}) or {}
+    active_divisions = list(groups_cfg.get("active_divisions", []))
+    division_params = {
+        "threshold_n_rivals": int(groups_cfg.get("competition_threshold_n_rivals", 3)),
+        "radius_m": float(groups_cfg.get("competition_radius_m", 500.0)),
+        "status_threshold": float(groups_cfg.get("neighbourhood_status_threshold", 0.5)),
+    }
+    group_keys = composite_group_keys(active_divisions, division_params)
+    metadata = build_store_metadata(
+        firms, grid_gdf=comp["grid_gdf"], radius_m=division_params["radius_m"]
+    )
+    labels_map = assign_groups(metadata, active_divisions, division_params)
+    store_chain = [str(f.chain) for f in firms]
+    store_chain_type = [str(f.chain_type) for f in firms]
+    store_group_labels = [labels_map[str(f.id)] for f in firms]
+    zones = build_consumer_zones(comp["grid_gdf"], firms, n_side=3)
+
+    ceo_cfg = config.get("ceo", {}) or {}
+    client = LLMClient(
+        model=str(ceo_cfg.get("model", "gemini/gemini-2.5-flash")),
+        temperature=float(ceo_cfg.get("temperature", 0)),
+        max_tokens=int(ceo_cfg.get("max_tokens", 512)),
+        max_retries=int(ceo_cfg.get("max_retries", 3)),
+        log_path=ceo_cfg.get("log_path", str(output_dir / "llm_calls.jsonl")),
+    )
+    ceos = build_chain_ceos(
+        firms, client=client, active_divisions=active_divisions,
+        division_params=division_params, group_keys=group_keys,
+        min_delta_p=float(ceo_cfg.get("min_delta_p", 1.5)),
+        min_delta_e=float(ceo_cfg.get("min_delta_e", 0.1)), T_ceo=T_CEO,
+    )
+
+    # ── Phase 2: strategic game (continues from warmed state, no reset) ────
+    phase2 = Phase2StrategicGame(phase2_cfg)
+    res = phase2.run(
+        env=env, batch_agent=batch_agent, ceos=ceos,
+        store_chain=store_chain, store_chain_type=store_chain_type,
+        store_group_labels=store_group_labels, group_keys=group_keys, zones=zones,
+        T_game=T_game, T_CEO=T_CEO,
+        mask_effort=int(config["agents"].get("m_effort", 1)) > 1,
+        no_ceo=no_ceo, record_every=record_every,
+    )
+
+    # ── Calvano Δ (global + per chain type) from final prices ──────────────
+    deltas_by_chain: dict = {}
+    if p_nash_arr is not None and p_mono_arr is not None:
+        N = len(firms)
+        fp = res["final_prices"]
+        p_learned = np.array([float(fp.get(str(f.id), np.nan)) for f in firms])
+        cts = np.array([f.chain_type for f in firms], dtype=object)
+
+        def _delta(m):
+            if m.sum() == 0:
+                return float("nan")
+            pl = float(np.nanmean(p_learned[m]))
+            pn = float(p_nash_arr[m].mean()); pm = float(p_mono_arr[m].mean())
+            d = pm - pn
+            return float("nan") if abs(d) < 1e-9 else float(np.clip((pl - pn) / d, -0.5, 1.5))
+
+        deltas_by_chain = {
+            "global": _delta(np.ones(N, bool)),
+            "discount": _delta(cts == "discount"),
+            "standard": _delta(cts == "standard"),
+            "bio": _delta(cts == "bio"),
+        }
+
+    # ── Outputs ────────────────────────────────────────────────────────────
+    pd.DataFrame(res["envelope_log"]).to_parquet(output_dir / "envelopes.parquet", index=False)
+    agg = pd.DataFrame({
+        "step": res["step_history"], "mean_price": res["price_history"],
+        "mean_effort": res["effort_history"],
+    })
+    for ct in ("discount", "standard", "bio"):
+        col = list(res["price_history_by_chain"].get(ct, []))
+        col += [float("nan")] * (len(agg) - len(col))
+        agg[f"mean_price_{ct}"] = col[: len(agg)]
+    agg.to_parquet(output_dir / "aggregate.parquet", index=False)
+
+    meta = {
+        "run_id": run_id, "run_name": run_name, "mode": "strategic",
+        "no_ceo": no_ceo, "seed": seed, "T_burnin": T_burnin, "T_game": T_game,
+        "T_CEO": T_CEO, "n_epochs": res["n_epochs"], "n_firms": len(firms),
+        "ceo_model": str(ceo_cfg.get("model")), "active_divisions": active_divisions,
+        "group_keys": group_keys, "deltas_by_chain": deltas_by_chain,
+        "burnin_delta": burn_result.get("epsilon_mean"),
+        "epsilon_mean_final": res["epsilon_mean"],
+        "elapsed_s": round(time.time() - t_start, 2),
+        "env_config_path": config.get("env_config_path"),
+    }
+    with (output_dir / "metadata.json").open("w") as f:
+        json.dump(meta, f, indent=2)
+
+    index_path = out_root / "index.csv"
+    row = pd.DataFrame([{
+        "run_name": run_name, "run_id": run_id, "no_ceo": no_ceo, "seed": seed,
+        "T_game": T_game, "T_CEO": T_CEO, "n_epochs": res["n_epochs"],
+        "delta_global": deltas_by_chain.get("global"),
+        "ceo_model": str(ceo_cfg.get("model")), "elapsed_s": meta["elapsed_s"],
+    }])
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    row.to_csv(index_path, mode="a", header=not index_path.exists(), index=False)
+
+    return {"run_id": run_id, "output_dir": str(output_dir),
+            "deltas_by_chain": deltas_by_chain, **res}

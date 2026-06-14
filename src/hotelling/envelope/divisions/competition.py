@@ -21,10 +21,16 @@ class CompetitionDivision(GroupDivision):
     categories = ("HEAVY", "EASY")
 
     def assign(self, store_metadata: dict) -> str:
-        raise NotImplementedError
+        threshold = int(self.params.get("threshold_n_rivals", 3))
+        return "HEAVY" if store_metadata.get("n_rivals_within_R", 0) >= threshold else "EASY"
 
     def description(self) -> str:
-        raise NotImplementedError
+        threshold = int(self.params.get("threshold_n_rivals", 3))
+        radius = self.params.get("radius_m", 500.0)
+        return (
+            f"Competitive pressure: stores with >= {threshold} rival stores within "
+            f"{radius:.0f} m are HEAVY, otherwise EASY."
+        )
 
 
 REGISTRY["DIVISION_COMPETITION"] = CompetitionDivision

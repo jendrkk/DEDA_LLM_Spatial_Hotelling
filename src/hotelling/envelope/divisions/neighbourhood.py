@@ -21,10 +21,15 @@ class NeighbourhoodDivision(GroupDivision):
     categories = ("RICH", "POOR")
 
     def assign(self, store_metadata: dict) -> str:
-        raise NotImplementedError
+        threshold = float(self.params.get("status_threshold", 0.5))
+        return "RICH" if store_metadata.get("social_index", 0.5) >= threshold else "POOR"
 
     def description(self) -> str:
-        raise NotImplementedError
+        threshold = float(self.params.get("status_threshold", 0.5))
+        return (
+            f"Neighbourhood income: stores whose LOR social-status index S_r >= "
+            f"{threshold:.2f} are RICH, otherwise POOR."
+        )
 
 
 REGISTRY["DIVISION_NEIGHBOURHOOD"] = NeighbourhoodDivision

@@ -210,11 +210,11 @@ class Phase1Entry:
 
 
 class Phase2StrategicGame:
-    """Strategic game phase: CEOs + entrant reassess; stores learn tactically.
+    """CEO-only strategic game on a warmed batch agent (no entrant in v1).
 
-    Parameters
-    ----------
-    config : dict  Phase 2 config slice (T_game, T_CEO, T_entrant).
+    Every T_CEO periods each chain's CEO is called sequentially (ADR-007) to set
+    a per-group envelope; the envelopes are compiled into a per-store action mask
+    and epsilon vector applied to the batch agent for the next T_CEO periods.
     """
 
     def __init__(self, config: dict) -> None:
@@ -222,10 +222,118 @@ class Phase2StrategicGame:
 
     def run(
         self,
-        stores: list,
-        ceos: list,
-        entrant: EntrantLLM,
-        env: object,
+        *,
+        env,
+        batch_agent,
+        ceos: dict,
+        store_chain: list,
+        store_chain_type: list,
+        store_group_labels: list,
+        group_keys: list,
+        zones: dict,
+        T_game: int,
+        T_CEO: int,
+        mask_effort: bool,
+        no_ceo: bool = False,
+        record_every: int = 100,
     ) -> dict:
-        """Run the strategic game; return per-period history dict."""
-        raise NotImplementedError
+        import numpy as np
+
+        from hotelling.envelope.masking import build_action_mask_and_epsilon
+        from hotelling.llm.ceo_state import RollingWindow, build_ceo_state
+
+        N = len(env.firms)
+        m_effort = int(env.m_effort)
+        window = RollingWindow(N, max(1, int(T_CEO)))
+
+        ceo_history = {b: [] for b in ceos}
+        prev_env = {b: None for b in ceos}
+        chain_envelopes: dict = {}
+        envelope_log: list[dict] = []
+
+        ct_arr = np.array(store_chain_type, dtype=object)
+        chain_masks = {ct: (ct_arr == ct) for ct in ("discount", "standard", "bio")}
+        price_history, effort_history, step_history = [], [], []
+        price_history_by_chain = {ct: [] for ct in ("discount", "standard", "bio")}
+
+        state_signal = env.current_state_signal()
+        epoch = 0
+
+        for t in range(int(T_game)):
+            actions = batch_agent.act(state_signal)
+            _nbr, rewards, demands = env.step_array(actions)
+            next_signal = env.current_state_signal()
+            states = batch_agent._encode_states(state_signal)
+            next_states = batch_agent._encode_states(next_signal)
+            batch_agent.update(states, actions, rewards, next_states)
+            state_signal = next_signal
+
+            p_idx = actions // m_effort
+            e_idx = actions % m_effort
+            prices = env.price_grid[p_idx]
+            efforts = env.effort_grid[e_idx]
+            window.push(prices, efforts, demands, rewards)
+
+            if (t + 1) % record_every == 0:
+                price_history.append(float(prices.mean()))
+                effort_history.append(float(efforts.mean()))
+                step_history.append(t + 1)
+                for ct, mask in chain_masks.items():
+                    price_history_by_chain[ct].append(
+                        float(prices[mask].mean()) if mask.any() else float("nan")
+                    )
+
+            if (not no_ceo) and ((t + 1) % T_CEO == 0):
+                for brand, ceo in ceos.items():
+                    st = build_ceo_state(
+                        window, chain_id=brand, store_chain=store_chain,
+                        store_chain_type=store_chain_type,
+                        store_group_labels=store_group_labels,
+                        group_keys=group_keys, zones=zones,
+                        history=ceo_history[brand], epoch=epoch, T_ceo=T_CEO,
+                        marginal_cost=ceo.marginal_cost,
+                        min_delta_p=ceo.min_delta_p, min_delta_e=ceo.min_delta_e,
+                    )
+                    out = ceo.decide(st, epoch, prev_env[brand])
+                    prev_env[brand] = out
+                    chain_envelopes[brand] = out
+                    ceo_history[brand].append({
+                        "epoch": epoch,
+                        "envelopes": {
+                            k: {"p_bar": g.p_bar, "delta_p": g.delta_p,
+                                "e_bar": g.e_bar, "delta_e": g.delta_e,
+                                "epsilon": g.epsilon}
+                            for k, g in out.groups.items()
+                        },
+                        "profit_realized": st["own"]["total_profit_last_T"],
+                    })
+                    for k, g in out.groups.items():
+                        envelope_log.append({
+                            "epoch": epoch, "step": t + 1, "chain": brand, "group": k,
+                            "p_bar": g.p_bar, "delta_p": g.delta_p, "e_bar": g.e_bar,
+                            "delta_e": g.delta_e, "epsilon": g.epsilon,
+                        })
+                mask, eps = build_action_mask_and_epsilon(
+                    chain_envelopes, store_chain, store_group_labels,
+                    env.price_grid, env.effort_grid, m_effort, mask_effort,
+                )
+                batch_agent.set_action_mask(mask)
+                batch_agent.set_epsilon_override(eps)
+                epoch += 1
+
+        final_pidx = env._current_joint_actions_arr // m_effort
+        final_prices = {
+            str(env.firms[i].id): float(env.price_grid[final_pidx[i]])
+            for i in range(N)
+        }
+        return {
+            "n_steps": int(T_game),
+            "n_epochs": epoch,
+            "final_prices": final_prices,
+            "price_history": price_history,
+            "effort_history": effort_history,
+            "step_history": step_history,
+            "price_history_by_chain": price_history_by_chain,
+            "envelope_log": envelope_log,
+            "epsilon_mean": float(batch_agent.epsilon_mean),
+        }

@@ -1,0 +1,8 @@
+# simulation/phase2.yaml - CEO-only strategic game (no entrant) timing.
+# Phase 0 warms the per-store Q-tables; Phase 2 runs the LLM-CEO loop.
+T_burnin: 200000      # burn-in steps before CEO activation (warm Q-tables)
+T_game: 5000          # strategic-game periods
+T_CEO: 100            # CEO envelope update frequency (periods)
+record_every: 100     # price-history sampling interval
+seed: 42
+no_ceo: false         # true => matched control (Phase 2 == extended burn-in)

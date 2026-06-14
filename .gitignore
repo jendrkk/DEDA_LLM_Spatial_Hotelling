@@ -15,6 +15,7 @@ __pycache__/
 CLAUDE.local.md
 **/*.local.md
 CLAUDE.md
+cursor_prompts/
 
 # Distribution / packaging
 .Python

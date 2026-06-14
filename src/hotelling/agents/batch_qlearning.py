@@ -1,4 +1,12 @@
-"""Vectorized batch Q-learning: all N agents in one (N, S, A) Q-table."""
+"""Vectorized batch Q-learning.
+
+Holds N INDEPENDENT per-store Q-tables in a single (N, state_size, action_size)
+ndarray, stacked along axis 0 purely for vectorized indexing/updates — this is
+NOT a shared Q-table. Store i reads and writes only _q[i]; its TD update uses
+only its own state, action, and reward. Equivalent to N separate QLearningAgent
+instances (ADR-004, per-store independent Q-tables); vectorized for speed at
+N~494 stores. See ADR-004.
+"""
 from __future__ import annotations
 
 import logging
@@ -61,6 +69,8 @@ class BatchQLearningAgent:
 
         self._rng = np.random.default_rng(seed)
         self._t = np.zeros(n_agents, dtype=np.int64)
+        # Axis 0 indexes stores: _q[i] is store i's OWN independent Q-table (ADR-004).
+        # Stacked into one ndarray only for vectorized act()/update(); no parameter sharing.
         self._q = np.zeros(
             (n_agents, self.state_size, self.action_size),
             dtype=np.float64,

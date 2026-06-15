@@ -297,6 +297,9 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
     if dense_log is not None:
         dense_log.flush()
 
+    if batch_agent is not None:
+        batch_agent.save_qtable(output_dir / "qtable.npz")
+
     import numpy as np
 
     deltas_by_chain: Dict[str, float] = {}
@@ -399,6 +402,7 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
         "dense_log_meta": str(output_dir / "dense_log_meta.json")
         if dense_log is not None
         else None,
+        "qtable": str(output_dir / "qtable.npz") if batch_agent is not None else None,
         "use_batch": use_batch,
         "state_mode": agent_cfg.get("state_mode", "neighbors"),
         "local_sum_n": agent_cfg.get("local_sum_n", None),
@@ -608,6 +612,9 @@ def run_strategic_session(config: dict) -> dict:
     import pandas as pd
     import yaml
 
+    import logging
+    _log = logging.getLogger("hotelling.strategic")
+
     from hotelling.simulation.engine import BatchSimulationEngine
     from hotelling.simulation.phases import Phase2StrategicGame
     from hotelling.agents.chain_ceo import build_chain_ceos
@@ -638,12 +645,57 @@ def run_strategic_session(config: dict) -> dict:
     record_every = int(phase2_cfg.get("record_every", max(1, T_CEO)))
     no_ceo = bool(phase2_cfg.get("no_ceo", False))
 
+    ceo_cfg = config.get("ceo", {}) or {}
+    rpm = int(ceo_cfg.get("requests_per_minute", 15))
+    rpd = int(ceo_cfg.get("requests_per_day", 1500))
+    if not no_ceo:
+        n_chains = len({str(f.chain) for f in firms})
+        n_epochs_planned = T_game // T_CEO
+        est_calls = n_chains * n_epochs_planned
+        if rpd and est_calls > rpd:
+            raise ValueError(
+                f"Planned CEO calls ({n_chains} chains x {n_epochs_planned} epochs "
+                f"= {est_calls}) exceed the daily limit ({rpd}). Reduce --T-game, "
+                f"raise --T-CEO, or split the run across days."
+            )
+        floor_min = (est_calls / rpm) if rpm else 0.0
+        _log.info(
+            "CEO call budget: %d calls (%d chains x %d epochs); >= %.1f min "
+            "wall-clock at %d rpm; daily cap %d. Model=%s.",
+            est_calls, n_chains, n_epochs_planned, floor_min, rpm, rpd,
+            ceo_cfg.get("model"),
+        )
+
     # ── Phase 0: warm the per-store Q-tables (resets agent+env internally) ──
-    burn = BatchSimulationEngine(
-        env=env, batch_agent=batch_agent, max_steps=T_burnin,
-        record_every=record_every, recorder=None, dense_log=None,
-    )
-    burn_result = burn.run(seed=seed)
+    from_run = config.get("from_run")
+    if from_run:
+        import numpy as np  # noqa: PLC0415
+        qpath = Path(from_run) / "qtable.npz"
+        if not qpath.exists():
+            raise FileNotFoundError(
+                f"--from-run given but no qtable.npz in {from_run}. "
+                "Re-run run_baseline (it now writes qtable.npz)."
+            )
+        batch_agent.load_qtable(qpath)
+        base_grid_path = Path(from_run) / "price_grid.npy"
+        if base_grid_path.exists():
+            base_grid = np.load(base_grid_path)
+            if base_grid.shape != env.price_grid.shape or not np.allclose(
+                base_grid, env.price_grid, atol=1e-4
+            ):
+                raise ValueError(
+                    "price grid mismatch between the loaded run and the strategic env; "
+                    "the env/benchmark configuration differs. Use the same --env-config."
+                )
+        env.reset(seed=seed)  # initialise env state without touching the loaded Q-table
+        burn_result = {"epsilon_mean": float(batch_agent.epsilon_mean)}
+        _log.info("Loaded converged Q-table from %s; skipping Phase-0 burn-in.", from_run)
+    else:
+        burn = BatchSimulationEngine(
+            env=env, batch_agent=batch_agent, max_steps=T_burnin,
+            record_every=record_every, recorder=None, dense_log=None,
+        )
+        burn_result = burn.run(seed=seed)
 
     # ── Groups, zones, CEOs ────────────────────────────────────────────────
     groups_cfg = config.get("groups", {}) or {}
@@ -663,22 +715,39 @@ def run_strategic_session(config: dict) -> dict:
     store_group_labels = [labels_map[str(f.id)] for f in firms]
     zones = build_consumer_zones(comp["grid_gdf"], firms, n_side=3)
 
-    ceo_cfg = config.get("ceo", {}) or {}
     client = LLMClient(
-        model=str(ceo_cfg.get("model", "gemini/gemini-2.5-flash")),
+        model=str(ceo_cfg.get("model", "gemini/gemma-4-31b-it")),
         temperature=float(ceo_cfg.get("temperature", 0)),
-        max_tokens=int(ceo_cfg.get("max_tokens", 512)),
+        max_tokens=int(ceo_cfg.get("max_tokens", 2048)),
         max_retries=int(ceo_cfg.get("max_retries", 3)),
         log_path=ceo_cfg.get("log_path", str(output_dir / "llm_calls.jsonl")),
+        requests_per_minute=rpm,
+        requests_per_day=rpd,
+        reasoning_effort=ceo_cfg.get("reasoning_effort", "disable"),
+        instructor_mode=str(ceo_cfg.get("instructor_mode", "json")),
     )
     ceos = build_chain_ceos(
         firms, client=client, active_divisions=active_divisions,
         division_params=division_params, group_keys=group_keys,
         min_delta_p=float(ceo_cfg.get("min_delta_p", 1.5)),
         min_delta_e=float(ceo_cfg.get("min_delta_e", 0.1)), T_ceo=T_CEO,
+        merge_system=bool(ceo_cfg.get("merge_system_prompt", True)),
     )
 
     # ── Phase 2: strategic game (continues from warmed state, no reset) ────
+    from hotelling.simulation.dense_log import DenseLog
+    dense_log = DenseLog(
+        run_dir=output_dir,
+        T=T_game,
+        N=len(firms),
+        agent_ids=[str(f.id) for f in firms],
+        price_grid=env.price_grid,
+        effort_grid=env.effort_grid,
+        store_demand_profit=bool(phase2_cfg.get("store_demand_profit", True)),
+        float_dtype=str(phase2_cfg.get("float_dtype", "float32")),
+        dense_stride=int(phase2_cfg.get("dense_stride", 1)),
+        dense_tail=(int(phase2_cfg["dense_tail"]) if phase2_cfg.get("dense_tail") is not None else None),
+    )
     phase2 = Phase2StrategicGame(phase2_cfg)
     res = phase2.run(
         env=env, batch_agent=batch_agent, ceos=ceos,
@@ -687,7 +756,15 @@ def run_strategic_session(config: dict) -> dict:
         T_game=T_game, T_CEO=T_CEO,
         mask_effort=int(config["agents"].get("m_effort", 1)) > 1,
         no_ceo=no_ceo, record_every=record_every,
+        dense_log=dense_log,
+        store_metadata=metadata,
+        enrich_groups=bool(ceo_cfg.get("group_analytics", False)),
     )
+    dense_log.flush()
+    import json as _json
+    with (output_dir / "ceo_decisions.jsonl").open("w") as _f:
+        for rec in res.get("decision_log", []):
+            _f.write(_json.dumps(rec) + "\n")
 
     # ── Calvano Δ (global + per chain type) from final prices ──────────────
     deltas_by_chain: dict = {}
@@ -730,8 +807,9 @@ def run_strategic_session(config: dict) -> dict:
         "T_CEO": T_CEO, "n_epochs": res["n_epochs"], "n_firms": len(firms),
         "ceo_model": str(ceo_cfg.get("model")), "active_divisions": active_divisions,
         "group_keys": group_keys, "deltas_by_chain": deltas_by_chain,
-        "burnin_delta": burn_result.get("epsilon_mean"),
+        "burnin_epsilon_mean": burn_result.get("epsilon_mean"),
         "epsilon_mean_final": res["epsilon_mean"],
+        "dense_log_meta": str(output_dir / "dense_log_meta.json"),
         "elapsed_s": round(time.time() - t_start, 2),
         "env_config_path": config.get("env_config_path"),
     }

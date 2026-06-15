@@ -162,6 +162,8 @@ def build_ceo_state(
     marginal_cost: float,
     min_delta_p: float,
     min_delta_e: float,
+    store_metadata: list | None = None,
+    enrich_groups: bool = False,
 ) -> dict:
     """Assemble the per-epoch CEO state dict for state_ceo.jinja."""
     a = window.arrays()
@@ -198,6 +200,19 @@ def build_ceo_state(
             "demand_share_pct": (100.0 * g_dem / own_demand) if own_demand > 0 else 0.0,
             "profit_share_pct": (100.0 * g_prof / own_profit) if own_profit != 0 else 0.0,
         })
+
+    if enrich_groups and store_metadata is not None:
+        from hotelling.llm.group_analytics import compute_group_briefs
+        briefs = compute_group_briefs(
+            a, chain_id=chain_id, store_chain=store_chain,
+            store_chain_type=store_chain_type, store_group_labels=store_group_labels,
+            store_metadata=store_metadata, group_keys=group_keys,
+            marginal_cost=marginal_cost,
+        )
+        for gp in group_perf:
+            b = briefs.get(gp["group_key"])
+            if b:
+                gp.update(b)
 
     # Public rival info: per OTHER brand, mean published price + within-window trend.
     rivals = []

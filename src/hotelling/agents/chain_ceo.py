@@ -54,6 +54,7 @@ class ChainCEO:
         min_delta_p: float,
         min_delta_e: float,
         T_ceo: int,
+        merge_system: bool = False,
     ) -> None:
         self.chain_id = chain_id
         self.chain_type = chain_type
@@ -63,6 +64,7 @@ class ChainCEO:
         self.min_delta_p = float(min_delta_p)
         self.min_delta_e = float(min_delta_e)
         self.T_ceo = int(T_ceo)
+        self.merge_system = bool(merge_system)
         self._env = _jinja_env()
         self._system_tmpl = self._env.get_template("system_ceo.jinja")
         self._state_tmpl = self._env.get_template("state_ceo.jinja")
@@ -92,10 +94,15 @@ class ChainCEO:
             state_prompt = self._state_tmpl.render(
                 active_divisions=self._div_ctx, **state
             )
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": state_prompt},
-            ]
+            if self.merge_system:
+                messages = [
+                    {"role": "user", "content": system_prompt + "\n\n" + state_prompt},
+                ]
+            else:
+                messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": state_prompt},
+                ]
             out = self.client.complete(messages, response_model=ChainEnvelopeOutput)
             self._validate(out)
             logger.info("CEO %s epoch %d OK: %s", self.chain_id, epoch, out.rationale[:80])
@@ -144,6 +151,7 @@ def build_chain_ceos(
     min_delta_p: float,
     min_delta_e: float,
     T_ceo: int,
+    merge_system: bool = False,
 ) -> dict[str, ChainCEO]:
     """Group firms by brand and build one ChainCEO per chain.
 
@@ -167,5 +175,6 @@ def build_chain_ceos(
             min_delta_p=min_delta_p,
             min_delta_e=min_delta_e,
             T_ceo=T_ceo,
+            merge_system=merge_system,
         )
     return ceos

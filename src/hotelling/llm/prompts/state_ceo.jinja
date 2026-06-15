@@ -23,6 +23,18 @@
 {% endfor %}
 {% endif %}
 
+{% if own.group_performance and (own.group_performance[0].position_label is defined) %}
+#### Competitive brief by group (analytics)
+
+| Group | Margin (p̄−mc) | Demand index | Local competition | Same-tier gap | Position | Price trend |
+|-------|----------------|--------------|-------------------|---------------|----------|-------------|
+{% for g in own.group_performance %}
+| {{ g.group_key }} | {{ "%.2f"|format(g.margin_eur) }} € | {{ "%.2f"|format(g.demand_index) }} | {{ "%.1f"|format(g.mean_local_competition) }} rivals | {{ "%+.2f"|format(g.price_gap_vs_same_tier) }} € | {{ g.position_label }} | {{ "%+.1f"|format(g.price_trend_pct) }}% |
+{% endfor %}
+
+*Demand index > 1 = the group captures more demand than its store-count share (over-performing); < 1 = under-performing. Same-tier gap = your group's mean price minus the mean price of OTHER chains of the same tier (negative = you undercut the tier).*
+{% endif %}
+
 ---
 
 ### 2. Previous envelope decisions

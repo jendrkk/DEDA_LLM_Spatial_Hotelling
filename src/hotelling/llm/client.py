@@ -19,14 +19,59 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 import time
 import uuid
+from collections import deque
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Type, TypeVar
 
 from pydantic import BaseModel
 
 T = TypeVar("T", bound=BaseModel)
+
+
+class RateLimitExceeded(RuntimeError):
+    """Raised when the per-day request budget is exhausted."""
+
+
+class RateLimiter:
+    """Sliding-window limiter: <= rpm requests per 60 s and <= rpd per rolling 24 h.
+
+    ``acquire()`` blocks (sleeps) until a per-minute slot is free, and raises
+    ``RateLimitExceeded`` once the daily budget is gone (waiting could be hours).
+    Uses a monotonic clock and is thread-safe. A limit of 0 disables that dimension.
+    """
+
+    def __init__(self, requests_per_minute: int = 15, requests_per_day: int = 1500) -> None:
+        self.rpm = int(requests_per_minute or 0)
+        self.rpd = int(requests_per_day or 0)
+        self._minute: deque[float] = deque()
+        self._day: deque[float] = deque()
+        self._lock = threading.Lock()
+
+    def acquire(self) -> None:
+        while True:
+            with self._lock:
+                now = time.monotonic()
+                m_cut = now - 60.0
+                while self._minute and self._minute[0] <= m_cut:
+                    self._minute.popleft()
+                d_cut = now - 86_400.0
+                while self._day and self._day[0] <= d_cut:
+                    self._day.popleft()
+                if self.rpd and len(self._day) >= self.rpd:
+                    reset_h = (self._day[0] + 86_400.0 - now) / 3600.0
+                    raise RateLimitExceeded(
+                        f"Daily request limit ({self.rpd}) reached; "
+                        f"resets in ~{reset_h:.1f} h."
+                    )
+                if (not self.rpm) or len(self._minute) < self.rpm:
+                    self._minute.append(now)
+                    self._day.append(now)
+                    return
+                wait = self._minute[0] + 60.0 - now + 0.05
+            time.sleep(max(wait, 0.0))  # sleep OUTSIDE the lock
 
 
 class LLMClient:
@@ -53,6 +98,10 @@ class LLMClient:
         log_path: Optional[Path] = None,
         base_url: Optional[str] = None,
         seed: Optional[int] = None,
+        requests_per_minute: Optional[int] = None,
+        requests_per_day: Optional[int] = None,
+        reasoning_effort: Optional[str] = None,
+        instructor_mode: str = "json",
     ) -> None:
         self.model = model
         self.temperature = temperature
@@ -61,21 +110,38 @@ class LLMClient:
         self.log_path = log_path
         self.base_url = base_url
         self.seed = seed
+        self.reasoning_effort = reasoning_effort
+        self.instructor_mode = str(instructor_mode).lower()
         self._client = self._build_client()
+        self._rate_limiter = (
+            RateLimiter(requests_per_minute or 0, requests_per_day or 0)
+            if (requests_per_minute or requests_per_day)
+            else None
+        )
 
     # ------------------------------------------------------------------
     # Client factory
     # ------------------------------------------------------------------
 
     def _build_client(self) -> Any:
-        """Initialize LiteLLM + Instructor patched client."""
+        """Initialize LiteLLM + Instructor with an explicit structured-output mode.
+
+        JSON mode (default) is far more robust than the TOOLS default for
+        Gemini/Gemma models, which otherwise emit empty tool calls when thinking
+        is active. Falls back to None if the libraries are not installed.
+        """
         try:
             import instructor  # noqa: PLC0415
             import litellm  # noqa: PLC0415
-
-            return instructor.from_litellm(litellm.completion)
         except ImportError:
             return None
+        mode_map = {
+            "json": instructor.Mode.JSON,
+            "md_json": instructor.Mode.MD_JSON,
+            "tools": instructor.Mode.TOOLS,
+        }
+        mode = mode_map.get(getattr(self, "instructor_mode", "json"), instructor.Mode.JSON)
+        return instructor.from_litellm(litellm.completion, mode=mode)
 
     # ------------------------------------------------------------------
     # Public API
@@ -104,6 +170,9 @@ class LLMClient:
                 "Run: pip install litellm instructor"
             )
 
+        if self._rate_limiter is not None:
+            self._rate_limiter.acquire()
+
         start = time.perf_counter()
         kwargs: Dict[str, Any] = {
             "model": self.model,
@@ -112,16 +181,21 @@ class LLMClient:
             "max_tokens": self.max_tokens,
             "max_retries": self.max_retries,
         }
+        if self.reasoning_effort is not None:
+            kwargs["reasoning_effort"] = self.reasoning_effort
         if self.base_url is not None:
             kwargs["base_url"] = self.base_url
         if self.seed is not None:
             kwargs["seed"] = self.seed
 
         if response_model is not None:
-            response = self._client.chat.completions.create(
-                response_model=response_model,
-                **kwargs,
-            )
+            try:
+                response = self._client.chat.completions.create(
+                    response_model=response_model,
+                    **kwargs,
+                )
+            except Exception as exc:  # noqa: BLE001
+                response = self._complete_json_fallback(kwargs, response_model, exc)
         else:
             import litellm  # noqa: PLC0415
 
@@ -138,6 +212,48 @@ class LLMClient:
 
         self._log_call(messages, response, tokens_used, elapsed)
         return response
+
+    def _complete_json_fallback(self, kwargs: Dict[str, Any], response_model, original_exc):
+        """Raw completion + manual JSON extraction when Instructor parsing fails.
+
+        Robust to Gemma structured-mode quirks: extracts the outermost JSON
+        object from the response text and validates it against ``response_model``.
+        Re-raises the original exception (and logs the raw text) if parsing fails.
+        """
+        import json  # noqa: PLC0415
+        import litellm  # noqa: PLC0415
+
+        raw_kwargs = {k: v for k, v in kwargs.items() if k != "max_retries"}
+        content = ""
+        try:
+            raw = litellm.completion(**raw_kwargs)
+            content = raw.choices[0].message.content or ""
+            start, end = content.find("{"), content.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                obj = json.loads(content[start : end + 1])
+                return response_model.model_validate(obj)
+            raise ValueError("no JSON object found in fallback content")
+        except Exception as exc2:  # noqa: BLE001
+            self._log_raw_failure(kwargs.get("messages", []), content, original_exc, exc2)
+            raise original_exc
+
+    def _log_raw_failure(self, messages, content, exc1, exc2) -> None:
+        """Append a failure record (raw text + both exceptions) to the call log."""
+        if self.log_path is None:
+            return
+        import json  # noqa: PLC0415
+        rec = {
+            "call_id": str(uuid.uuid4()),
+            "model": self.model,
+            "status": "FAILED",
+            "raw_content": content[:4000],
+            "error_structured": repr(exc1)[:500],
+            "error_fallback": repr(exc2)[:500],
+        }
+        log_path = Path(self.log_path)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_path, "a") as fh:
+            fh.write(json.dumps(rec) + "\n")
 
     # ------------------------------------------------------------------
     # Logging

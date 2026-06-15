@@ -128,6 +128,57 @@ class BatchQLearningAgent:
             raise ValueError(f"epsilon override shape {eps.shape} != (N={self.n},)")
         self._epsilon_override = eps
 
+    def save_qtable(self, path) -> None:
+        """Persist the Q-tensor + counters + identifying metadata to a .npz file."""
+        import numpy as np  # noqa: PLC0415
+        from pathlib import Path  # noqa: PLC0415
+
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(
+            path,
+            q=self._q,
+            t=self._t,
+            n_agents=np.int64(self.n),
+            state_size=np.int64(self.state_size),
+            action_size=np.int64(self.action_size),
+            m=np.int64(self.m),
+            m_effort=np.int64(self.m_effort),
+            k=np.int64(self.k),
+            state_mode=np.array(self.state_mode),
+        )
+
+    def load_qtable(self, path) -> None:
+        """Load a Q-tensor saved by ``save_qtable``, validating compatibility.
+
+        Raises ValueError if (n_agents, state_size, action_size) or state_mode
+        do not match this agent — a mismatch means the env/agent config differs
+        from the run that produced the checkpoint, so the Q-values are not
+        transferable (the action grid / state encoding would differ).
+        """
+        import numpy as np  # noqa: PLC0415
+
+        d = np.load(path, allow_pickle=True)
+        got = (int(d["n_agents"]), int(d["state_size"]), int(d["action_size"]))
+        want = (self.n, self.state_size, self.action_size)
+        if got != want:
+            raise ValueError(
+                f"Q-table shape mismatch: checkpoint {got} != agent {want}. "
+                "The strategic run's m / m_effort / k / state_mode must match the "
+                "baseline run that produced the checkpoint."
+            )
+        ckpt_mode = str(d["state_mode"])
+        if ckpt_mode != self.state_mode:
+            raise ValueError(
+                f"state_mode mismatch: checkpoint {ckpt_mode!r} != agent {self.state_mode!r}."
+            )
+        self._q[:] = d["q"]
+        self._t[:] = d["t"]
+        logger.info(
+            "Loaded Q-table from %s (n=%d, state_size=%d, action_size=%d, mean t=%.0f).",
+            path, self.n, self.state_size, self.action_size, float(self._t.mean()),
+        )
+
     def _encode_states(self, signal: np.ndarray) -> np.ndarray:
         """Encode state signal → flat state indices (N,)."""
         if self.state_mode == "local_summary":

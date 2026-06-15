@@ -58,6 +58,11 @@ def main() -> None:
                     help="use detailed local-summary Q-state (total + same-type)")
     ap.add_argument("--model", type=str, default=None, help="override CEO LLM model string")
     ap.add_argument("--no-ceo", action="store_true", help="matched control: no CEO calls")
+    ap.add_argument("--from-run", type=str, default=None,
+                    help="load a converged Q-table + matching env/agent config from a "
+                         "run_baseline run directory (skips Phase-0 burn-in)")
+    ap.add_argument("--group-analytics", action="store_true",
+                    help="enrich the CEO prompt with per-group competitive analytics (2.0)")
     ap.add_argument("--output-dir", type=str, default="results/strategic_runs")
     args = ap.parse_args()
 
@@ -93,6 +98,8 @@ def main() -> None:
         phase2_cfg["seed"] = args.seed
     if args.no_ceo:
         phase2_cfg["no_ceo"] = True
+    if args.group_analytics:
+        ceo_cfg["group_analytics"] = True
 
     config = {
         "env": env_cfg, "agents": agent_cfg, "groups": groups_cfg, "ceo": ceo_cfg,
@@ -102,6 +109,20 @@ def main() -> None:
 
     if float(config["env"].get("lambda_val", 0)) <= 0:
         logger.warning("lambda_val <= 0; run scripts/run_baseline.py --calibrate-only first.")
+
+    if args.from_run is not None:
+        from_dir = Path(args.from_run)
+        if not from_dir.is_absolute():
+            from_dir = _REPO_ROOT / from_dir
+        base_cfg = _load(from_dir / "config.yaml")
+        # The loaded Q-table is indexed by the baseline run's price grid + state
+        # encoding; reuse its env + agents blocks verbatim to guarantee a match.
+        config["env"] = base_cfg.get("env", config["env"])
+        config["agents"] = base_cfg.get("agents", config["agents"])
+        config["from_run"] = str(from_dir)
+        if args.with_effort or args.local_sum_d or args.m_effort is not None:
+            logger.warning("--from-run overrides --with-effort/--local-sum-d/--m-effort "
+                           "with the baseline run's agent config (Q-table compatibility).")
 
     from hotelling.simulation.runner import run_strategic_session
 

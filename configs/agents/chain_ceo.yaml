@@ -1,15 +1,32 @@
-# agents/chain_ceo.yaml - LLM chain CEO agent parameters (v1: Google AI Studio Gemini)
+# agents/chain_ceo.yaml - LLM chain CEO agent parameters (v1: Google AI Studio Gemma 4)
 # LiteLLM routes "gemini/<model>" to Google AI Studio when GEMINI_API_KEY is set
-# (NOT Vertex). Record the exact model string in metadata for reproducibility:
-# Gemini free-tier exposes alias-like names rather than dated snapshots (ADR-002 caveat).
-model: "gemini/gemini-2.5-flash"   # set GEMINI_API_KEY in the environment
+# (NOT Vertex). gemma-4-31b-it is the dense 31B Gemma 4 model (released 2026-04-02,
+# Gemini 3 architecture, structured-JSON + function calling). Record the exact model
+# string in metadata for reproducibility (ADR-002).
+model: "gemini/gemma-4-31b-it"     # set GEMINI_API_KEY in the environment
 ceo_mode: "single"                 # "single" v1; "decomposed" (analyst sub-agents) reserved
 temperature: 0                     # deterministic
-max_tokens: 512
+max_tokens: 2048                   # room for the full structured envelope JSON
 max_retries: 3
 log_path: "results/llm_calls.jsonl"
 
-# Euro-basket envelope guidance shown to the CEO and used by the safe-default
-# fallback. min_delta_p ~ a couple of union-grid steps; min_delta_e for effort runs.
+# Google AI Studio free-tier limits for Gemma 4 (verify live in AI Studio; quota
+# depends on tier). The runner throttles to stay under rpm and stops when rpd is hit.
+requests_per_minute: 15
+requests_per_day: 1500
+
+reasoning_effort: "disable"        # turn OFF Gemma 4 thinking (LiteLLM -> thinkingBudget 0).
+                                   # The CEO writes its reasoning into the schema's
+                                   # `rationale` field instead of hidden thinking tokens.
+instructor_mode: "json"            # JSON mode (response_format); "md_json" if JSON errors
+
+# Gemma chat template: fold the system prompt into the first user turn. Gemma models
+# on the Gemini API are most robust this way; set false only if you confirm the
+# separate system role is accepted.
+merge_system_prompt: true
+
+# Euro-basket envelope guidance shown to the CEO and used by the safe-default fallback.
 min_delta_p: 1.5
 min_delta_e: 0.1
+
+group_analytics: false   # baseline 2.0: per-group competitive analytics in the prompt

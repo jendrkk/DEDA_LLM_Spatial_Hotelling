@@ -236,6 +236,9 @@ class Phase2StrategicGame:
         mask_effort: bool,
         no_ceo: bool = False,
         record_every: int = 100,
+        dense_log=None,
+        store_metadata=None,
+        enrich_groups: bool = False,
     ) -> dict:
         import numpy as np
 
@@ -250,6 +253,7 @@ class Phase2StrategicGame:
         prev_env = {b: None for b in ceos}
         chain_envelopes: dict = {}
         envelope_log: list[dict] = []
+        decision_log: list[dict] = []
 
         ct_arr = np.array(store_chain_type, dtype=object)
         chain_masks = {ct: (ct_arr == ct) for ct in ("discount", "standard", "bio")}
@@ -274,6 +278,9 @@ class Phase2StrategicGame:
             efforts = env.effort_grid[e_idx]
             window.push(prices, efforts, demands, rewards)
 
+            if dense_log is not None:
+                dense_log.write_step(t, p_idx, e_idx, demands, rewards)
+
             if (t + 1) % record_every == 0:
                 price_history.append(float(prices.mean()))
                 effort_history.append(float(efforts.mean()))
@@ -293,8 +300,14 @@ class Phase2StrategicGame:
                         history=ceo_history[brand], epoch=epoch, T_ceo=T_CEO,
                         marginal_cost=ceo.marginal_cost,
                         min_delta_p=ceo.min_delta_p, min_delta_e=ceo.min_delta_e,
+                        store_metadata=store_metadata, enrich_groups=enrich_groups,
                     )
                     out = ceo.decide(st, epoch, prev_env[brand])
+                    decision_log.append({
+                        "epoch": epoch, "chain": brand,
+                        "n_groups": len(out.groups),
+                        "rationale": out.rationale,
+                    })
                     prev_env[brand] = out
                     chain_envelopes[brand] = out
                     ceo_history[brand].append({
@@ -335,5 +348,6 @@ class Phase2StrategicGame:
             "step_history": step_history,
             "price_history_by_chain": price_history_by_chain,
             "envelope_log": envelope_log,
+            "decision_log": decision_log,
             "epsilon_mean": float(batch_agent.epsilon_mean),
         }

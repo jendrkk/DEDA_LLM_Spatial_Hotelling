@@ -22,6 +22,27 @@ from hotelling.llm.schemas import EntrantEntryDecision
 logger = logging.getLogger(__name__)
 
 
+def _fmt_envelope(g) -> str:
+    return (f"p={g.p_bar:.2f} dp={g.delta_p:.2f} e={g.e_bar:.2f} "
+            f"de={g.delta_e:.2f} eps={g.epsilon:.3f}")
+
+
+def _log_ceo_io(brand: str, ctype: str, epoch: int, st: dict, out, failed: bool) -> None:
+    own = st.get("own", {}) or {}
+    status = "RETAINED (call failed)" if failed else "OK"
+    chain_p = own.get("mean_price_last_T", float("nan"))
+    gp = own.get("group_performance", []) or []
+    if gp:
+        in_groups = "  ".join(f"{g['group_key']}: p={g['mean_price']:.2f}" for g in gp)
+    else:
+        in_groups = "(single group)"
+    lines = [f"CEO {brand} [{ctype}] epoch {epoch} — {status}",
+             f"   in : chain mean p={chain_p:.2f} EUR  | groups: {in_groups}"]
+    for k, g in out.groups.items():
+        lines.append(f"   out: {k} -> {_fmt_envelope(g)}")
+    logger.info("\n".join(lines))
+
+
 class Phase0BurnIn:
     """Burn-in phase: incumbent Q-learners converge without CEO or entrant.
 
@@ -302,7 +323,10 @@ class Phase2StrategicGame:
                         min_delta_p=ceo.min_delta_p, min_delta_e=ceo.min_delta_e,
                         store_metadata=store_metadata, enrich_groups=enrich_groups,
                     )
+                    nf_before = ceo.n_fail
                     out = ceo.decide(st, epoch, prev_env[brand])
+                    _log_ceo_io(brand, ceo.chain_type, epoch, st, out,
+                                failed=(ceo.n_fail > nf_before))
                     decision_log.append({
                         "epoch": epoch, "chain": brand,
                         "n_groups": len(out.groups),

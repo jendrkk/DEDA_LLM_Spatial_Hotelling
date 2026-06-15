@@ -7,8 +7,20 @@ model: "gemini/gemma-4-31b-it"     # set GEMINI_API_KEY in the environment
 ceo_mode: "single"                 # "single" v1; "decomposed" (analyst sub-agents) reserved
 temperature: 0                     # deterministic
 max_tokens: 2048                   # room for the full structured envelope JSON
-max_retries: 3
+max_retries: 3                 # legacy field (kept for compatibility; retry cadence
+                               # is now governed by the backoff settings below)
 log_path: "results/llm_calls.jsonl"
+
+# Transient-error resilience. Google AI Studio returns sporadic HTTP 500 INTERNAL
+# (and 503/429). The client retries ONLY transient errors with exponential backoff +
+# jitter; permanent (auth/bad-request) and parse/validation errors are not retried
+# this way (the JSON fallback handles parsing). Spreading attempts across tens of
+# seconds reliably catches a recovered server.
+timeout: 120.0                 # per-call wall-clock timeout (seconds)
+transient_max_attempts: 5      # total attempts per call on transient errors
+backoff_base: 2.0              # wait_random_exponential multiplier (seconds)
+backoff_max: 60.0              # backoff ceiling (seconds)
+save_communication: false      # usually toggled via --save-LLM-con, not here
 
 # Google AI Studio free-tier limits for Gemma 4 (verify live in AI Studio; quota
 # depends on tier). The runner throttles to stay under rpm and stops when rpd is hit.

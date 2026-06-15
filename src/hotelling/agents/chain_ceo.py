@@ -55,6 +55,7 @@ class ChainCEO:
         min_delta_e: float,
         T_ceo: int,
         merge_system: bool = False,
+        capture_comm: bool = False,
     ) -> None:
         self.chain_id = chain_id
         self.chain_type = chain_type
@@ -65,6 +66,8 @@ class ChainCEO:
         self.min_delta_e = float(min_delta_e)
         self.T_ceo = int(T_ceo)
         self.merge_system = bool(merge_system)
+        self.capture_comm = bool(capture_comm)
+        self.transcripts: list[dict] = []
         self.n_success = 0
         self.n_fail = 0
         self.last_error: str | None = None
@@ -92,6 +95,7 @@ class ChainCEO:
         previous: ChainEnvelopeOutput | None = None,
     ) -> ChainEnvelopeOutput:
         """Query the LLM for a new envelope; fall back on any failure."""
+        messages = None
         try:
             system_prompt = self._system_tmpl.render(**self._system_ctx)
             state_prompt = self._state_tmpl.render(
@@ -106,19 +110,40 @@ class ChainCEO:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": state_prompt},
                 ]
-            out = self.client.complete(messages, response_model=ChainEnvelopeOutput)
+            if self.capture_comm:
+                out, transcript = self.client.complete_with_transcript(
+                    messages, response_model=ChainEnvelopeOutput
+                )
+            else:
+                out = self.client.complete(messages, response_model=ChainEnvelopeOutput)
+                transcript = None
             self._validate(out)
             self.n_success += 1
+            if self.capture_comm:
+                self._record_transcript(epoch, messages, transcript)
             logger.info("CEO %s epoch %d OK: %s", self.chain_id, epoch, out.rationale[:80])
             return out
         except Exception as exc:  # noqa: BLE001 — never crash the simulation on a bad call
             self.n_fail += 1
             self.last_error = repr(exc)[:200]
+            if self.capture_comm:
+                self._record_transcript(epoch, messages, f"FAILED: {repr(exc)[:1500]}")
             logger.warning(
                 "CEO %s epoch %d failed (%s); retaining previous envelope.",
                 self.chain_id, epoch, exc,
             )
             return previous if previous is not None else self._safe_default(state, epoch)
+
+    def _record_transcript(self, epoch: int, messages, response_text) -> None:
+        prompt_text = "\n\n".join(
+            f"[{m['role'].upper()}]\n{m['content']}" for m in (messages or [])
+        )
+        self.transcripts.append({
+            "epoch": int(epoch),
+            "chain": self.chain_id,
+            "prompt": prompt_text,
+            "response": response_text or "",
+        })
 
     def _validate(self, out: ChainEnvelopeOutput) -> None:
         if set(out.groups) != set(self.group_keys):
@@ -158,6 +183,7 @@ def build_chain_ceos(
     min_delta_e: float,
     T_ceo: int,
     merge_system: bool = False,
+    capture_comm: bool = False,
 ) -> dict[str, ChainCEO]:
     """Group firms by brand and build one ChainCEO per chain.
 
@@ -182,5 +208,6 @@ def build_chain_ceos(
             min_delta_e=min_delta_e,
             T_ceo=T_ceo,
             merge_system=merge_system,
+            capture_comm=capture_comm,
         )
     return ceos

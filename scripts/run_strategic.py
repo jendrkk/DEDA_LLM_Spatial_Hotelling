@@ -63,6 +63,10 @@ def main() -> None:
                          "run_baseline run directory (skips Phase-0 burn-in)")
     ap.add_argument("--group-analytics", action="store_true",
                     help="enrich the CEO prompt with per-group competitive analytics (2.0)")
+    ap.add_argument("--save-LLM-con", dest="save_llm_con", action="store_true",
+                    help="dev tool: save each CEO LLM prompt + full response (incl. "
+                         "reasoning if returned) to results/.../LLM_communication/"
+                         "[chain]_[epoch].txt")
     ap.add_argument("--output-dir", type=str, default="results/strategic_runs")
     args = ap.parse_args()
 
@@ -100,6 +104,8 @@ def main() -> None:
         phase2_cfg["no_ceo"] = True
     if args.group_analytics:
         ceo_cfg["group_analytics"] = True
+    if args.save_llm_con:
+        ceo_cfg["save_communication"] = True
 
     config = {
         "env": env_cfg, "agents": agent_cfg, "groups": groups_cfg, "ceo": ceo_cfg,

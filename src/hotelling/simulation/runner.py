@@ -715,6 +715,7 @@ def run_strategic_session(config: dict) -> dict:
     store_group_labels = [labels_map[str(f.id)] for f in firms]
     zones = build_consumer_zones(comp["grid_gdf"], firms, n_side=3)
 
+    save_comm = bool(ceo_cfg.get("save_communication", False))
     client = LLMClient(
         model=str(ceo_cfg.get("model", "gemini/gemma-4-31b-it")),
         temperature=float(ceo_cfg.get("temperature", 0)),
@@ -726,6 +727,11 @@ def run_strategic_session(config: dict) -> dict:
         reasoning_effort=ceo_cfg.get("reasoning_effort", "none"),
         force_reasoning_effort=bool(ceo_cfg.get("force_reasoning_effort", False)),
         instructor_mode=str(ceo_cfg.get("instructor_mode", "json")),
+        timeout=float(ceo_cfg.get("timeout", 120.0)),
+        transient_max_attempts=int(ceo_cfg.get("transient_max_attempts", 5)),
+        backoff_base=float(ceo_cfg.get("backoff_base", 2.0)),
+        backoff_max=float(ceo_cfg.get("backoff_max", 60.0)),
+        capture_raw=save_comm,
     )
     ceos = build_chain_ceos(
         firms, client=client, active_divisions=active_divisions,
@@ -733,6 +739,7 @@ def run_strategic_session(config: dict) -> dict:
         min_delta_p=float(ceo_cfg.get("min_delta_p", 1.5)),
         min_delta_e=float(ceo_cfg.get("min_delta_e", 0.1)), T_ceo=T_CEO,
         merge_system=bool(ceo_cfg.get("merge_system_prompt", True)),
+        capture_comm=save_comm,
     )
 
     # ── Phase 2: strategic game (continues from warmed state, no reset) ────
@@ -766,6 +773,23 @@ def run_strategic_session(config: dict) -> dict:
     with (output_dir / "ceo_decisions.jsonl").open("w") as _f:
         for rec in res.get("decision_log", []):
             _f.write(_json.dumps(rec) + "\n")
+
+    if save_comm:
+        import re as _re
+        comm_dir = output_dir / "LLM_communication"
+        comm_dir.mkdir(parents=True, exist_ok=True)
+        n_written = 0
+        for _ceo in ceos.values():
+            for tr in getattr(_ceo, "transcripts", []):
+                safe = _re.sub(r"[^0-9A-Za-z._-]+", "_", str(tr["chain"])).strip("_")
+                fpath = comm_dir / f"{safe}_{tr['epoch']}.txt"
+                with fpath.open("w") as fh:
+                    fh.write("Prompt:\n")
+                    fh.write(str(tr["prompt"]) + "\n\n")
+                    fh.write("Response:\n")
+                    fh.write(str(tr["response"]) + "\n")
+                n_written += 1
+        _log.info("Saved %d CEO LLM transcripts to %s", n_written, comm_dir)
 
     # ── CEO call integrity: a run where every CEO call failed yields a Δ that is
     #    indistinguishable from the no-CEO control and MUST NOT be treated as valid.

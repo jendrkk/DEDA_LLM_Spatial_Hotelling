@@ -65,6 +65,9 @@ class ChainCEO:
         self.min_delta_e = float(min_delta_e)
         self.T_ceo = int(T_ceo)
         self.merge_system = bool(merge_system)
+        self.n_success = 0
+        self.n_fail = 0
+        self.last_error: str | None = None
         self._env = _jinja_env()
         self._system_tmpl = self._env.get_template("system_ceo.jinja")
         self._state_tmpl = self._env.get_template("state_ceo.jinja")
@@ -105,9 +108,12 @@ class ChainCEO:
                 ]
             out = self.client.complete(messages, response_model=ChainEnvelopeOutput)
             self._validate(out)
+            self.n_success += 1
             logger.info("CEO %s epoch %d OK: %s", self.chain_id, epoch, out.rationale[:80])
             return out
         except Exception as exc:  # noqa: BLE001 — never crash the simulation on a bad call
+            self.n_fail += 1
+            self.last_error = repr(exc)[:200]
             logger.warning(
                 "CEO %s epoch %d failed (%s); retaining previous envelope.",
                 self.chain_id, epoch, exc,

@@ -15,9 +15,18 @@ log_path: "results/llm_calls.jsonl"
 requests_per_minute: 15
 requests_per_day: 1500
 
-reasoning_effort: "disable"        # turn OFF Gemma 4 thinking (LiteLLM -> thinkingBudget 0).
-                                   # The CEO writes its reasoning into the schema's
-                                   # `rationale` field instead of hidden thinking tokens.
+# reasoning_effort is now capability-gated in LLMClient. LiteLLM's model DB does not
+# (yet) register gemma-4-31b-it as reasoning-capable, so by default the param is
+# OMITTED and thinking falls back to the Gemini-API default (high for Gemini-3-arch
+# models). "none" is the LiteLLM-canonical off value used when the model IS registered
+# or when forced below.
+reasoning_effort: "none"
+# Set true to FORCE reasoning_effort through via allowed_openai_params so the gemini
+# transform maps it to thinking-off. Gemma 4 supports configurable thinking, so this
+# is the lever that actually disables it and conserves the free-tier daily quota.
+# Recommended workflow: leave false for the first verified run; flip to true and
+# compare tokens_used in llm_calls.jsonl to confirm thinking is off before production.
+force_reasoning_effort: false
 instructor_mode: "json"            # JSON mode (response_format); "md_json" if JSON errors
 
 # Gemma chat template: fold the system prompt into the first user turn. Gemma models

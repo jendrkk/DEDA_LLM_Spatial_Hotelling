@@ -135,6 +135,14 @@ def main() -> None:
     print("=" * 60)
     print(f"  no_ceo (control):   {config['phase2'].get('no_ceo')}")
     print(f"  CEO epochs:         {result.get('n_epochs')}")
+    _sr = result.get("ceo_success_rate")
+    _pct = 0.0 if _sr is None or _sr != _sr else 100.0 * _sr
+    print(f"  CEO call success:   {result.get('ceo_calls_success')}/"
+          f"{result.get('ceo_calls_total')} "
+          f"({_pct:.0f}%)")
+    if result.get("ceo_all_failed"):
+        print("  *** WARNING: ALL CEO CALLS FAILED — Δ BELOW IS INVALID ***")
+        print("  *** Inspect <run>/llm_calls.jsonl for FAILED records.       ***")
     d = result.get("deltas_by_chain", {})
     print(f"  Δ global:           {d.get('global')}")
     print(f"  Δ D/S/B:            {d.get('discount')} / {d.get('standard')} / {d.get('bio')}")

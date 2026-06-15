@@ -723,7 +723,8 @@ def run_strategic_session(config: dict) -> dict:
         log_path=ceo_cfg.get("log_path", str(output_dir / "llm_calls.jsonl")),
         requests_per_minute=rpm,
         requests_per_day=rpd,
-        reasoning_effort=ceo_cfg.get("reasoning_effort", "disable"),
+        reasoning_effort=ceo_cfg.get("reasoning_effort", "none"),
+        force_reasoning_effort=bool(ceo_cfg.get("force_reasoning_effort", False)),
         instructor_mode=str(ceo_cfg.get("instructor_mode", "json")),
     )
     ceos = build_chain_ceos(
@@ -765,6 +766,27 @@ def run_strategic_session(config: dict) -> dict:
     with (output_dir / "ceo_decisions.jsonl").open("w") as _f:
         for rec in res.get("decision_log", []):
             _f.write(_json.dumps(rec) + "\n")
+
+    # ── CEO call integrity: a run where every CEO call failed yields a Δ that is
+    #    indistinguishable from the no-CEO control and MUST NOT be treated as valid.
+    ceo_success = int(sum(getattr(c, "n_success", 0) for c in ceos.values()))
+    ceo_fail = int(sum(getattr(c, "n_fail", 0) for c in ceos.values()))
+    ceo_total = ceo_success + ceo_fail
+    ceo_errors = {
+        b: getattr(c, "last_error", None)
+        for b, c in ceos.items() if getattr(c, "n_fail", 0)
+    }
+    ceo_success_rate = (ceo_success / ceo_total) if ceo_total else float("nan")
+    ceo_all_failed = (not no_ceo) and ceo_total > 0 and ceo_success == 0
+    if ceo_all_failed:
+        _log.error(
+            "ALL %d CEO calls FAILED — Δ is INVALID (equals no-CEO noise). "
+            "Example error: %s", ceo_total, next(iter(ceo_errors.values()), None),
+        )
+    elif (not no_ceo) and ceo_success_rate < 1.0:
+        _log.warning("CEO call success rate %.1f%% (%d/%d); some epochs used the "
+                     "retained/previous envelope.", 100 * ceo_success_rate,
+                     ceo_success, ceo_total)
 
     # ── Calvano Δ (global + per chain type) from final prices ──────────────
     deltas_by_chain: dict = {}
@@ -809,6 +831,12 @@ def run_strategic_session(config: dict) -> dict:
         "group_keys": group_keys, "deltas_by_chain": deltas_by_chain,
         "burnin_epsilon_mean": burn_result.get("epsilon_mean"),
         "epsilon_mean_final": res["epsilon_mean"],
+        "ceo_calls_total": ceo_total,
+        "ceo_calls_success": ceo_success,
+        "ceo_calls_failed": ceo_fail,
+        "ceo_success_rate": ceo_success_rate,
+        "ceo_all_failed": ceo_all_failed,
+        "ceo_errors": ceo_errors,
         "dense_log_meta": str(output_dir / "dense_log_meta.json"),
         "elapsed_s": round(time.time() - t_start, 2),
         "env_config_path": config.get("env_config_path"),
@@ -827,4 +855,7 @@ def run_strategic_session(config: dict) -> dict:
     row.to_csv(index_path, mode="a", header=not index_path.exists(), index=False)
 
     return {"run_id": run_id, "output_dir": str(output_dir),
-            "deltas_by_chain": deltas_by_chain, **res}
+            "deltas_by_chain": deltas_by_chain,
+            "ceo_success_rate": ceo_success_rate, "ceo_calls_total": ceo_total,
+            "ceo_calls_success": ceo_success, "ceo_all_failed": ceo_all_failed,
+            **res}

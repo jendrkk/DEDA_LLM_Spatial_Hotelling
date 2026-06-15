@@ -101,6 +101,7 @@ class LLMClient:
         requests_per_minute: Optional[int] = None,
         requests_per_day: Optional[int] = None,
         reasoning_effort: Optional[str] = None,
+        force_reasoning_effort: bool = False,
         instructor_mode: str = "json",
     ) -> None:
         self.model = model
@@ -111,8 +112,11 @@ class LLMClient:
         self.base_url = base_url
         self.seed = seed
         self.reasoning_effort = reasoning_effort
+        self.force_reasoning_effort = bool(force_reasoning_effort)
         self.instructor_mode = str(instructor_mode).lower()
+        self._reasoning_supported = self._detect_reasoning_support()
         self._client = self._build_client()
+        self._log_reasoning_decision()
         self._rate_limiter = (
             RateLimiter(requests_per_minute or 0, requests_per_day or 0)
             if (requests_per_minute or requests_per_day)
@@ -122,6 +126,40 @@ class LLMClient:
     # ------------------------------------------------------------------
     # Client factory
     # ------------------------------------------------------------------
+
+    def _detect_reasoning_support(self) -> bool:
+        """True iff LiteLLM's model DB registers this model as reasoning-capable.
+
+        Defensive across litellm versions; any failure -> False (treat as
+        non-reasoning, which is the safe omit-or-force path).
+        """
+        try:
+            import litellm  # noqa: PLC0415
+
+            fn = getattr(litellm, "supports_reasoning", None)
+            if fn is None:
+                fn = getattr(getattr(litellm, "utils", None), "supports_reasoning", None)
+            return bool(fn(model=self.model)) if fn is not None else False
+        except Exception:
+            return False
+
+    def _log_reasoning_decision(self) -> None:
+        import logging  # noqa: PLC0415
+
+        log = logging.getLogger(__name__)
+        if self.reasoning_effort is None:
+            return
+        if self._reasoning_supported:
+            log.info("reasoning_effort=%r passed natively (model %s is registered "
+                     "reasoning-capable).", self.reasoning_effort, self.model)
+        elif self.force_reasoning_effort:
+            log.info("reasoning_effort=%r FORCED via allowed_openai_params (model %s "
+                     "not in LiteLLM reasoning DB).", self.reasoning_effort, self.model)
+        else:
+            log.info("reasoning_effort=%r OMITTED: model %s not registered as "
+                     "reasoning-capable and force_reasoning_effort=False. Thinking "
+                     "uses the provider default. Set force_reasoning_effort=True to "
+                     "push it through.", self.reasoning_effort, self.model)
 
     def _build_client(self) -> Any:
         """Initialize LiteLLM + Instructor with an explicit structured-output mode.
@@ -182,11 +220,20 @@ class LLMClient:
             "max_retries": self.max_retries,
         }
         if self.reasoning_effort is not None:
-            kwargs["reasoning_effort"] = self.reasoning_effort
+            if self._reasoning_supported:
+                kwargs["reasoning_effort"] = self.reasoning_effort
+            elif self.force_reasoning_effort:
+                kwargs["reasoning_effort"] = self.reasoning_effort
+                kwargs["allowed_openai_params"] = ["reasoning_effort"]
+            # else: omit — model not registered reasoning-capable (logged at init)
         if self.base_url is not None:
             kwargs["base_url"] = self.base_url
         if self.seed is not None:
             kwargs["seed"] = self.seed
+        # Universal safety net: any param LiteLLM does not support for this model
+        # is dropped instead of crashing the call. Whitelisted params (above) and
+        # supported params are unaffected.
+        kwargs.setdefault("drop_params", True)
 
         if response_model is not None:
             try:
@@ -224,6 +271,7 @@ class LLMClient:
         import litellm  # noqa: PLC0415
 
         raw_kwargs = {k: v for k, v in kwargs.items() if k != "max_retries"}
+        raw_kwargs["drop_params"] = True  # keep the raw retry clean of param errors
         content = ""
         try:
             raw = litellm.completion(**raw_kwargs)

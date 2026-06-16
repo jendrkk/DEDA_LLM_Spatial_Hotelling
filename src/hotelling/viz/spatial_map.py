@@ -863,25 +863,25 @@ def animate_market(
     _anim_chain_types = _get_chain_types(stores_gdf, N_firms)
 
     # ── Determine frame list ────────────────────────────────────────────────
+    # DenseLog rows are indexed 0..T-1 (T = dense_log._rows_written), and
+    # prices_efforts_at / dense_log.demands index by ROW, not by absolute
+    # simulation step. aggregate.parquet["step"] lives in the recorder's
+    # absolute-step space (e.g. a single value == T_game for short runs) and
+    # must NOT be used as a DenseLog row index — doing so raises IndexError
+    # whenever a step >= rows_written. Default to the dense-log row space.
     if timesteps is not None:
-        frames_list = list(timesteps)
+        frames_list = [int(t) for t in timesteps]
     elif stride is not None:
-        frames_list = list(range(0, T, stride))
+        frames_list = list(range(0, T, max(1, int(stride))))
     else:
-        agg_path = run_dir / "aggregate.parquet"
-        if agg_path.exists():
-            import pandas as pd
+        frames_list = list(range(0, T, max(1, T // 60)))
 
-            agg = pd.read_parquet(agg_path)
-            if "step" in agg.columns:
-                frames_list = agg["step"].dropna().astype(int).tolist()
-            else:
-                frames_list = list(range(0, T, max(1, T // 60)))
-        else:
-            frames_list = list(range(0, T, max(1, T // 60)))
-
+    # Clamp to valid DenseLog rows; dedupe and keep ascending order.
+    frames_list = sorted({t for t in frames_list if 0 <= t < T})
     if not frames_list:
-        raise ValueError(f"No frames to animate in run at {run_dir}")
+        raise ValueError(
+            f"No valid frames to animate in run at {run_dir} (rows_written={T})."
+        )
 
     # ── Consistent colormap / norm across ALL animation frames ──────────────
     # _build_global_norm scans every frame in frames_list so the colour scale

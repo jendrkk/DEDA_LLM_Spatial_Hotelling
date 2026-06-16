@@ -82,9 +82,9 @@ CHAIN_QID_MAP: Dict[str, str] = {
     "Q16968817": "Rewe",                 # Rewe / REWE / REWE City / REWE Center
     "Q151954": "Lidl",                   # Lidl
     "Q41171373": "Aldi Nord",            # Aldi Nord / ALDI Nord  (Berlin = Aldi Nord territory)
-    "Q879858": "Netto Marken-Discount",  # Netto Marken-Discount / Netto City
+    "Q879858": "Netto",                  # Netto Marken-Discount / Netto City — merged into single "Netto" chain
     "Q284688": "Penny",                  # Penny / PENNY
-    "Q552652": "Netto",                  # Netto (Edeka group, distinct from Netto Marken-Discount)
+    "Q552652": "Netto",                  # Netto — merged with Netto Marken-Discount into one "Netto" chain
     "Q685967": "Kaufland",               # Kaufland
     "Q450180": "Norma",                  # Norma / NORMA
     "Q1548713": "HIT",                   # HIT / HIT Ullrich
@@ -113,7 +113,6 @@ CHAIN_TYPE_MAP: Dict[str, str] = {
     # Discount tier
     "Aldi Nord":              "discount",
     "Lidl":                   "discount",
-    "Netto Marken-Discount":  "discount",
     "Netto":                  "discount",
     "Penny":                  "discount",
     "Norma":                  "discount",
@@ -131,6 +130,16 @@ CHAIN_TYPE_MAP: Dict[str, str] = {
     "Alnatura":               "bio",
     "LPG BioMarkt":           "bio",
 }
+
+#: Canonical chain names to drop from the simulation entirely, regardless of a
+#: valid chain_type. Single-store chains are excluded because each distinct
+#: chain spawns one LLM-CEO call per strategic epoch; a one-store chain wastes
+#: that call without contributing a meaningful strategic agent. Their stores
+#: still exist in OSM but are removed here so they enter neither the demand
+#: system nor the CEO layer. Add a name to drop it on the next pipeline run.
+_EXCLUDED_CHAINS: frozenset[str] = frozenset({
+    "Nah & Frisch",   # single store in the inner ring (see scripts/fix_chain_data.py)
+})
 
 # ---------------------------------------------------------------------------
 # Module-private constants
@@ -156,10 +165,9 @@ _BRAND_NAME_MAP: Dict[str, str] = {
     # Aldi Nord — Berlin lies entirely within Aldi Nord territory
     "aldi nord": "Aldi Nord",
     "aldi": "Aldi Nord",
-    # Netto Marken-Discount (Schwarz Gruppe, sibling of Lidl/Kaufland)
-    "netto marken-discount": "Netto Marken-Discount",
-    "netto city": "Netto Marken-Discount",   # former sub-format of Netto MD
-    # Netto (Edeka group — distinct chain, not to be confused with Netto MD)
+    # Netto Marken-Discount and Netto are merged into a single "Netto" chain
+    "netto marken-discount": "Netto",
+    "netto city": "Netto",
     "netto": "Netto",
     # Penny
     "penny": "Penny",
@@ -688,7 +696,7 @@ def process_supermarkets(
     3. Clip to the union of grid cell polygons.
     4. Add ``chain_type`` column via :data:`CHAIN_TYPE_MAP`.
     5. Drop rows where ``chain`` or ``chain_type`` is null (unrecognised
-       independents are excluded from the simulation).
+       independents are excluded), then drop any chain in ``_EXCLUDED_CHAINS``.
     6. Return columns: ``geometry``, ``name``, ``chain``, ``chain_type``.
 
     Parameters
@@ -716,6 +724,16 @@ def process_supermarkets(
 
     gdf["chain_type"] = gdf["chain"].map(CHAIN_TYPE_MAP)
     gdf = gdf[gdf["chain"].notna() & gdf["chain_type"].notna()].copy()
+
+    # Drop explicitly excluded chains (e.g. single-store chains that would
+    # otherwise spawn a wasted per-epoch LLM-CEO call). See _EXCLUDED_CHAINS.
+    n_excluded = int(gdf["chain"].isin(_EXCLUDED_CHAINS).sum())
+    if n_excluded:
+        gdf = gdf[~gdf["chain"].isin(_EXCLUDED_CHAINS)].copy()
+        logger.info(
+            "process_supermarkets: dropped %d store(s) from excluded chains %s.",
+            n_excluded, sorted(_EXCLUDED_CHAINS),
+        )
 
     keep = [c for c in ["geometry", "name", "chain", "chain_type"] if c in gdf.columns]
     return gdf[keep].reset_index(drop=True)

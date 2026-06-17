@@ -1,14 +1,18 @@
 ## Current market state — Epoch {{ epoch }}
 
+This is one epoch of a repeated game. The numbers below summarise the most recent measurement window; your decision will play out over this epoch and shape how rivals behave in all the epochs that follow.
+
 ---
 
-### 1. Your chain performance (last {{ T_ceo }} periods)
+### 1. Your chain performance (recent window)
 
 | Metric | Value |
 |--------|-------|
 | Number of stores | {{ own.n_stores }} |
 | Mean price | {{ "%.3f"|format(own.mean_price_last_T) }} € |
+{% if with_effort %}
 | Mean effort | {{ "%.3f"|format(own.mean_effort_last_T) }} |
+{% endif %}
 | Total demand | {{ "{:,.0f}".format(own.total_demand_last_T) }} units |
 | Total profit | {{ "%.2f"|format(own.total_profit_last_T) }} € |
 | Profit trend vs. previous epoch | {{ "%+.1f"|format(own.profit_trend_pct) }}% |
@@ -16,40 +20,35 @@
 {% if active_divisions %}
 #### Performance by store group
 
-| Group | Mean price | Mean effort | Demand share | Profit share |
-|-------|-----------|-------------|-------------|-------------|
+| Group | Mean price |{% if with_effort %} Mean effort |{% endif %} Demand share | Profit share |
+|-------|-----------|{% if with_effort %}-------------|{% endif %}-------------|-------------|
 {% for g in own.group_performance %}
-| {{ g.group_key }} | {{ "%.3f"|format(g.mean_price) }} € | {{ "%.3f"|format(g.mean_effort) }} | {{ "%.1f"|format(g.demand_share_pct) }}% | {{ "%.1f"|format(g.profit_share_pct) }}% |
+| {{ g.group_key }} | {{ "%.3f"|format(g.mean_price) }} € |{% if with_effort %} {{ "%.3f"|format(g.mean_effort) }} |{% endif %} {{ "%.1f"|format(g.demand_share_pct) }}% | {{ "%.1f"|format(g.profit_share_pct) }}% |
 {% endfor %}
 {% endif %}
 
 {% if own.group_performance and (own.group_performance[0].position_label is defined) %}
 #### Competitive brief by group (analytics)
 
-| Group | Margin (p̄−mc) | Demand index | Local competition | Same-tier gap | Position | Price trend |
-|-------|----------------|--------------|-------------------|---------------|----------|-------------|
+| Group | Margin (p̄−mc) | Demand index | Local competition | Same-type price gap | Position | Price trend |
+|-------|----------------|--------------|-------------------|---------------------|----------|-------------|
 {% for g in own.group_performance %}
 | {{ g.group_key }} | {{ "%.2f"|format(g.margin_eur) }} € | {{ "%.2f"|format(g.demand_index) }} | {{ "%.1f"|format(g.mean_local_competition) }} rivals | {{ "%+.2f"|format(g.price_gap_vs_same_tier) }} € | {{ g.position_label }} | {{ "%+.1f"|format(g.price_trend_pct) }}% |
 {% endfor %}
 
-*Demand index > 1 = the group captures more demand than its store-count share (over-performing); < 1 = under-performing. Same-tier gap = your group's mean price minus the mean price of OTHER chains of the same tier (negative = you undercut the tier).*
+*Demand index > 1 = the group captures more demand than its store-count share. Same-type price gap = your group's mean price minus the mean price of the OTHER chains of your type (positive = you sit above your type, negative = you sit below it). A persistently negative gap means you are leading the type downward in price — profitable for an epoch, costly if it triggers matching.*
 {% endif %}
 
 ---
 
-### 2. Previous envelope decisions
+### 2. Your previous envelope decisions{% if with_comm %} and signals{% endif %}
 
 {% if history %}
-| Epoch | {% if active_divisions %}Group{% endif %} p_bar | delta_p | e_bar | delta_e | epsilon | Realised profit |
-|-------|{% if active_divisions %}------{% endif %}-------|---------|-------|---------|---------|----------------|
+| Epoch | p_bar | delta_p |{% if with_effort %} e_bar | delta_e |{% endif %} epsilon |{% if with_comm %} signalled willing | proposed price |{% endif %} Realised profit |
+|-------|-------|---------|{% if with_effort %}-------|---------|{% endif %}---------|{% if with_comm %}-------------------|----------------|{% endif %}----------------|
 {% for h in history %}
-{% if active_divisions %}
-{% for g_key, env in h.envelopes.items() %}
-| {{ h.epoch }} | {{ g_key }}: {{ "%.3f"|format(env.p_bar) }} | {{ "%.3f"|format(env.delta_p) }} | {{ "%.3f"|format(env.e_bar) }} | {{ "%.3f"|format(env.delta_e) }} | {{ "%.3f"|format(env.epsilon) }} | {{ "%.2f"|format(h.profit_realized) }} € |
-{% endfor %}
-{% else %}
-| {{ h.epoch }} | {{ "%.3f"|format(h.envelopes.default.p_bar) }} | {{ "%.3f"|format(h.envelopes.default.delta_p) }} | {{ "%.3f"|format(h.envelopes.default.e_bar) }} | {{ "%.3f"|format(h.envelopes.default.delta_e) }} | {{ "%.3f"|format(h.envelopes.default.epsilon) }} | {{ "%.2f"|format(h.profit_realized) }} € |
-{% endif %}
+{% set env = h.envelopes.default if h.envelopes.default is defined else (h.envelopes.values()|list)[0] %}
+| {{ h.epoch }} | {{ "%.3f"|format(env.p_bar) }} | {{ "%.3f"|format(env.delta_p) }} |{% if with_effort %} {{ "%.3f"|format(env.e_bar) }} | {{ "%.3f"|format(env.delta_e) }} |{% endif %} {{ "%.3f"|format(env.epsilon) }} |{% if with_comm %} {{ h.signal.willing if h.signal is defined and h.signal else "—" }} | {{ ("%.2f"|format(h.signal.proposed_tier_price)) if h.signal is defined and h.signal else "—" }} |{% endif %} {{ "%.2f"|format(h.profit_realized) }} € |
 {% endfor %}
 {% else %}
 No previous epochs recorded (this is the first CEO call).
@@ -57,15 +56,19 @@ No previous epochs recorded (this is the first CEO call).
 
 ---
 
-### 3. Rival chains (public information only)
+### 3. Rival chains (public information)
 
-| Chain | Type | Stores | Last mean price | Price trend |
-|-------|------|--------|----------------|-------------|
+| Chain | Type | Stores | Last mean price | Price trend |{% if with_comm %} Last signal | Proposed price |{% endif %}
+|-------|------|--------|----------------|-------------|{% if with_comm %}------------|----------------|{% endif %}
 {% for r in rivals %}
-| {{ r.id }} | {{ r.type }} | {{ r.n_stores }} | {{ "%.3f"|format(r.last_published_price) }} € | {{ "%+.1f"|format(r.price_trend_pct) }}% |
+| {{ r.id }} | {{ r.type }} | {{ r.n_stores }} | {{ "%.3f"|format(r.last_published_price) }} € | {{ "%+.1f"|format(r.price_trend_pct) }}% |{% if with_comm %} {{ ("willing" if r.last_signal.willing else "competing") if r.last_signal else "—" }} | {{ ("%.2f"|format(r.last_signal.proposed_tier_price)) if r.last_signal else "—" }} |{% endif %}
 {% endfor %}
 
-*Note: only rivals' published prices are observable. Their profits, effort levels, and internal strategies are not visible to you.*
+*Only rivals' published prices{% if with_comm %} and coordination signals{% endif %} are observable. Their profits{% if with_effort %}, effort levels,{% endif %} and internal strategies are not visible to you.*
+
+{% if with_comm %}
+**Your own previous signal:** {% if own_last_signal %}you signalled **{{ "willing to coordinate" if own_last_signal.willing else "competing" }}** at a proposed price of {{ "%.2f"|format(own_last_signal.proposed_tier_price) }} €.{% else %}none yet (first epoch).{% endif %}
+{% endif %}
 
 ---
 
@@ -74,20 +77,20 @@ No previous epochs recorded (this is the first CEO call).
 Total market population: {{ "{:,.0f}".format(consumers.total_population) }}
 High-status consumer share (ring-wide): {{ "%.1f"|format(consumers.high_status_share_pct) }}%
 
-| Zone | Population | High-status share | Dominant chain type | Notes |
-|------|-----------|-------------------|-------------------|-------|
+| Zone | Population | High-status share | Dominant chain type |
+|------|-----------|-------------------|-------------------|
 {% for z in consumers.zones %}
-| {{ z.label }} | {{ "{:,.0f}".format(z.population) }} | {{ "%.0f"|format(z.high_status_pct) }}% | {{ z.dominant_rival_type }} | {{ z.notes }} |
+| {{ z.label }} | {{ "{:,.0f}".format(z.population) }} | {{ "%.0f"|format(z.high_status_pct) }}% | {{ z.dominant_rival_type }} |
 {% endfor %}
 
 ---
 
 ### 5. Constraints reminder
 
-- Your marginal cost: **{{ marginal_cost }} €** — all `p_bar` values must strictly exceed this.
-- Minimum envelope half-width: **delta_p ≥ {{ min_delta_p }}**, **delta_e ≥ {{ min_delta_e }}**.
+- Marginal cost: **{{ marginal_cost }} €** — all `p_bar`{% if with_comm %} and `proposed_tier_price`{% endif %} values must strictly exceed this.
+- Minimum half-width: **delta_p ≥ {{ min_delta_p }}**{% if with_effort %}, **delta_e ≥ {{ min_delta_e }}**{% endif %}.
 - Exploration rate: **epsilon ∈ (0.0, 0.5)** per group.
 
 ---
 
-Think step by step. Then output your JSON envelope decision.
+Think step by step about the long-run consequences of your move, then output your JSON decision.

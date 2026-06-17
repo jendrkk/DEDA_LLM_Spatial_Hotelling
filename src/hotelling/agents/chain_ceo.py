@@ -17,7 +17,7 @@ from pathlib import Path
 
 from hotelling.llm.ceo_state import ct_code, ct_label, division_context
 from hotelling.llm.client import LLMClient
-from hotelling.llm.schemas import ChainEnvelopeOutput, GroupEnvelope
+from hotelling.llm.schemas import ChainEnvelopeOutput, CoordinationSignal, GroupEnvelope
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +56,8 @@ class ChainCEO:
         T_ceo: int,
         merge_system: bool = False,
         capture_comm: bool = False,
+        with_effort: bool = True,
+        with_comm: bool = False,
     ) -> None:
         self.chain_id = chain_id
         self.chain_type = chain_type
@@ -67,6 +69,8 @@ class ChainCEO:
         self.T_ceo = int(T_ceo)
         self.merge_system = bool(merge_system)
         self.capture_comm = bool(capture_comm)
+        self.with_effort = bool(with_effort)
+        self.with_comm = bool(with_comm)
         self.transcripts: list[dict] = []
         self.n_success = 0
         self.n_fail = 0
@@ -86,6 +90,8 @@ class ChainCEO:
             "group_keys": self.group_keys,
             "min_delta_p": self.min_delta_p,
             "min_delta_e": self.min_delta_e,
+            "with_effort": self.with_effort,
+            "with_comm": self.with_comm,
         }
 
     def decide(
@@ -155,6 +161,15 @@ class ChainCEO:
                 raise ValueError(
                     f"group {key}: p_bar {g.p_bar} <= marginal_cost {self.marginal_cost}"
                 )
+        if self.with_comm:
+            cs = out.coordination_signal
+            if cs is None:
+                raise ValueError("with_comm is on but coordination_signal is missing")
+            if cs.proposed_tier_price <= self.marginal_cost:
+                raise ValueError(
+                    f"proposed_tier_price {cs.proposed_tier_price} <= "
+                    f"marginal_cost {self.marginal_cost}"
+                )
 
     def _safe_default(self, state: dict, epoch: int) -> ChainEnvelopeOutput:
         """Neutral envelope centred on the chain's recent mean price."""
@@ -162,12 +177,18 @@ class ChainCEO:
                 self.marginal_cost * 1.05, self.marginal_cost + 1.0)
         dp = max(self.min_delta_p, 0.1 * p)
         de = max(self.min_delta_e, 0.1)
+        e_bar = 0.5 if self.with_effort else 0.0
         groups = {
-            k: GroupEnvelope(p_bar=p, delta_p=dp, e_bar=0.5, delta_e=de, epsilon=0.05)
+            k: GroupEnvelope(p_bar=p, delta_p=dp, e_bar=e_bar, delta_e=de, epsilon=0.05)
             for k in self.group_keys
         }
+        signal = (
+            CoordinationSignal(willing=False, proposed_tier_price=p)
+            if self.with_comm else None
+        )
         return ChainEnvelopeOutput(
             chain_id=self.chain_id, epoch=epoch, groups=groups,
+            coordination_signal=signal,
             rationale="FALLBACK: neutral envelope (LLM call failed or invalid).",
         )
 
@@ -184,6 +205,8 @@ def build_chain_ceos(
     T_ceo: int,
     merge_system: bool = False,
     capture_comm: bool = False,
+    with_effort: bool = True,
+    with_comm: bool = False,
 ) -> dict[str, ChainCEO]:
     """Group firms by brand and build one ChainCEO per chain.
 
@@ -209,5 +232,7 @@ def build_chain_ceos(
             T_ceo=T_ceo,
             merge_system=merge_system,
             capture_comm=capture_comm,
+            with_effort=with_effort,
+            with_comm=with_comm,
         )
     return ceos

@@ -53,6 +53,17 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=None)
     ap.add_argument("--with-effort", action="store_true",
                     help="load qlearning_effort.yaml (m_effort=5) instead of baseline")
+    ap.add_argument("--with-comm", action="store_true",
+                    help="enable the CEO cheap-talk coordination signal (and its "
+                         "memory in the prompt)")
+    ap.add_argument("--temp", type=float, default=None,
+                    help="CEO LLM sampling temperature; Google AI Studio accepts "
+                         "floats in [0.0, 2.0] (default 0 = deterministic). 0.3–0.7 "
+                         "gives useful CEO exploration; >1.2 risks malformed JSON.")
+    ap.add_argument("--T-measure", type=int, default=None,
+                    help="length (in periods) of the post-settling window the CEO "
+                         "observes each epoch; defaults to T_CEO. Set << T_CEO so the "
+                         "CEO reads the steady state, not the transient after a change.")
     ap.add_argument("--m-effort", type=int, default=None)
     ap.add_argument("--local-sum-d", action="store_true",
                     help="use detailed local-summary Q-state (total + same-type)")
@@ -106,11 +117,23 @@ def main() -> None:
         ceo_cfg["group_analytics"] = True
     if args.save_llm_con:
         ceo_cfg["save_communication"] = True
+    if args.temp is not None:
+        t = float(args.temp)
+        if not (0.0 <= t <= 2.0):
+            ap.error(f"--temp {t} out of range; Google AI Studio accepts [0.0, 2.0].")
+        if t > 1.2:
+            logger.warning("--temp %.2f is high; the CEO may emit malformed JSON "
+                           "(falls back to retained envelope on parse failure).", t)
+        ceo_cfg["temperature"] = t
+    if args.T_measure is not None:
+        phase2_cfg["T_measure"] = args.T_measure
 
     config = {
         "env": env_cfg, "agents": agent_cfg, "groups": groups_cfg, "ceo": ceo_cfg,
         "phase2": phase2_cfg, "output_dir": str(_REPO_ROOT / args.output_dir),
         "env_config_path": str(env_yaml),
+        "with_effort": bool(args.with_effort),
+        "with_comm": bool(args.with_comm),
     }
 
     if float(config["env"].get("lambda_val", 0)) <= 0:
@@ -126,9 +149,21 @@ def main() -> None:
         config["env"] = base_cfg.get("env", config["env"])
         config["agents"] = base_cfg.get("agents", config["agents"])
         config["from_run"] = str(from_dir)
-        if args.with_effort or args.local_sum_d or args.m_effort is not None:
-            logger.warning("--from-run overrides --with-effort/--local-sum-d/--m-effort "
-                           "with the baseline run's agent config (Q-table compatibility).")
+        loaded_m_effort = int(config["agents"].get("m_effort", 1))
+        if args.with_effort and loaded_m_effort <= 1:
+            ap.error(
+                f"--with-effort requires a --from-run baseline trained WITH effort "
+                f"(m_effort>1); the loaded run has m_effort={loaded_m_effort} "
+                f"(price-only). Omit --from-run to run a fresh effort burn-in, or "
+                f"point --from-run at an effort-trained baseline."
+            )
+        if not args.with_effort and loaded_m_effort > 1:
+            logger.warning("--from-run baseline was trained WITH effort "
+                           "(m_effort=%d) but --with-effort is OFF; effort will be "
+                           "frozen at index 0 for the strategic game.", loaded_m_effort)
+        if args.local_sum_d or args.m_effort is not None:
+            logger.warning("--from-run overrides --local-sum-d/--m-effort with the "
+                           "baseline run's agent config (Q-table compatibility).")
 
     from hotelling.simulation.runner import run_strategic_session
 
@@ -152,6 +187,9 @@ def main() -> None:
     d = result.get("deltas_by_chain", {})
     print(f"  Δ global:           {d.get('global')}")
     print(f"  Δ D/S/B:            {d.get('discount')} / {d.get('standard')} / {d.get('bio')}")
+    dpc = result.get("deltas_profit_by_chain", {})
+    print(f"  Δπ global (gross):  {dpc.get('global')}")
+    print(f"  Δπ D/S/B (gross):   {dpc.get('discount')} / {dpc.get('standard')} / {dpc.get('bio')}")
     print(f"  Run folder:         {result.get('output_dir')}")
     print("=" * 60 + "\n")
 

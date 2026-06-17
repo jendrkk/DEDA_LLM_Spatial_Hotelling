@@ -512,6 +512,7 @@ def _build_components(config: dict) -> dict:
     env_cfg = config["env"]
     agent_cfg = config["agents"]
     seed = config["phase2"].get("seed", None)
+    with_effort = bool(config.get("with_effort", False))
 
     _cm_raw = env_cfg.get("catchment_minutes", None)
     city, firms = load_berlin_city(
@@ -548,12 +549,16 @@ def _build_components(config: dict) -> dict:
     auto_grid = bool(agent_cfg.get("auto_price_grid", True))
     grid_mode = str(agent_cfg.get("price_grid_mode", "union"))
     p_nash_arr = p_mono_arr = None
+    e_nash_arr = None
     grid_min = agent_cfg.get("min_price", None)
     grid_max = agent_cfg.get("max_price", None)
 
     if auto_grid and city.dist2_km2 is not None:
-        p_nash_arr, _ = bertrand_nash(city, transport_cost=tc, cache_path=bench_cache)
-        p_mono_arr, _ = joint_monopoly(city, transport_cost=tc, cache_path=bench_cache)
+        p_nash_arr, e_nash_arr = bertrand_nash(city, transport_cost=tc, cache_path=bench_cache)
+        p_mono_arr, _ = joint_monopoly(
+            city, transport_cost=tc, cache_path=bench_cache,
+            effort_fixed=(e_nash_arr if with_effort else None),
+        )
         xi = float(agent_cfg.get("price_grid_xi", 0.1))
         mc_min = min(getattr(f, "marginal_cost", 0.0) for f in firms)
         if grid_mode == "union":
@@ -592,7 +597,7 @@ def _build_components(config: dict) -> dict:
     grid_gdf = gpd.read_parquet(env_cfg.get("grid_path", "data/processed/demand_grid.parquet"))
     return {
         "city": city, "firms": firms, "env": env, "batch_agent": batch_agent,
-        "p_nash_arr": p_nash_arr, "p_mono_arr": p_mono_arr,
+        "p_nash_arr": p_nash_arr, "p_mono_arr": p_mono_arr, "e_nash_arr": e_nash_arr,
         "grid_min": grid_min, "grid_max": grid_max, "grid_gdf": grid_gdf,
     }
 
@@ -636,8 +641,12 @@ def run_strategic_session(config: dict) -> dict:
     comp = _build_components(config)
     env, batch_agent, firms = comp["env"], comp["batch_agent"], comp["firms"]
     p_nash_arr, p_mono_arr = comp["p_nash_arr"], comp["p_mono_arr"]
+    e_nash_arr = comp.get("e_nash_arr")
 
     phase2_cfg = config["phase2"]
+    with_effort = bool(config.get("with_effort", False))
+    with_comm = bool(config.get("with_comm", False))
+    T_measure = phase2_cfg.get("T_measure", None)
     seed = phase2_cfg.get("seed", None)
     T_burnin = int(phase2_cfg.get("T_burnin", 200_000))
     T_game = int(phase2_cfg.get("T_game", 5_000))
@@ -740,6 +749,8 @@ def run_strategic_session(config: dict) -> dict:
         min_delta_e=float(ceo_cfg.get("min_delta_e", 0.1)), T_ceo=T_CEO,
         merge_system=bool(ceo_cfg.get("merge_system_prompt", True)),
         capture_comm=save_comm,
+        with_effort=with_effort,
+        with_comm=with_comm,
     )
 
     # ── Phase 2: strategic game (continues from warmed state, no reset) ────
@@ -767,6 +778,9 @@ def run_strategic_session(config: dict) -> dict:
         dense_log=dense_log,
         store_metadata=metadata,
         enrich_groups=bool(ceo_cfg.get("group_analytics", False)),
+        with_effort=with_effort,
+        with_comm=with_comm,
+        T_measure=(int(T_measure) if T_measure else None),
     )
     dense_log.flush()
     import json as _json
@@ -812,11 +826,11 @@ def run_strategic_session(config: dict) -> dict:
                      "retained/previous envelope.", 100 * ceo_success_rate,
                      ceo_success, ceo_total)
 
-    # ── Calvano Δ (global + per chain type) from final prices ──────────────
+    # ── Calvano Δ (global + per chain type) from windowed mean prices ───────
     deltas_by_chain: dict = {}
     if p_nash_arr is not None and p_mono_arr is not None:
         N = len(firms)
-        fp = res["final_prices"]
+        fp = res.get("windowed_prices") or res["final_prices"]
         p_learned = np.array([float(fp.get(str(f.id), np.nan)) for f in firms])
         cts = np.array([f.chain_type for f in firms], dtype=object)
 
@@ -834,6 +848,63 @@ def run_strategic_session(config: dict) -> dict:
             "standard": _delta(cts == "standard"),
             "bio": _delta(cts == "bio"),
         }
+
+    # ── Gross profit Δ: (Σ(p−c)·D_realised − π_nash)/(π_mono − π_nash) ─────
+    #    Gross variable profit (excludes effort cost). EXACT in price-only mode
+    #    (effort=0 everywhere); in --with-effort mode it is a gross index, and
+    #    benchmark demand is evaluated at the Bertrand-Nash effort (the same
+    #    footing as the effort_fixed monopoly benchmark from Step 4). A full
+    #    joint (price, effort) cartel benchmark is a documented follow-up.
+    deltas_profit_by_chain: dict = {}
+    if p_nash_arr is not None and p_mono_arr is not None and comp["city"].dist2_km2 is not None:
+        try:
+            from hotelling.core.market import cell_choice_mass
+            N = len(firms)
+            cts = np.array([f.chain_type for f in firms], dtype=object)
+            costs = np.array([f.marginal_cost for f in firms], dtype=np.float64)
+            quals = np.array([f.quality for f in firms], dtype=np.float64)
+            city = comp["city"]
+            tc = float(config["env"].get("transport_cost", 0.01))
+            e_bench = (np.asarray(e_nash_arr, dtype=np.float64)
+                       if (with_effort and e_nash_arr is not None) else np.zeros(N))
+
+            def _demand_at(prices, efforts):
+                inside, _ = cell_choice_mass(
+                    prices=prices, efforts=efforts, dist2_km2=city.dist2_km2,
+                    cell_pop=city.cell_pop, lambda_phi=city.lambda_phi,
+                    pi_H=city.pi_H, pi_H_lambda_phi=city.pi_H_lambda_phi,
+                    alpha=city.alpha, quality=quals, beta=city.beta,
+                    transport_cost=tc, mu=city.mu, a0=city.a0,
+                    transport_exponent=getattr(city, "transport_exponent", 1.0),
+                )
+                return inside.sum(axis=0)
+
+            wp = res.get("windowed_prices", {})
+            wd = res.get("windowed_demands", {})
+            p_real = np.array([float(wp.get(str(f.id), np.nan)) for f in firms])
+            d_real = np.array([float(wd.get(str(f.id), 0.0)) for f in firms])
+            pi_real = (p_real - costs) * d_real
+            pi_nash = (p_nash_arr - costs) * _demand_at(p_nash_arr, e_bench)
+            pi_mono = (p_mono_arr - costs) * _demand_at(p_mono_arr, e_bench)
+
+            def _dpi(m):
+                if m.sum() == 0:
+                    return float("nan")
+                rn = float(np.nansum(pi_real[m]))
+                nn = float(pi_nash[m].sum())
+                mn = float(pi_mono[m].sum())
+                d = mn - nn
+                return float("nan") if abs(d) < 1e-9 else float(np.clip((rn - nn) / d, -0.5, 1.5))
+
+            deltas_profit_by_chain = {
+                "global": _dpi(np.ones(N, bool)),
+                "discount": _dpi(cts == "discount"),
+                "standard": _dpi(cts == "standard"),
+                "bio": _dpi(cts == "bio"),
+            }
+        except Exception as _e:  # noqa: BLE001
+            _log.warning("Gross profit-Δ computation failed: %s", _e)
+            deltas_profit_by_chain = {}
 
     # ── Outputs ────────────────────────────────────────────────────────────
     pd.DataFrame(res["envelope_log"]).to_parquet(output_dir / "envelopes.parquet", index=False)
@@ -853,6 +924,11 @@ def run_strategic_session(config: dict) -> dict:
         "T_CEO": T_CEO, "n_epochs": res["n_epochs"], "n_firms": len(firms),
         "ceo_model": str(ceo_cfg.get("model")), "active_divisions": active_divisions,
         "group_keys": group_keys, "deltas_by_chain": deltas_by_chain,
+        "deltas_profit_by_chain": deltas_profit_by_chain,
+        "profit_delta_is_gross": True,
+        "with_effort": with_effort, "with_comm": with_comm,
+        "T_measure": (int(T_measure) if T_measure else int(T_CEO)),
+        "ceo_temperature": float(ceo_cfg.get("temperature", 0)),
         "burnin_epsilon_mean": burn_result.get("epsilon_mean"),
         "epsilon_mean_final": res["epsilon_mean"],
         "ceo_calls_total": ceo_total,
@@ -880,6 +956,7 @@ def run_strategic_session(config: dict) -> dict:
 
     return {"run_id": run_id, "output_dir": str(output_dir),
             "deltas_by_chain": deltas_by_chain,
+            "deltas_profit_by_chain": deltas_profit_by_chain,
             "ceo_success_rate": ceo_success_rate, "ceo_calls_total": ceo_total,
             "ceo_calls_success": ceo_success, "ceo_all_failed": ceo_all_failed,
             **res}

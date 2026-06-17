@@ -3,6 +3,17 @@
 T_burnin: 200000      # burn-in steps before CEO activation (warm Q-tables)
 T_game: 5000          # strategic-game periods
 T_CEO: 100            # CEO envelope update frequency (periods)
+# Post-settling observation window: how many periods at the END of each T_CEO
+# epoch the CEO actually measures (RollingWindow length). Set << T_CEO so the
+# CEO reads the re-equilibrated steady state, not the transient right after the
+# envelope changes. ~2000–5000 is typically enough at N≈494 stores.
+T_measure: 3000
+
+# Timing guidance (override on the CLI). To see any CEO effect on the game, the
+# store substrate must re-equilibrate within each epoch BEFORE the CEO measures:
+#   T_CEO  ~ 20000–50000  (store re-equilibration under a new envelope)
+#   T_game ~ T_CEO * 30..60 epochs  (enough rounds for signalling to build)
+# The shipped defaults below are a fast smoke-test, NOT a production setting.
 record_every: 100     # price-history sampling interval
 seed: 42
 no_ceo: false         # true => matched control (Phase 2 == extended burn-in)

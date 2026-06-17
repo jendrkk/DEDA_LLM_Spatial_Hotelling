@@ -164,6 +164,10 @@ def build_ceo_state(
     min_delta_e: float,
     store_metadata: list | None = None,
     enrich_groups: bool = False,
+    with_effort: bool = True,
+    with_comm: bool = False,
+    signals_last_epoch: dict | None = None,
+    own_last_signal: dict | None = None,
 ) -> dict:
     """Assemble the per-epoch CEO state dict for state_ceo.jinja."""
     a = window.arrays()
@@ -232,6 +236,7 @@ def build_ceo_state(
         rivals.append({
             "id": brand, "type": rtype, "n_stores": int(rm.sum()),
             "last_published_price": last_price, "price_trend_pct": rtrend,
+            "last_signal": (signals_last_epoch or {}).get(brand),
         })
 
     return {
@@ -252,4 +257,7 @@ def build_ceo_state(
         "marginal_cost": float(marginal_cost),
         "min_delta_p": float(min_delta_p),
         "min_delta_e": float(min_delta_e),
+        "with_effort": bool(with_effort),
+        "with_comm": bool(with_comm),
+        "own_last_signal": own_last_signal,
     }

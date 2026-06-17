@@ -6,7 +6,7 @@ and the response functions / Q-table init choices they embed.  Used with
 Instructor to enforce structured JSON responses from the LLM backends.
 
 Public API:
-    GroupEnvelope, ChainEnvelopeOutput,
+    GroupEnvelope, ChainEnvelopeOutput, CoordinationSignal,
     RivalUnderCutResponse, ProfitDistressResponse,
     ReassessTrigger, ResponseFunction,
     QtableInitChoice, EntrantEntryDecision, EntrantReassessOutput
@@ -35,8 +35,14 @@ class GroupEnvelope(BaseModel):
 
     p_bar: float = Field(..., description="Target price midpoint (€)")
     delta_p: float = Field(..., description="Price half-width (€); must be positive")
-    e_bar: float = Field(..., description="Target effort midpoint [0, 1]")
-    delta_e: float = Field(..., description="Effort half-width; must be positive")
+    e_bar: float = Field(
+        default=0.0,
+        description="Target effort midpoint [0, 1]; ignored/omitted in price-only mode",
+    )
+    delta_e: float = Field(
+        default=0.1,
+        description="Effort half-width; ignored/omitted in price-only mode",
+    )
     epsilon: float = Field(..., description="RL exploration rate for this group (0, 0.5)")
 
     @field_validator("p_bar")
@@ -78,6 +84,34 @@ class GroupEnvelope(BaseModel):
         return v
 
 
+class CoordinationSignal(BaseModel):
+    """Non-binding cheap-talk signal a CEO may publish to same-type rivals.
+
+    Used only when the strategic game is run with communication enabled
+    (`--with-comm`). It commits the chain to nothing; it lets same-type chains
+    converge on a common elevated price level faster than by silent observation
+    (tacit → facilitated coordination; cf. Fish, Gonczarowski & Shorrer 2024).
+    """
+
+    willing: bool = Field(
+        ...,
+        description="Whether this chain is willing this epoch to support an "
+                    "elevated, mutually profitable tier price rather than compete it down",
+    )
+    proposed_tier_price: float = Field(
+        ...,
+        description="Price level (€) the chain proposes its type converge toward; "
+                    "must exceed marginal cost",
+    )
+
+    @field_validator("proposed_tier_price")
+    @classmethod
+    def proposed_price_positive(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("proposed_tier_price must be positive")
+        return v
+
+
 class ChainEnvelopeOutput(BaseModel):
     """Full CEO epoch output: one GroupEnvelope per active store group.
 
@@ -89,6 +123,10 @@ class ChainEnvelopeOutput(BaseModel):
     epoch: int = Field(..., description="CEO epoch index (incremented each T_CEO)")
     groups: dict[str, GroupEnvelope] = Field(
         ..., description="Mapping from group label to its strategy envelope"
+    )
+    coordination_signal: "CoordinationSignal | None" = Field(
+        default=None,
+        description="Cheap-talk coordination signal; populated only in --with-comm runs",
     )
     rationale: str = Field(..., description="CEO chain-of-thought reasoning (logged only)")
 

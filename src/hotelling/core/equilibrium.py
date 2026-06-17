@@ -428,16 +428,26 @@ def joint_monopoly(
     transport_cost: float = 1.0,
     *,
     cache_path: Optional[Path] = None,
+    effort_fixed: Optional[np.ndarray] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Find joint-monopoly (cartel) prices maximising total profit.
 
     Optimizes all N prices jointly using the analytic gradient of total profit
-    from the spatial logit model.
+    from the spatial logit model, holding effort fixed.
+
+    Parameters
+    ----------
+    effort_fixed : (N,) array or None
+        Effort vector at which to evaluate demand while optimising prices.
+        ``None`` (default) freezes effort at 0 — correct for price-only runs.
+        For ``--with-effort`` runs, pass the Bertrand-Nash equilibrium efforts
+        so the monopoly benchmark shares the Nash effort footing (otherwise the
+        Calvano Δ compares effort-active prices to an effort-free benchmark).
 
     Returns
     -------
-    prices : np.ndarray shape (N,) equilibrium prices
-    efforts : np.ndarray shape (N,) equilibrium efforts (zero at benchmark)
+    prices : np.ndarray (N,)
+    efforts : np.ndarray (N,)  — equal to ``effort_fixed`` (or zeros if None)
     """
     from scipy.optimize import minimize
 
@@ -449,18 +459,28 @@ def joint_monopoly(
             "catchment_minutes in load_berlin_city."
         )
 
-    if cache_path is not None:
-        cache_path = Path(cache_path)
-        _sig = _param_signature(city, transport_cost)
-        cached = _load_benchmark_cache(cache_path, f"mono_{_sig}")
-        if cached is not None:
-            return cached
-
     firms   = city.firms
     N       = len(firms)
     costs   = np.array([f.marginal_cost for f in firms], dtype=np.float64)
     quals   = np.array([f.quality       for f in firms], dtype=np.float64)
-    efforts = np.zeros(N)
+
+    if effort_fixed is None:
+        efforts = np.zeros(N)
+        _mono_prefix_base = "mono"
+    else:
+        efforts = np.ascontiguousarray(effort_fixed, dtype=np.float64)
+        if efforts.shape != (N,):
+            raise ValueError(f"effort_fixed shape {efforts.shape} != (N={N},)")
+        _eh = hashlib.sha1(np.round(efforts, 6).tobytes()).hexdigest()[:6]
+        _mono_prefix_base = f"monoEfix{_eh}"
+
+    if cache_path is not None:
+        cache_path = Path(cache_path)
+        _sig = _param_signature(city, transport_cost)
+        _prefix = f"{_mono_prefix_base}_{_sig}"
+        cached = _load_benchmark_cache(cache_path, _prefix)
+        if cached is not None:
+            return cached
 
     if use_catchment:
         _ensure_catchment_eq(city, transport_cost)
@@ -489,8 +509,8 @@ def joint_monopoly(
                 p, efforts, costs, city.dist2_km2, city.cell_pop, city.lambda_phi,
                 city.pi_H, city.pi_H_lambda_phi,
                 float(city.alpha[0]), float(city.alpha[1]),
-                quals, float(city.beta), float(transport_cost), float(city.mu), float(city.a0),
-                float(getattr(city, "transport_exponent", 1.0)))
+                quals, float(city.beta), float(transport_cost), float(city.mu),
+                float(city.a0), float(getattr(city, "transport_exponent", 1.0)))
             profit_val = float(np.sum((p - costs) * D))
             grad = D + G
             return -profit_val, -grad
@@ -505,10 +525,9 @@ def joint_monopoly(
                       RuntimeWarning)
 
     prices  = res.x.astype(np.float64)
-    efforts = np.zeros(N)
 
     if cache_path is not None:
-        _save_benchmark_cache(cache_path, f"mono_{_sig}", prices, efforts)
+        _save_benchmark_cache(cache_path, _prefix, prices, efforts)
 
     return prices, efforts
 

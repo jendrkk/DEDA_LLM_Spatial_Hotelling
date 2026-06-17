@@ -5,7 +5,8 @@
 # string in metadata for reproducibility (ADR-002).
 model: "gemini/gemma-4-31b-it"     # set GEMINI_API_KEY in the environment
 ceo_mode: "single"                 # "single" v1; "decomposed" (analyst sub-agents) reserved
-temperature: 0                     # deterministic
+temperature: 0                     # deterministic; override via --temp [0.0, 2.0]
+                                   # (default 0 = deterministic; 0.3–0.7 recommended for CEO exploration)
 max_tokens: 2048                   # room for the full structured envelope JSON
 max_retries: 3                 # legacy field (kept for compatibility; retry cadence
                                # is now governed by the backoff settings below)

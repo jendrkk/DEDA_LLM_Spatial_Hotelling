@@ -22,12 +22,15 @@ from hotelling.llm.schemas import EntrantEntryDecision
 logger = logging.getLogger(__name__)
 
 
-def _fmt_envelope(g) -> str:
-    return (f"p={g.p_bar:.2f} dp={g.delta_p:.2f} e={g.e_bar:.2f} "
-            f"de={g.delta_e:.2f} eps={g.epsilon:.3f}")
+def _fmt_envelope(g, with_effort: bool = True) -> str:
+    if with_effort:
+        return (f"p={g.p_bar:.2f} dp={g.delta_p:.2f} e={g.e_bar:.2f} "
+                f"de={g.delta_e:.2f} eps={g.epsilon:.3f}")
+    return f"p={g.p_bar:.2f} dp={g.delta_p:.2f} eps={g.epsilon:.3f}"
 
 
-def _log_ceo_io(brand: str, ctype: str, epoch: int, st: dict, out, failed: bool) -> None:
+def _log_ceo_io(brand: str, ctype: str, epoch: int, st: dict, out,
+                failed: bool, with_effort: bool = True) -> None:
     own = st.get("own", {}) or {}
     status = "RETAINED (call failed)" if failed else "OK"
     chain_p = own.get("mean_price_last_T", float("nan"))
@@ -38,8 +41,13 @@ def _log_ceo_io(brand: str, ctype: str, epoch: int, st: dict, out, failed: bool)
         in_groups = "(single group)"
     lines = [f"CEO {brand} [{ctype}] epoch {epoch} — {status}",
              f"   in : chain mean p={chain_p:.2f} EUR  | groups: {in_groups}"]
+    cs = getattr(out, "coordination_signal", None)
+    if cs is not None:
+        lines.append(
+            f"   sig: willing={cs.willing} proposed={cs.proposed_tier_price:.2f} EUR"
+        )
     for k, g in out.groups.items():
-        lines.append(f"   out: {k} -> {_fmt_envelope(g)}")
+        lines.append(f"   out: {k} -> {_fmt_envelope(g, with_effort)}")
     logger.info("\n".join(lines))
 
 
@@ -260,6 +268,9 @@ class Phase2StrategicGame:
         dense_log=None,
         store_metadata=None,
         enrich_groups: bool = False,
+        with_effort: bool = True,
+        with_comm: bool = False,
+        T_measure: int | None = None,
     ) -> dict:
         import numpy as np
 
@@ -268,10 +279,12 @@ class Phase2StrategicGame:
 
         N = len(env.firms)
         m_effort = int(env.m_effort)
-        window = RollingWindow(N, max(1, int(T_CEO)))
+        win_len = int(T_measure) if T_measure else int(T_CEO)
+        window = RollingWindow(N, max(1, win_len))
 
         ceo_history = {b: [] for b in ceos}
         prev_env = {b: None for b in ceos}
+        current_signals: dict = {}          # brand -> {"willing", "proposed_tier_price"}
         chain_envelopes: dict = {}
         envelope_log: list[dict] = []
         decision_log: list[dict] = []
@@ -312,6 +325,7 @@ class Phase2StrategicGame:
                     )
 
             if (not no_ceo) and ((t + 1) % T_CEO == 0):
+                signals_prev = dict(current_signals)
                 for brand, ceo in ceos.items():
                     st = build_ceo_state(
                         window, chain_id=brand, store_chain=store_chain,
@@ -322,15 +336,31 @@ class Phase2StrategicGame:
                         marginal_cost=ceo.marginal_cost,
                         min_delta_p=ceo.min_delta_p, min_delta_e=ceo.min_delta_e,
                         store_metadata=store_metadata, enrich_groups=enrich_groups,
+                        with_effort=with_effort, with_comm=with_comm,
+                        signals_last_epoch=signals_prev,
+                        own_last_signal=signals_prev.get(brand),
                     )
                     nf_before = ceo.n_fail
                     out = ceo.decide(st, epoch, prev_env[brand])
                     _log_ceo_io(brand, ceo.chain_type, epoch, st, out,
-                                failed=(ceo.n_fail > nf_before))
+                                failed=(ceo.n_fail > nf_before), with_effort=with_effort)
+
+                    sig = None
+                    if getattr(out, "coordination_signal", None) is not None:
+                        sig = {
+                            "willing": bool(out.coordination_signal.willing),
+                            "proposed_tier_price": float(
+                                out.coordination_signal.proposed_tier_price
+                            ),
+                        }
+                    if with_comm and sig is not None:
+                        current_signals[brand] = sig
+
                     decision_log.append({
                         "epoch": epoch, "chain": brand,
                         "n_groups": len(out.groups),
                         "rationale": out.rationale,
+                        "coordination_signal": sig,
                     })
                     prev_env[brand] = out
                     chain_envelopes[brand] = out
@@ -343,6 +373,7 @@ class Phase2StrategicGame:
                             for k, g in out.groups.items()
                         },
                         "profit_realized": st["own"]["total_profit_last_T"],
+                        "signal": sig,
                     })
                     for k, g in out.groups.items():
                         envelope_log.append({
@@ -363,10 +394,27 @@ class Phase2StrategicGame:
             str(env.firms[i].id): float(env.price_grid[final_pidx[i]])
             for i in range(N)
         }
+
+        # Windowed (post-settling) per-store mean price and demand over the
+        # measurement window — used for a low-variance Calvano Δ (Step 5),
+        # instead of the single-step final_prices snapshot.
+        win = window.arrays()
+        wp, wd = win["price"], win["demand"]
+        win_price = wp.mean(axis=0) if wp.size else np.full(N, float("nan"))
+        win_demand = wd.mean(axis=0) if wd.size else np.zeros(N)
+        windowed_prices = {
+            str(env.firms[i].id): float(win_price[i]) for i in range(N)
+        }
+        windowed_demands = {
+            str(env.firms[i].id): float(win_demand[i]) for i in range(N)
+        }
+
         return {
             "n_steps": int(T_game),
             "n_epochs": epoch,
             "final_prices": final_prices,
+            "windowed_prices": windowed_prices,
+            "windowed_demands": windowed_demands,
             "price_history": price_history,
             "effort_history": effort_history,
             "step_history": step_history,

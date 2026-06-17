@@ -242,10 +242,20 @@ class BatchQLearningAgent:
         rewards: np.ndarray,
         next_states: np.ndarray,
     ) -> None:
-        """Vectorized TD update for all N agents."""
+        """Vectorized TD update for all N agents.
+
+        When an envelope action mask is active (Phase 2), the bootstrap
+        ``best_next`` is taken over the FEASIBLE (in-envelope) actions only, so
+        the continuation value is consistent with what the masked policy can
+        actually play. With no mask set (burn-in / baseline) this is identical
+        to the unconstrained max over all actions.
+        """
         idx_n = np.arange(self.n)
         current_q = self._q[idx_n, states, actions]
-        best_next = self._q[idx_n, next_states].max(axis=1)
+        next_q = self._q[idx_n, next_states]                       # (N, action_size)
+        if self._action_mask is not None:
+            next_q = np.where(self._action_mask, next_q, -np.inf)
+        best_next = next_q.max(axis=1)
         td_error = rewards + self.delta * best_next - current_q
         self._q[idx_n, states, actions] += self.alpha * td_error
 

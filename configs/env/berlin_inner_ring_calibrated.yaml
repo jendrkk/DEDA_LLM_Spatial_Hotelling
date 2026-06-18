@@ -3,8 +3,8 @@ epsg: 3035
 demand_grid_resolution_m: 100
 site_grid_resolution_m: 250
 transport_cost: 0.39471057884231536
-logit_scale: 8.907394676863934
-outside_option: -21.65577209813694
+logit_scale: 9.119746190377692
+outside_option: -18.27535516350965
 bounding_box:
   lat_min: 52.46
   lat_max: 52.55
@@ -16,10 +16,10 @@ travel_times_path: data/processed/travel_times.parquet
 lambda_val: 1500.0
 q_S: 6.0
 q_B: 18.0
-alpha_L: 0.48658969307380623
-alpha_H: 1.2164742326845155
-beta_effort: 4.0
-kappa0: 34062.74573804226
+alpha_L: 0.4865898036101417
+alpha_H: 1.2164745090253541
+beta_effort: 0.001
+kappa0: 1.0
 store_size: 600.0
 marginal_cost_D: 26.52
 marginal_cost_S: 31.200000000000003
@@ -33,3 +33,5 @@ catchment_k_min: 12
 catchment_k_max: 60
 precompute_expweights: true
 low_precision_storage: false
+calibration_method: mom_2param
+calibration_alpha_ratio: 2.5

@@ -83,3 +83,52 @@ effort_interior_target_rho: 0.40   # range 0.25-0.50
 # intensity. MUST equal e_max in configs/agents/qlearning_effort.yaml.
 effort_e_max: 1.0
 # ---------------------------------------------------------------------------
+#
+# ───────────────────────────────────────────────────────────────────────────
+# FOC-inversion calibration (ADR-032, optional alternative method)
+# ───────────────────────────────────────────────────────────────────────────
+# This block is read ONLY when scripts/calibrate_structural.py is invoked
+# with --method foc_inversion. The legacy 2-parameter MoM method ignores it
+# entirely.
+#
+# Mathematical role
+#   The FOC-inversion strategy identifies (mu, q_S, q_B) in closed form using
+#   the Nash-FOC identity p_τ − c_τ = μ / (1 − s_τ) and the aggregate logit
+#   log-share-ratio identity, given two pieces of external demand-share data:
+#   the s_B / s_D ratio (REQUIRED) and the s_S / s_D ratio (optional, defaults
+#   to store-count proxy). See ADR-032 for the full derivation.
+foc_inversion:
+  # REQUIRED: bio-to-discount inside-market-share ratio.
+  # Source options, in increasing order of empirical quality:
+  #   (a) store-count proxy 91/196 = 0.464 (worst; just for smoke tests)
+  #   (b) BKartA Beschluss B2-62/14 (Edeka/Kaiser's Berlin) local-market
+  #       format shares — manually transcribe and divide.
+  #   (c) Google Maps Popular Times aggregate visit volumes per chain,
+  #       weighted by catchment population — see scripts/scrape_google_visits.
+  #   (d) GfK / NielsenIQ household-panel format shares (academic licence).
+  # Default 0.464 is the store-count proxy and IS UPWARD-BIASED in the wrong
+  # direction (bio is more concentrated in high-density cells → true s_B/s_D
+  # likely higher, in the 0.55–0.70 range). Replace as soon as a better
+  # source is obtained.
+  s_B_over_s_D: 0.464
+  # Optional: standard-to-discount ratio. Defaults to store-count proxy
+  # (207/196 = 1.0561) if null. Discount and standard are spatially
+  # interleaved, so the count proxy is much less wrong here than for bio.
+  s_S_over_s_D: null
+  # When true, mu is the share-weighted average of the three FOC-implied
+  # values; the spread (max − min) is reported as the over-identification
+  # diagnostic. When false, mu_standard is used as the anchor.
+  use_share_weighted_mu: true
+  # When true, refine a_0 by 1D root-find after the closed-form q step so
+  # that the model's outside share matches outside_share_target. When false,
+  # a_0 is carried over from env_cfg.outside_option.
+  refine_a0: true
+  # When true, force chain-specific marginal costs (ADR-025
+  # gross_margin_by_chain block) regardless of the global use_common_margin
+  # flag. This addresses Assumption 5 from the calibration audit: a common
+  # margin biases mu_implied_τ downward for high-margin tiers and upward for
+  # low-margin tiers, polluting the FOC-spread diagnostic.
+  force_chain_specific_costs: true
+  # Override alpha_ratio if you want a different value than the global prior.
+  # If null, falls back to env_cfg.alpha_ratio or 2.5.
+  alpha_ratio: null

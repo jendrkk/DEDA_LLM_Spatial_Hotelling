@@ -237,6 +237,12 @@ models/qlearning/*
 # Simulation results
 results/
 
+# Report artefacts
+report/figures/*
+report/tables/*
+!report/figures/.gitkeep
+!report/tables/.gitkeep
+
 # API keys and secrets
 .env.local
 secrets.yaml

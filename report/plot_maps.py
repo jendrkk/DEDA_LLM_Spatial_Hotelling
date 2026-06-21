@@ -53,8 +53,8 @@ matplotlib.rcParams.update({
 
 DPI           = 200
 FIGSIZE_43    = (8, 6)
-BASEMAP_ALPHA = 0.35
-LAMBDA_VAL    = 1500.0
+BASEMAP_ALPHA = 1
+LAMBDA_VAL    = 429
 
 # ── contextily ─────────────────────────────────────────────────────────────
 try:
@@ -196,7 +196,7 @@ def plot_total_demand(data: dict) -> None:
                legend_kwds={"label": r"$\omega_i + \lambda\phi_i$",
                              "orientation": "vertical", "shrink": 0.60,
                              "pad": 0.02, "aspect": 28},
-               alpha=0.75, linewidth=0,
+               alpha=0.35, linewidth=0,
                missing_kwds={"color": "none"})
 
     _fix_extent(ax, bounds)
@@ -224,12 +224,13 @@ def plot_total_demand(data: dict) -> None:
 
     # Mall dots — black squares
     if not mall_w.empty:
-        mall_w.plot(ax=ax, color="black", marker="s", markersize=4,
-                    zorder=8, label="Shopping mall")
+        mall_w.plot(ax=ax, color="black", marker="s", markersize=3,
+                    zorder=8, label="Shopping mall", alpha=0.35)
 
     ax.set_axis_off()
     ax.legend(loc="lower left", fontsize=7, framealpha=0.85,
-              facecolor="white", edgecolor="none")
+              facecolor="white", edgecolor="none", bbox_to_anchor=(1, 0.5),
+              bbox_transform=ax.transAxes)
     ax.set_title(r"Effective demand mass $\omega_i + \lambda\phi_i$",
                  pad=8, fontsize=11)
 
@@ -279,7 +280,7 @@ def plot_supermarkets(data: dict) -> None:
 
     bg_w.plot(ax=ax, color="none", edgecolor="none", linewidth=0)
     _fix_extent(ax, bounds)
-    _add_basemap(ax, alpha=BASEMAP_ALPHA + 0.05)
+    _add_basemap(ax, alpha=0.9)
     _fix_extent(ax, bounds)
 
     legend_handles: list = []
@@ -306,7 +307,8 @@ def plot_supermarkets(data: dict) -> None:
     ax.legend(handles=type_handles + legend_handles,
               loc="lower left", fontsize=6, framealpha=0.85,
               facecolor="white", edgecolor="none", ncol=2,
-              columnspacing=0.5)
+              columnspacing=0.5, bbox_to_anchor=(1, 0.5),
+              bbox_transform=ax.transAxes)
     ax.set_axis_off()
     ax.set_title("Supermarket locations by chain and type", pad=8)
 
@@ -347,7 +349,7 @@ def plot_consumer_types(data: dict) -> None:
                missing_kwds={"color": "lightgrey", "label": "No data"})
 
     _fix_extent(ax, bounds)
-    _add_basemap(ax)
+    _add_basemap(ax, alpha=0.85)
     _fix_extent(ax, bounds)
 
     if not sta_w.empty:
@@ -361,7 +363,8 @@ def plot_consumer_types(data: dict) -> None:
 
     ax.set_axis_off()
     ax.legend(loc="lower left", fontsize=7, framealpha=0.85,
-              facecolor="white", edgecolor="none")
+              facecolor="white", edgecolor="none", bbox_to_anchor=(1, 0.5),
+              bbox_transform=ax.transAxes)
     ax.set_title(
         r"Share of high-status consumers $\pi_{H,i}$ (LOR social index)",
         pad=8)

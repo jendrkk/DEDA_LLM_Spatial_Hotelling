@@ -7,7 +7,7 @@
 #
 # scale anchor: representative STANDARD-chain basket price, euros per trip.
 # Free normalization (model is scale-covariant); set for interpretability.
-basket_price_standard_eur: 40.0
+basket_price_standard_eur: 60.0
 #
 # Chain-type price-level indices, relative to standard = 1.0.
 # Source: German grocery basket price studies (discounter vs full-range;
@@ -15,9 +15,9 @@ basket_price_standard_eur: 40.0
 # q_S and q_B are DERIVED from this ladder in compute_qualities() (ADR-028);
 # they are not solved parameters.
 price_index:
-  discount: 0.85
+  discount: 0.90
   standard: 1.00
-  bio:      1.30
+  bio:      1.35
 #
 # Gross margin = (price - COGS) / price, per chain type.
 # Baseline uses ONE common margin (parsimonious). Chain-specific values
@@ -25,10 +25,10 @@ price_index:
 # REWE Group / Ahold Delhaize annual reports.
 gross_margin_common: 0.22
 gross_margin_by_chain:
-  discount: 0.18
-  standard: 0.24
-  bio:      0.30
-use_common_margin: true        # true -> baseline; false -> chain-specific
+  discount: 0.23 #0.18
+  standard: 0.22 #0.24
+  bio:      0.34 #0.30
+use_common_margin: false        # true -> baseline; false -> chain-specific
 #
 # Value of travel time.
 # wage_monthly_gross_eur: Berlin median gross monthly wage of full-time
@@ -58,8 +58,8 @@ outside_share_target: 0.04
 # the German literature (NVS II, EsKiMo II social gradient; BMEL
 # Ökobarometer) — high-SES households consume roughly 2-3x more organic.
 # The model's realised bio income gradient is reported as a VALIDATION
-# output, not a calibration target. Default 2.5; document range 2.0-3.0.
-alpha_ratio: 2.5
+# output, not a calibration target. Default 2.3; document range 2.0-3.0.
+alpha_ratio: 2.3
 #
 # Reference for validation report only (NOT a solve target).
 # Definition: ratio of bio inside-share among HIGH-pi_H cells (top quartile of
@@ -68,7 +68,7 @@ alpha_ratio: 2.5
 # and EsKiMo II social-gradient findings; BMEL Ökobarometer. A high-vs-low SES
 # ratio of organic consumption of ~2-3x is consistent with that literature.
 # Default 2.5; document range 2.0-3.0.
-bio_share_income_gradient_target: 2.5
+bio_share_income_gradient_target: 2.3
 #
 # --- Effort (service quality) calibration — ADR-031 ---
 # No clean dataset for retail service elasticity exists; X is a structural
@@ -110,11 +110,11 @@ foc_inversion:
   # direction (bio is more concentrated in high-density cells → true s_B/s_D
   # likely higher, in the 0.55–0.70 range). Replace as soon as a better
   # source is obtained.
-  s_B_over_s_D: 0.464
+  s_B_over_s_D: 0.167 # 0.464
   # Optional: standard-to-discount ratio. Defaults to store-count proxy
   # (207/196 = 1.0561) if null. Discount and standard are spatially
   # interleaved, so the count proxy is much less wrong here than for bio.
-  s_S_over_s_D: null
+  s_S_over_s_D: 1.5 # null
   # When true, mu is the share-weighted average of the three FOC-implied
   # values; the spread (max − min) is reported as the over-identification
   # diagnostic. When false, mu_standard is used as the anchor.
@@ -131,4 +131,4 @@ foc_inversion:
   force_chain_specific_costs: true
   # Override alpha_ratio if you want a different value than the global prior.
   # If null, falls back to env_cfg.alpha_ratio or 2.5.
-  alpha_ratio: null
+  alpha_ratio: 2.3

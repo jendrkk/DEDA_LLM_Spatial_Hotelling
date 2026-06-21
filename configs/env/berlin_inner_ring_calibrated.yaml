@@ -3,8 +3,8 @@ epsg: 3035
 demand_grid_resolution_m: 100
 site_grid_resolution_m: 250
 transport_cost: 0.39471057884231536
-logit_scale: 9.119746190377692
-outside_option: -18.27535516350965
+logit_scale: 8.017025504320396
+outside_option: -37.285342401282946
 bounding_box:
   lat_min: 52.46
   lat_max: 52.55
@@ -14,16 +14,16 @@ grid_path: data/processed/demand_grid.parquet
 stores_path: data/processed/supermarkets.parquet
 travel_times_path: data/processed/travel_times.parquet
 lambda_val: 1500.0
-q_S: 6.0
-q_B: 18.0
-alpha_L: 0.4865898036101417
-alpha_H: 1.2164745090253541
+q_S: 8.35481589434701
+q_B: 17.39319802957196
+alpha_L: 0.5223469002273923
+alpha_H: 1.2013978705230022
 beta_effort: 0.001
 kappa0: 1.0
 store_size: 600.0
-marginal_cost_D: 26.52
-marginal_cost_S: 31.200000000000003
-marginal_cost_B: 40.56
+marginal_cost_D: 41.58
+marginal_cost_S: 46.800000000000004
+marginal_cost_B: 53.459999999999994
 nan_fill_minutes: 120.0
 dense_distances: true
 rent_scale: 0.0
@@ -33,5 +33,8 @@ catchment_k_min: 12
 catchment_k_max: 60
 precompute_expweights: true
 low_precision_storage: false
-calibration_method: mom_2param
-calibration_alpha_ratio: 2.5
+calibration_method: foc_inversion
+calibration_alpha_ratio: 2.3
+calibration_s_B_over_s_D: 0.167
+calibration_s_S_over_s_D: 1.5
+calibration_mu_foc_spread_relative: 1.489342804952414

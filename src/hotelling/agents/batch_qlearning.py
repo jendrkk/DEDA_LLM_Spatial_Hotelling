@@ -181,10 +181,13 @@ class BatchQLearningAgent:
 
     def _encode_states(self, signal: np.ndarray) -> np.ndarray:
         """Encode state signal → flat state indices (N,)."""
-        if self.state_mode == "local_summary":
+        if self.state_mode in (
+            "local_summary",
+            "design4_ownprice", "design5_full", "calvano_local", "strategic_hybrid",
+        ):
             s = np.asarray(signal, dtype=np.int64)
             assert s.ndim == 1 and s.shape[0] == self.n, (
-                "local_summary signal must be (N,)"
+                f"{self.state_mode} signal must be (N,), got {signal.shape}"
             )
             return s
         neighbor_actions = signal

@@ -97,6 +97,11 @@ class HotellingMarketEnv:
         n_price_bins: int = 15,
         summary_stats: tuple | list = ("mean",),
         local_summary_detailed: bool = False,
+        chain_type_grids: dict[str, np.ndarray] | None = None,
+        n_comp_bins: int = 15,
+        p_nash_arr: np.ndarray | None = None,
+        p_mono_arr: np.ndarray | None = None,
+        calvano_k: int = 1,
     ) -> None:
         self.city = city
         self.firms = firms
@@ -121,9 +126,12 @@ class HotellingMarketEnv:
         self.local_summary_detailed = bool(local_summary_detailed)
         self._ls_channels: list[tuple[str, str]] = []
 
-        if self.state_mode not in ("neighbors", "local_summary"):
+        if self.state_mode not in (
+            "neighbors", "local_summary",
+            "design4_ownprice", "design5_full", "calvano_local", "strategic_hybrid",
+        ):
             raise ValueError(
-                f"state_mode must be 'neighbors' or 'local_summary', got {state_mode!r}"
+                f"Unknown state_mode: {state_mode!r}"
             )
 
         # Price grid
@@ -131,6 +139,24 @@ class HotellingMarketEnv:
         self._min_price = min_price if min_price is not None else mc_min
         self._max_price = max_price if max_price is not None else max(2.0 * self._min_price, 2.0)
         self.price_grid: np.ndarray = np.linspace(self._min_price, self._max_price, self.m)
+
+        # Chain-type-specific grids (optional; None = global grid for all stores)
+        self._chain_type_grids = chain_type_grids
+        if chain_type_grids is not None:
+            N = len(firms)
+            self._store_price_grids = np.zeros((N, self.m), dtype=np.float64)
+            for j, f in enumerate(firms):
+                ct = getattr(f, "chain_type", "standard")
+                if ct in chain_type_grids:
+                    self._store_price_grids[j] = chain_type_grids[ct]
+                else:
+                    self._store_price_grids[j] = self.price_grid
+            logger.info(
+                "Chain-specific grids active: %s",
+                {ct: f"[{g[0]:.3f}, {g[-1]:.3f}]" for ct, g in chain_type_grids.items()},
+            )
+        else:
+            self._store_price_grids = None
 
         # Effort grid: [0, e_max] with m_effort levels
         self.effort_grid: np.ndarray = np.linspace(0.0, e_max, m_effort)
@@ -169,6 +195,12 @@ class HotellingMarketEnv:
         # Precompute per-firm attribute arrays for the market-clearing hot path.
         self._firm_arrays: FirmArrays = precompute_firm_arrays(firms)
 
+        self.n_comp_bins = int(n_comp_bins)
+        self.calvano_k = int(calvano_k)
+        self._comp_sets = None
+        self._p_nash_arr = p_nash_arr
+        self._p_mono_arr = p_mono_arr
+
         if self.state_mode == "local_summary":
             if self.local_summary_detailed:
                 self._ls_channels = [("all", "mean"), ("same_type", "mean")]
@@ -176,10 +208,46 @@ class HotellingMarketEnv:
                 self._ls_channels = [("all", s) for s in self.summary_stats]
             self._init_local_summary_competitors()
 
+        if self.state_mode in (
+            "design4_ownprice", "design5_full", "calvano_local", "strategic_hybrid",
+        ):
+            from hotelling.env.competitors import build_competitor_sets
+            if self._chain_type_grids is not None:
+                _price_lo = float(min(g.min() for g in self._chain_type_grids.values()))
+                _price_hi = float(max(g.max() for g in self._chain_type_grids.values()))
+                _chain_price_ranges = {
+                    ct: (float(g.min()), float(g.max()))
+                    for ct, g in self._chain_type_grids.items()
+                }
+            else:
+                _price_lo = float(self.price_grid.min())
+                _price_hi = float(self.price_grid.max())
+                _chain_price_ranges = None
+            self._comp_sets = build_competitor_sets(
+                firms=firms,
+                catch_indptr=getattr(city, "catch_indptr", None),
+                catch_indices=getattr(city, "catch_indices", None),
+                n_bins=self.n_comp_bins,
+                price_lo=_price_lo,
+                price_hi=_price_hi,
+                chain_type_price_ranges=_chain_price_ranges,
+                min_overlap_cells=1,
+                k_max_rivals=max(3, self.calvano_k),
+                firm_locations=np.array([f.location for f in firms], dtype=np.float64),
+            )
+
     @property
     def state_size(self) -> int:
         if self.state_mode == "local_summary":
             return int(self.n_price_bins ** len(self._ls_channels))
+        if self.state_mode == "design4_ownprice":
+            return int(self.m * self.n_comp_bins)
+        if self.state_mode == "design5_full":
+            return int(self.m * self.n_comp_bins * self.n_comp_bins)
+        if self.state_mode == "calvano_local":
+            return int(self.m ** (self.calvano_k + 1))
+        if self.state_mode == "strategic_hybrid":
+            return int(self.m * self.n_comp_bins * 3)
         return int(self._action_size ** self.k_neighbors)
 
     def _init_local_summary_competitors(self) -> None:
@@ -277,6 +345,14 @@ class HotellingMarketEnv:
 
     def current_state_signal(self) -> np.ndarray:
         """Return the Q-learning state signal for all agents at the current actions."""
+        if self.state_mode == "design4_ownprice":
+            return self._design4_state_signal()
+        if self.state_mode == "design5_full":
+            return self._design5_state_signal()
+        if self.state_mode == "calvano_local":
+            return self._calvano_state_signal()
+        if self.state_mode == "strategic_hybrid":
+            return self._strategic_state_signal()
         if self.state_mode != "local_summary":
             return self.get_neighbor_actions_arr()
         pidx = self._current_joint_actions_arr // self.m_effort
@@ -295,6 +371,123 @@ class HotellingMarketEnv:
             )
         mult = B ** np.arange(len(bins), dtype=np.int64)
         return (np.stack(bins, axis=1).astype(np.int64) * mult[None, :]).sum(axis=1)
+
+    def _design4_state_signal(self) -> np.ndarray:
+        """Compute Design 4 state: (own_price_idx, binned_same_type_competitor_mean).
+
+        Returns (N,) int64 state indices in [0, m * n_comp_bins - 1].
+        """
+        from hotelling.env.competitors import weighted_mean_prices, bin_prices
+
+        cs = self._comp_sets
+        assert cs is not None, "CompetitorSets not initialised for design4_ownprice"
+
+        b_own = (self._current_joint_actions_arr // self.m_effort).astype(np.int64)
+
+        pidx = self._current_joint_actions_arr // self.m_effort
+        N = len(self.firms)
+        if self._store_price_grids is not None:
+            prices = self._store_price_grids[np.arange(N), pidx].astype(np.float64)
+        else:
+            prices = self.price_grid[pidx].astype(np.float64)
+
+        comp_mean = weighted_mean_prices(
+            prices, cs.same_indptr, cs.same_indices, cs.same_weights,
+        )
+        b_comp = bin_prices(comp_mean, cs.bin_edges_same, cs.n_bins)
+
+        return (b_own * self.n_comp_bins + b_comp).astype(np.int64)
+
+    def _design5_state_signal(self) -> np.ndarray:
+        """Design 5: (own_price, same_type_comp_mean, cross_type_comp_mean).
+
+        Returns (N,) int64 in [0, m * B * B - 1].
+        """
+        from hotelling.env.competitors import weighted_mean_prices, bin_prices
+
+        cs = self._comp_sets
+        assert cs is not None, "CompetitorSets not initialised for design5_full"
+
+        b_own = (self._current_joint_actions_arr // self.m_effort).astype(np.int64)
+        pidx = self._current_joint_actions_arr // self.m_effort
+        N = len(self.firms)
+        if self._store_price_grids is not None:
+            prices = self._store_price_grids[np.arange(N), pidx].astype(np.float64)
+        else:
+            prices = self.price_grid[pidx].astype(np.float64)
+
+        B = self.n_comp_bins
+        same_mean = weighted_mean_prices(prices, cs.same_indptr, cs.same_indices, cs.same_weights)
+        cross_mean = weighted_mean_prices(prices, cs.cross_indptr, cs.cross_indices, cs.cross_weights)
+        b_same = bin_prices(same_mean, cs.bin_edges_same, B)
+        b_cross = bin_prices(cross_mean, cs.bin_edges_cross, B)
+
+        return (b_own * (B * B) + b_same * B + b_cross).astype(np.int64)
+
+    def _calvano_state_signal(self) -> np.ndarray:
+        """Calvano local: (own_price, rival_1_price, ..., rival_k_price).
+
+        Returns (N,) int64 in [0, m^(k+1) - 1].
+        """
+        from hotelling.env.competitors import rival_price_indices
+
+        cs = self._comp_sets
+        assert cs is not None and cs.nearest_same_type is not None, \
+            "CompetitorSets not initialised for calvano_local"
+
+        k = self.calvano_k
+        all_pidx = (self._current_joint_actions_arr // self.m_effort).astype(np.int64)
+        rivals = np.ascontiguousarray(cs.nearest_same_type[:, :k])  # (N, k) int64
+
+        b_rivals = rival_price_indices(all_pidx, rivals, self.m)  # (N, k) int64
+
+        # Mixed-radix: s = b_own * m^k + b_r1 * m^(k-1) + ... + b_rk
+        m = self.m
+        state = all_pidx.copy()
+        for r in range(k):
+            state = state * m + b_rivals[:, r]
+
+        return state.astype(np.int64)
+
+    def _strategic_state_signal(self) -> np.ndarray:
+        """Strategic hybrid: (own_price, same_type_comp_mean, market_regime).
+
+        regime ∈ {0=competitive, 1=neutral, 2=supra-competitive}.
+        Returns (N,) int64 in [0, m * B * 3 - 1].
+        """
+        from hotelling.env.competitors import weighted_mean_prices, bin_prices
+
+        cs = self._comp_sets
+        assert cs is not None, "CompetitorSets not initialised for strategic_hybrid"
+
+        b_own = (self._current_joint_actions_arr // self.m_effort).astype(np.int64)
+        pidx = self._current_joint_actions_arr // self.m_effort
+        N = len(self.firms)
+        if self._store_price_grids is not None:
+            prices = self._store_price_grids[np.arange(N), pidx].astype(np.float64)
+        else:
+            prices = self.price_grid[pidx].astype(np.float64)
+
+        B = self.n_comp_bins
+        same_mean = weighted_mean_prices(prices, cs.same_indptr, cs.same_indices, cs.same_weights)
+        b_comp = bin_prices(same_mean, cs.bin_edges_same, B)
+
+        all_mean = weighted_mean_prices(prices, cs.all_indptr, cs.all_indices, cs.all_weights)
+
+        regime = np.ones(N, dtype=np.int64)  # default: neutral
+        if self._p_nash_arr is not None and self._p_mono_arr is not None:
+            p_nash = self._p_nash_arr.astype(np.float64)
+            p_mono = self._p_mono_arr.astype(np.float64)
+            span = np.maximum(p_mono - p_nash, 1e-6)
+            threshold = 0.15 * span
+            regime = np.where(all_mean < p_nash - threshold, np.int64(0), regime)
+            regime = np.where(all_mean > p_nash + threshold, np.int64(2), regime)
+        else:
+            logger.warning(
+                "strategic_hybrid: p_nash_arr not available; regime always 'neutral'."
+            )
+
+        return (b_own * (B * 3) + b_comp * 3 + regime).astype(np.int64)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -456,7 +649,10 @@ class HotellingMarketEnv:
         self._current_joint_actions_arr[:] = pidx * m_effort + eidx
 
         # Decode prices and efforts — no Python loop
-        prices = self.price_grid[pidx]
+        if self._store_price_grids is not None:
+            prices = self._store_price_grids[np.arange(N), pidx]
+        else:
+            prices = self.price_grid[pidx]
         efforts = self.effort_grid[eidx]
 
         # Market clearing: pre-built firm arrays, no per-call allocation
@@ -538,7 +734,10 @@ class HotellingMarketEnv:
         joint = self._current_joint_actions_arr
         pidx = joint // self.m_effort
         eidx = joint % self.m_effort
-        prices = self.price_grid[pidx]
+        if self._store_price_grids is not None:
+            prices = self._store_price_grids[np.arange(N), pidx]
+        else:
+            prices = self.price_grid[pidx]
         efforts = self.effort_grid[eidx]
 
         observations = {aid: self._build_observation(aid) for aid in self.agents}

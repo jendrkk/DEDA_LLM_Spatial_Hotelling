@@ -248,6 +248,12 @@ def print_summary(result: dict) -> None:
     print(f"  Joint-monopoly p:   {result.get('p_mono',           float('nan')):.4f}")
     if "epsilon_mean" in result:
         print(f"  Epsilon (mean):     {result['epsilon_mean']:.4f}")
+    beta = result.get("beta_decay")
+    if beta is not None:
+        import math as _math
+        T = result.get("n_steps", 0)
+        eps_final = _math.exp(-beta * T) if T > 0 else 1.0
+        print(f"  β (decay rate):     {beta:.2e}  (ε at T={T:,}: {eps_final:.6f})")
     print()
 
     final_prices = result.get("final_prices", {})
@@ -360,6 +366,81 @@ def main() -> None:
              "demand-overlap set; N = N nearest. Mutually exclusive with "
              "--local-sum.",
     )
+    parser.add_argument(
+        "--base-states",
+        type=int,
+        nargs="?",
+        const=15,
+        default=None,
+        metavar="B",
+        help=(
+            "Design 4 state: (own_prev_price_bin, same-type_competitor_mean_bin). "
+            "State size = m × B. Bare --base-states uses B=15 (default); "
+            "--base-states 10 uses B=10 bins. Mutually exclusive with "
+            "--local-sum, --local-sum-d, --full-states, --calvano-states, --strategic-states."
+        ),
+    )
+    parser.add_argument(
+        "--full-states",
+        type=int,
+        nargs="?",
+        const=7,
+        default=None,
+        metavar="B",
+        help=(
+            "Design 5 state: (own_price, same-type_mean, cross-type_mean). "
+            "State size = m × B × B. Default B=7 → state_size=735. "
+            "Mutually exclusive with other state-mode flags."
+        ),
+    )
+    parser.add_argument(
+        "--calvano-states",
+        type=int,
+        choices=[1, 2, 3],
+        default=None,
+        metavar="K",
+        help=(
+            "Calvano local duopoly state: (own_price, rival_1_price, ..., rival_K_price). "
+            "K same-chain-type nearest rivals. State size = m^(K+1). "
+            "K=1 → 225, K=2 → 3375, K=3 → 50625. "
+            "Mutually exclusive with other state-mode flags."
+        ),
+    )
+    parser.add_argument(
+        "--strategic-states",
+        type=int,
+        nargs="?",
+        const=10,
+        default=None,
+        metavar="B",
+        help=(
+            "Strategic hybrid state: (own_price, same-type_comp_mean, market_regime). "
+            "regime ∈ {competitive, neutral, supra-competitive} from all-type local mean "
+            "vs Nash benchmark. State size = m × B × 3. Default B=10 → 450. "
+            "Requires precomputed Nash prices (auto_price_grid=true). "
+            "Mutually exclusive with other state-mode flags."
+        ),
+    )
+    parser.add_argument(
+        "--no-auto-beta",
+        action="store_true",
+        help=(
+            "Disable automatic exploration decay (β) adaptation to T_burnin. "
+            "Uses the config file's beta_decay value directly (default 4e-6 = Calvano). "
+            "By default, β is automatically scaled for T > 1M steps."
+        ),
+    )
+    parser.add_argument(
+        "--chs-grid",
+        action="store_true",
+        help=(
+            "Use chain-type-specific price grids instead of a single global grid. "
+            "Each chain type (discount/standard/bio) gets its own linspace grid "
+            "spanning [MC_τ, p_M_τ + ξ·span_τ] (MC≠0) or "
+            "[max(0, p_N_τ − ξ·span_τ), p_M_τ + ξ·span_τ] (MC=0). "
+            "Requires auto_price_grid=true and dense_distances=true."
+        ),
+    )
     args = parser.parse_args()
 
     # --- Load config ---
@@ -409,6 +490,20 @@ def main() -> None:
     if args.dense_tail is not None:
         config["phase0"]["dense_tail"] = args.dense_tail
         logger.info("dense_tail override: %d", args.dense_tail)
+    _state_flags = [
+        args.local_sum is not None,
+        args.local_sum_d is not None,
+        args.base_states is not None,
+        args.full_states is not None,
+        args.calvano_states is not None,
+        args.strategic_states is not None,
+    ]
+    if sum(_state_flags) > 1:
+        parser.error(
+            "At most one state-mode flag is allowed: "
+            "--local-sum, --local-sum-d, --base-states, "
+            "--full-states, --calvano-states, --strategic-states."
+        )
     if args.local_sum is not None and args.local_sum_d is not None:
         parser.error("--local-sum and --local-sum-d are mutually exclusive.")
     if args.local_sum_d is not None:
@@ -435,6 +530,62 @@ def main() -> None:
             config["agents"].get("n_price_bins", 15),
             config["agents"].get("summary_stats", ["mean"]),
         )
+    if args.base_states is not None:
+        config["agents"]["state_mode"] = "design4_ownprice"
+        config["agents"]["n_comp_bins"] = args.base_states
+        logger.info(
+            "state_mode=design4_ownprice (own_price + same-type competitor mean), "
+            "n_comp_bins=%d, state_size=%d",
+            args.base_states,
+            int(config["agents"].get("m", 15)) * args.base_states,
+        )
+    if args.full_states is not None:
+        config["agents"]["state_mode"] = "design5_full"
+        config["agents"]["n_comp_bins"] = args.full_states
+        logger.info(
+            "state_mode=design5_full, B=%d, state_size=%d",
+            args.full_states,
+            int(config["agents"].get("m", 15)) * args.full_states ** 2,
+        )
+    if args.calvano_states is not None:
+        config["agents"]["state_mode"] = "calvano_local"
+        config["agents"]["calvano_k"] = args.calvano_states
+        _m = int(config["agents"].get("m", 15))
+        logger.info(
+            "state_mode=calvano_local, k=%d, state_size=%d",
+            args.calvano_states,
+            _m ** (args.calvano_states + 1),
+        )
+    if args.strategic_states is not None:
+        config["agents"]["state_mode"] = "strategic_hybrid"
+        config["agents"]["n_comp_bins"] = args.strategic_states
+        logger.info(
+            "state_mode=strategic_hybrid, B=%d, state_size=%d",
+            args.strategic_states,
+            int(config["agents"].get("m", 15)) * args.strategic_states * 3,
+        )
+    # ── Valid CLI combinations ──────────────────────────────────────────────────
+    # Grid:  --chs-grid (optional, composes with any state mode)
+    # State: exactly one of:
+    #   (none)                 → state_mode=neighbors (default)
+    #   --local-sum [N]        → state_mode=local_summary (legacy)
+    #   --local-sum-d [N]      → state_mode=local_summary detailed (legacy)
+    #   --base-states [B]      → state_mode=design4_ownprice
+    #   --full-states [B]      → state_mode=design5_full
+    #   --calvano-states K     → state_mode=calvano_local
+    #   --strategic-states [B] → state_mode=strategic_hybrid
+    # Beta:   --no-auto-beta (optional, composes with any state mode)
+    # Effort: --with-effort (optional, composes with any state mode)
+    # ──────────────────────────────────────────────────────────────────────────
+    if args.no_auto_beta:
+        config["agents"]["beta_decay_auto"] = False
+        logger.info(
+            "--no-auto-beta: using config beta_decay=%.2e directly.",
+            float(config["agents"].get("beta_decay", 4e-6)),
+        )
+    if args.chs_grid:
+        config["agents"]["chain_specific_grid"] = True
+        logger.info("--chs-grid: chain-type-specific price grids enabled.")
 
     output_dir = _REPO_ROOT / args.output_dir
 

@@ -15,8 +15,58 @@ References:
 """
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+
+def compute_beta_decay(
+    T_burnin: int,
+    *,
+    epsilon_target: float = 0.02,
+    f_explore: float = 0.75,
+    beta_calvano: float = 4.0e-6,
+    T_calvano_max: int = 1_000_000,
+    beta_floor: float = 1.0e-7,
+) -> float:
+    """Compute exploration decay rate β adapted to the run length.
+
+    For short runs (T ≤ T_calvano_max), returns the Calvano (2020) default.
+    For longer runs, computes β so that ε(f_explore × T) = ε_target, ensuring
+    meaningful exploration persists through 75% of the run.
+
+    Formula:  β = −ln(ε_target) / (f_explore × T_burnin)
+
+    Parameters
+    ----------
+    T_burnin : total simulation steps
+    epsilon_target : ε value at end of exploration phase (default 0.02)
+    f_explore : fraction of T_burnin for exploration (default 0.75)
+    beta_calvano : Calvano et al. (2020) default β for T ≤ T_calvano_max
+    T_calvano_max : threshold below which Calvano default is used
+    beta_floor : minimum β to prevent near-zero decay on very long runs
+
+    Returns
+    -------
+    float — exploration decay rate β
+    """
+    if T_burnin <= T_calvano_max:
+        return beta_calvano
+
+    import logging
+    beta = -math.log(epsilon_target) / (f_explore * T_burnin)
+    beta = max(beta, beta_floor)
+    logging.getLogger(__name__).info(
+        "Dynamic β: T_burnin=%d > %d → β=%.2e "
+        "(ε at %.0f%%·T = %.4f, ε at T = %.6f). "
+        "Calvano default would give ε(T) = %.2e.",
+        T_burnin, T_calvano_max, beta,
+        f_explore * 100,
+        math.exp(-beta * f_explore * T_burnin),
+        math.exp(-beta * T_burnin),
+        math.exp(-beta_calvano * T_burnin),
+    )
+    return beta
 
 
 def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -175,6 +225,52 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
         grid_min = agent_cfg.get("min_price", None)
         grid_max = agent_cfg.get("max_price", None)
 
+    # --- 1c. Chain-type-specific grids (optional) ---
+    import numpy as np
+    import logging as _log_chs
+    chain_type_grids: dict | None = None
+    if bool(agent_cfg.get("chain_specific_grid", False)) and _can_run_benchmarks:
+        _m = int(agent_cfg.get("m", 15))
+        _xi = float(agent_cfg.get("price_grid_xi", 0.1))
+        _chain_types_arr = np.array([f.chain_type for f in firms], dtype=object)
+        _mc_arr = np.array([f.marginal_cost for f in firms], dtype=np.float64)
+        _mc_all_zero = bool((_mc_arr == 0.0).all())
+
+        chain_type_grids = {}
+        for ct in ("discount", "standard", "bio"):
+            ct_mask = _chain_types_arr == ct
+            if ct_mask.sum() == 0:
+                continue
+            p_nash_ct = float(p_nash_arr[ct_mask].mean())
+            p_mono_ct = float(p_mono_arr[ct_mask].mean())
+            mc_ct = float(_mc_arr[ct_mask].mean())
+            span_ct = p_mono_ct - p_nash_ct
+
+            if _mc_all_zero:
+                ct_lo = max(0.0, p_nash_ct - _xi * max(span_ct, 1e-6))
+                ct_hi = p_mono_ct + _xi * max(span_ct, 1e-6)
+            else:
+                ct_lo = max(0.0, mc_ct)
+                ct_hi = p_mono_ct + _xi * max(span_ct, 1e-6)
+
+            chain_type_grids[ct] = np.linspace(ct_lo, ct_hi, _m)
+            _log_chs.getLogger(__name__).info(
+                "Chain grid %s: [%.4f, %.4f] (Nash=%.4f, Mono=%.4f, MC=%.4f, m=%d)",
+                ct, ct_lo, ct_hi, p_nash_ct, p_mono_ct, mc_ct, _m,
+            )
+
+        if chain_type_grids:
+            all_lo = min(g.min() for g in chain_type_grids.values())
+            all_hi = max(g.max() for g in chain_type_grids.values())
+            grid_min = float(all_lo)
+            grid_max = float(all_hi)
+    elif bool(agent_cfg.get("chain_specific_grid", False)) and not _can_run_benchmarks:
+        import logging as _log_chs2
+        _log_chs2.getLogger(__name__).warning(
+            "--chs-grid requires dense_distances=True and benchmark computation. "
+            "Falling back to global grid."
+        )
+
     # --- 2. Create environment ---
     env = HotellingMarketEnv(
         city=city,
@@ -193,6 +289,19 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
         local_summary_detailed=bool(
             agent_cfg.get("local_summary_detailed", False)
         ),
+        chain_type_grids=chain_type_grids,
+        n_comp_bins=int(agent_cfg.get("n_comp_bins", 15)),
+        p_nash_arr=p_nash_arr,
+        p_mono_arr=p_mono_arr,
+        calvano_k=int(agent_cfg.get("calvano_k", 1)),
+    )
+
+    import logging as _log_state
+    _log_state.getLogger(__name__).info(
+        "State config: mode=%s, state_size=%d, action_size=%d, "
+        "Q-table cells per store=%d",
+        env.state_mode, env.state_size, env._action_size,
+        env.state_size * env._action_size,
     )
 
     use_batch = bool(agent_cfg.get("use_batch", True))
@@ -233,6 +342,12 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
 
     # --- 4. Run Phase 0 burn-in ---
     T_burnin = int(phase0_cfg.get("T_burnin", 1_000_000))
+
+    # --- Dynamic β: scale exploration decay to run length ---
+    if bool(agent_cfg.get("beta_decay_auto", True)):
+        _beta = compute_beta_decay(T_burnin)
+        agent_cfg["beta_decay"] = _beta
+
     record_every = int(phase0_cfg.get("record_every", phase0_cfg.get("check_interval", 1_000)))
 
     dense_log = None
@@ -301,6 +416,10 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
         batch_agent.save_qtable(output_dir / "qtable.npz")
 
     import numpy as np
+    np.save(output_dir / "price_grid.npy", env.price_grid)
+    if chain_type_grids is not None:
+        for ct, grid in chain_type_grids.items():
+            np.save(output_dir / f"price_grid_{ct}.npy", grid)
 
     deltas_by_chain: Dict[str, float] = {}
     chain_price_table: Dict[str, Any] = {}
@@ -415,6 +534,11 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
         "price_grid_mode": agent_cfg.get("price_grid_mode", "union"),
         "grid_min": float(grid_min) if grid_min is not None else None,
         "grid_max": float(grid_max) if grid_max is not None else None,
+        "n_comp_bins": int(agent_cfg.get("n_comp_bins", 15)),
+        "calvano_k": int(agent_cfg.get("calvano_k", 1)),
+        "chain_specific_grid": bool(agent_cfg.get("chain_specific_grid", False)),
+        "beta_decay": float(agent_cfg.get("beta_decay", 4e-6)),
+        "beta_decay_auto": bool(agent_cfg.get("beta_decay_auto", True)),
         "deltas_by_chain": deltas_by_chain,
         "chain_price_table": chain_price_table,
         "realized_outside_share": realized_outside_share,
@@ -464,6 +588,7 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
         "output_dir": str(output_dir),
         "seed": seed,
         "elapsed_s": round(elapsed, 2),
+        "beta_decay": float(agent_cfg.get("beta_decay", 4e-6)),
         **phase0_result,
     }
 
@@ -571,6 +696,38 @@ def _build_components(config: dict) -> dict:
             grid_min = max(mc_min, nash_lo - xi * span)
             grid_max = mono_hi + xi * span
 
+    # --- Chain-type-specific grids for _build_components (optional) ---
+    _bc_chain_grids: dict | None = None
+    if bool(agent_cfg.get("chain_specific_grid", False)) and city.dist2_km2 is not None and p_nash_arr is not None:
+        import logging as _log_bc
+        _xi_bc = float(agent_cfg.get("price_grid_xi", 0.1))
+        _m_bc = int(agent_cfg.get("m", 25))
+        _chain_types_bc = np.array([f.chain_type for f in firms], dtype=object)
+        _mc_bc = np.array([f.marginal_cost for f in firms], dtype=np.float64)
+        _mc_all_zero_bc = bool((_mc_bc == 0.0).all())
+        _bc_chain_grids = {}
+        for ct in ("discount", "standard", "bio"):
+            ct_mask = _chain_types_bc == ct
+            if ct_mask.sum() == 0:
+                continue
+            p_nash_ct = float(p_nash_arr[ct_mask].mean())
+            p_mono_ct = float(p_mono_arr[ct_mask].mean())
+            mc_ct = float(_mc_bc[ct_mask].mean())
+            span_ct = p_mono_ct - p_nash_ct
+            if _mc_all_zero_bc:
+                ct_lo = max(0.0, p_nash_ct - _xi_bc * max(span_ct, 1e-6))
+                ct_hi = p_mono_ct + _xi_bc * max(span_ct, 1e-6)
+            else:
+                ct_lo = max(0.0, mc_ct)
+                ct_hi = p_mono_ct + _xi_bc * max(span_ct, 1e-6)
+            _bc_chain_grids[ct] = np.linspace(ct_lo, ct_hi, _m_bc)
+            _log_bc.getLogger(__name__).info(
+                "Chain grid (strategic) %s: [%.4f, %.4f]", ct, ct_lo, ct_hi,
+            )
+        if _bc_chain_grids:
+            grid_min = float(min(g.min() for g in _bc_chain_grids.values()))
+            grid_max = float(max(g.max() for g in _bc_chain_grids.values()))
+
     env = HotellingMarketEnv(
         city=city, firms=firms,
         m=int(agent_cfg.get("m", 25)), m_effort=int(agent_cfg.get("m_effort", 1)),
@@ -583,6 +740,11 @@ def _build_components(config: dict) -> dict:
         n_price_bins=int(agent_cfg.get("n_price_bins", 15)),
         summary_stats=tuple(agent_cfg.get("summary_stats", ("mean",))),
         local_summary_detailed=bool(agent_cfg.get("local_summary_detailed", False)),
+        chain_type_grids=_bc_chain_grids,
+        n_comp_bins=int(agent_cfg.get("n_comp_bins", 15)),
+        p_nash_arr=p_nash_arr,
+        p_mono_arr=p_mono_arr,
+        calvano_k=int(agent_cfg.get("calvano_k", 1)),
     )
     batch_agent = BatchQLearningAgent(
         n_agents=len(firms), m=int(agent_cfg.get("m", 25)),
@@ -599,6 +761,7 @@ def _build_components(config: dict) -> dict:
         "city": city, "firms": firms, "env": env, "batch_agent": batch_agent,
         "p_nash_arr": p_nash_arr, "p_mono_arr": p_mono_arr, "e_nash_arr": e_nash_arr,
         "grid_min": grid_min, "grid_max": grid_max, "grid_gdf": grid_gdf,
+        "chain_type_grids": _bc_chain_grids,
     }
 
 

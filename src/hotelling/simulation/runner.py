@@ -349,6 +349,47 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
             for i, f in enumerate(firms)
         }
 
+    # --- Q-table initialization (Calvano eq. 8 and variants) ---
+    _qtable_init_mode_str = str(config.get("qtable_init", "zero"))
+    if _qtable_init_mode_str != "zero" and batch_agent is not None and _can_run_benchmarks:
+        import logging as _log_qi_init
+        from hotelling.agents.qtable_init import QtableInitMode, compute_q_init
+
+        _qi_mode = QtableInitMode.from_cli(_qtable_init_mode_str)
+        _log_qi_init.getLogger(__name__).info(
+            "Computing Q-table initialization: mode=%s ...", _qi_mode.value,
+        )
+        _q_init = compute_q_init(
+            _qi_mode,
+            env=env,
+            city=city,
+            n_agents=len(firms),
+            state_size=env.state_size,
+            action_size=env._action_size,
+            m=int(agent_cfg.get("m", 15)),
+            m_effort=int(agent_cfg.get("m_effort", 1)),
+            delta=float(agent_cfg.get("delta", 0.95)),
+            p_nash_arr=p_nash_arr,
+            p_mono_arr=p_mono_arr,
+            transport_cost=float(env_cfg.get("transport_cost", 0.01)),
+        )
+        batch_agent.set_q_init(_q_init)
+    elif _qtable_init_mode_str != "zero" and not _can_run_benchmarks:
+        import logging as _log_qi
+        _log_qi.getLogger(__name__).warning(
+            "--qtable-init=%s requires benchmark computation "
+            "(dense_distances=True, auto_price_grid=True). "
+            "Falling back to zero initialization.",
+            _qtable_init_mode_str,
+        )
+    elif _qtable_init_mode_str != "zero" and batch_agent is None:
+        import logging as _log_qi2
+        _log_qi2.getLogger(__name__).warning(
+            "--qtable-init=%s is only supported with use_batch=True. "
+            "Falling back to zero initialization.",
+            _qtable_init_mode_str,
+        )
+
     record_every = int(phase0_cfg.get("record_every", phase0_cfg.get("check_interval", 1_000)))
 
     dense_log = None
@@ -541,6 +582,7 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
         "chain_specific_grid": bool(agent_cfg.get("chain_specific_grid", False)),
         "beta_decay": float(agent_cfg.get("beta_decay", 4e-6)),
         "beta_decay_auto": bool(agent_cfg.get("beta_decay_auto", True)),
+        "qtable_init": str(config.get("qtable_init", "zero")),
         "deltas_by_chain": deltas_by_chain,
         "chain_price_table": chain_price_table,
         "realized_outside_share": realized_outside_share,
@@ -591,6 +633,7 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
         "seed": seed,
         "elapsed_s": round(elapsed, 2),
         "beta_decay": float(agent_cfg.get("beta_decay", 4e-6)),
+        "qtable_init": str(config.get("qtable_init", "zero")),
         **phase0_result,
     }
 

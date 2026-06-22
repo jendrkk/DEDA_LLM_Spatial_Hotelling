@@ -197,6 +197,9 @@ def print_summary(result: dict) -> None:
     print("="*60)
     print(f"  Converged:          {result.get('converged', '?')}")
     print(f"  Steps completed:    {result.get('n_steps', 0):,}")
+    qi = result.get("qtable_init", "zero")
+    if qi != "zero":
+        print(f"  Q-table init:       {qi}")
     print(f"  Elapsed:            {result.get('elapsed_s', 0):.1f} s")
     print()
     print(f"  Δ (Calvano index):  {result.get('delta', float('nan')):.4f}")
@@ -441,6 +444,23 @@ def main() -> None:
             "Requires auto_price_grid=true and dense_distances=true."
         ),
     )
+    parser.add_argument(
+        "--qtable-init",
+        type=str,
+        choices=["zero", "nash-anchor", "solve", "optimistic"],
+        default=None,
+        metavar="MODE",
+        help=(
+            "Q-table initialization strategy. "
+            "'zero' = all zeros (current default). "
+            "'nash-anchor' = π_i(a_i; p^N_{-i})/(1−δ): hold others at Nash, "
+            "sweep own action. "
+            "'solve' = Calvano eq.(8): average over nearest neighbor's actions. "
+            "'optimistic' = π_i^mono/(1−δ) for all (s,a). "
+            "Requires benchmark computation (dense_distances=True). "
+            "Default (omitted) = zero."
+        ),
+    )
     args = parser.parse_args()
 
     # --- Load config ---
@@ -586,6 +606,9 @@ def main() -> None:
     if args.chs_grid:
         config["agents"]["chain_specific_grid"] = True
         logger.info("--chs-grid: chain-type-specific price grids enabled.")
+    if args.qtable_init is not None:
+        config["qtable_init"] = args.qtable_init.replace("-", "_")
+        logger.info("--qtable-init: %s", args.qtable_init)
 
     output_dir = _REPO_ROOT / args.output_dir
 

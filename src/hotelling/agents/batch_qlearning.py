@@ -75,6 +75,9 @@ class BatchQLearningAgent:
             (n_agents, self.state_size, self.action_size),
             dtype=np.float64,
         )
+        # Optional non-zero Q-table initialization. When set via set_q_init(),
+        # reset() restores _q to _q_init instead of zeros. Default: zeros.
+        self._q_init: np.ndarray | None = None
 
         # Envelope enforcement (set externally by the CEO layer in Phase 2).
         # _action_mask: (N, action_size) bool — True = action allowed for that store.
@@ -84,11 +87,48 @@ class BatchQLearningAgent:
         self._epsilon_override: np.ndarray | None = None
 
     def reset(self) -> None:
-        """Reset Q-table and exploration counters."""
-        self._q[:] = 0.0
+        """Reset Q-table to initial values and clear exploration counters.
+
+        If :meth:`set_q_init` was called, the Q-table resets to the provided
+        initialization tensor (Calvano eq. 8 or variant). Otherwise zeros.
+        """
+        if self._q_init is not None:
+            self._q[:] = self._q_init
+        else:
+            self._q[:] = 0.0
         self._t[:] = 0
         self._action_mask = None
         self._epsilon_override = None
+
+    def set_q_init(self, q_init: np.ndarray) -> None:
+        """Set non-zero initial Q-values used by :meth:`reset`.
+
+        When set, ``reset()`` restores ``_q`` to ``q_init`` instead of zeros.
+        This implements the Calvano et al. (2020) equation (8) initialization
+        and related strategies.
+
+        Parameters
+        ----------
+        q_init : (N, state_size, action_size) float64 array.
+            Must match the shape of the Q-table. Typically state-independent
+            (all state slices identical), but this is not enforced.
+        """
+        q_init = np.asarray(q_init, dtype=np.float64)
+        expected = (self.n, self.state_size, self.action_size)
+        if q_init.shape != expected:
+            raise ValueError(
+                f"q_init shape {q_init.shape} != Q-table shape {expected}"
+            )
+        self._q_init = q_init.copy()
+        logger.info(
+            "Q-table init set: shape=%s, mean=%.6f, std=%.6f, "
+            "min=%.6f, max=%.6f",
+            q_init.shape,
+            float(q_init.mean()),
+            float(q_init.std()),
+            float(q_init.min()),
+            float(q_init.max()),
+        )
 
     def set_action_mask(self, mask: np.ndarray | None) -> None:
         """Restrict each store's selectable joint actions to an in-envelope subset.

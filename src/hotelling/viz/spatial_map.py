@@ -848,7 +848,7 @@ def animate_market(
     plt = _require_plt()
     ctx = _require_ctx()
 
-    from matplotlib.animation import FuncAnimation, PillowWriter, FFMpegWriter
+    from matplotlib.animation import FuncAnimation, PillowWriter, FFMpegWriter, ImageMagickWriter
     from matplotlib.collections import PolyCollection
 
     run_dir = Path(run_dir)
@@ -938,6 +938,7 @@ def animate_market(
         source=ctx.providers.OpenStreetMap.Mapnik,
         zoom="auto",
         reset_extent=False,
+        alpha=0.5,
     )
 
     # Restore extent (contextily may resize the axes)

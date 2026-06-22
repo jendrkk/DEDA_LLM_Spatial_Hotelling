@@ -11,7 +11,7 @@ use_batch: true
 # Action space dimensions
 # Union grid spans every chain's [Nash, monopoly] (~2x wider than global mean);
 # raise m so each chain still gets ~1 EUR resolution within its sub-band.
-m: 20             # number of discrete price levels (was 15 under global grid)
+m: 18             # number of discrete price levels (was 15 under global grid)
 # Phase-0 baseline replicates Calvano price-only. Raise m_effort (and recalibrate
 # beta_effort/e_max) only for the full effort-extended model.
 m_effort: 1       # Calvano validation limit: effort frozen (price-only game)
@@ -22,7 +22,7 @@ state_mode: neighbors      # "neighbors" (k-nearest rival actions, default)
                            # or "local_summary" (discretized local price index)
 local_sum_n: null          # local_summary only: null/0 -> demand-overlap set
                            # (stores sharing >=1 catchment cell); N>0 -> N nearest
-n_price_bins: 15           # B: bins per price-summary statistic
+n_price_bins: 10           # B: bins per price-summary statistic
 summary_stats: ["mean"]    # subset of ["mean","min"]; state_size = B^len(stats)
 local_summary_detailed: false   # true -> two channels: total local market
                                 # + same-chain-type local market (state=B^2)
@@ -31,7 +31,7 @@ k_neighbors: 1    # number of nearest-rival joint actions in the Q-table state
 
 # Q-learning hyperparameters (Calvano 2020 calibration)
 alpha_lr: 0.15         # learning rate α
-beta_decay: 4.0e-6     # exploration decay rate β; ε(t) = exp(−β·t)
+beta_decay: 0.9e-6     # exploration decay rate β; ε(t) = exp(−β·t); base: 4.0e-6
                        # with T=1M steps: ε(1M) = exp(−4) ≈ 0.018 (mostly exploiting)
 delta: 0.95            # discount factor δ
 update_mode: async   # AFP (2022) "async": only visited (s,a) cell updated.

@@ -110,6 +110,7 @@ class DenseLog:
         price_grid: np.ndarray,
         effort_grid: np.ndarray,
         *,
+        store_price_grids: np.ndarray | None = None,
         store_demand_profit: bool = True,
         float_dtype: str = "float32",
         dense_stride: int = 1,
@@ -124,6 +125,12 @@ class DenseLog:
         self.agent_ids = agent_ids
         self.price_grid  = np.asarray(price_grid,  dtype=np.float32)
         self.effort_grid = np.asarray(effort_grid, dtype=np.float32)
+        # Per-store chain-specific grids: (N, m) float32 or None
+        self.store_price_grids: np.ndarray | None = (
+            np.asarray(store_price_grids, dtype=np.float32)
+            if store_price_grids is not None
+            else None
+        )
         self._store_demand_profit = store_demand_profit
         self._float_dtype_str     = str(np.dtype(float_dtype))
         self._dense_stride        = dense_stride
@@ -193,6 +200,8 @@ class DenseLog:
         np.save(self.run_dir / "agent_ids.npy",   np.array(agent_ids, dtype=str))
         np.save(self.run_dir / "price_grid.npy",  self.price_grid)
         np.save(self.run_dir / "effort_grid.npy", self.effort_grid)
+        if self.store_price_grids is not None:
+            np.save(self.run_dir / "store_price_grids.npy", self.store_price_grids)
         np.save(self.run_dir / "steps.npy",       self._recorded_steps)
 
     # ------------------------------------------------------------------
@@ -261,6 +270,7 @@ class DenseLog:
             "float_dtype":         self._float_dtype_str,
             "dense_stride":        self._dense_stride,
             "dense_tail":          self._dense_tail,
+            "has_store_price_grids": self.store_price_grids is not None,
             # ── Legacy alias (older loaders read T_written) ─────────────
             "T_written":           self._rows_written,
         }
@@ -307,6 +317,10 @@ class DenseLog:
         price_grid  = np.load(run_dir / "price_grid.npy")
         effort_grid = np.load(run_dir / "effort_grid.npy")
 
+        # ── Load per-store chain-specific grids (backward-compat: absent in older logs)
+        spg_path = run_dir / "store_price_grids.npy"
+        store_price_grids = np.load(spg_path) if spg_path.exists() else None
+
         obj = object.__new__(cls)
         obj.run_dir          = run_dir
         obj.T                = T
@@ -314,6 +328,7 @@ class DenseLog:
         obj.agent_ids        = agent_ids
         obj.price_grid       = price_grid
         obj.effort_grid      = effort_grid
+        obj.store_price_grids = store_price_grids
         obj._rows_written    = rows_written
         obj._flush_every     = 10_000
         obj._recorded_steps  = recorded_steps
@@ -362,6 +377,35 @@ class DenseLog:
         """
         return self._recorded_steps[: self._rows_written]
 
+    def _decode_prices_flat(
+        self,
+        pidx_flat: np.ndarray,
+        agent_idx_flat: np.ndarray | None = None,
+        single_agent: int | None = None,
+    ) -> np.ndarray:
+        """Decode flat price-index array to EUR prices using stored grids.
+
+        Parameters
+        ----------
+        pidx_flat : (K,) int array of price grid indices.
+        agent_idx_flat : (K,) int array mapping each element to a store index.
+            Required when store_price_grids is set and single_agent is None.
+        single_agent : if not None, all elements belong to this store index.
+
+        Returns
+        -------
+        (K,) float32 array of EUR prices.
+        """
+        if self.store_price_grids is not None:
+            if single_agent is not None:
+                return self.store_price_grids[single_agent, pidx_flat]
+            if agent_idx_flat is None:
+                raise ValueError(
+                    "agent_idx_flat required when store_price_grids is set"
+                )
+            return self.store_price_grids[agent_idx_flat, pidx_flat]
+        return self.price_grid[pidx_flat]
+
     def to_dataframe(
         self,
         agent_idx: int | None = None,
@@ -409,7 +453,7 @@ class DenseLog:
                 "agent_id":  self.agent_ids[agent_idx],
                 "price_idx": pidx,
                 "effort_idx": eidx,
-                "price":     self.price_grid[pidx],
+                "price":     self._decode_prices_flat(pidx, single_agent=agent_idx),
                 "effort":    self.effort_grid[eidx],
             }
             if self.demands is not None:
@@ -423,12 +467,13 @@ class DenseLog:
         agent_col = np.tile(self.agent_ids, T_sl)
         pidx_flat = pidx_rows.ravel()
         eidx_flat = eidx_rows.ravel()
+        agent_idx_flat = np.tile(np.arange(self.N), T_sl)
         row = {
             "period":     periods,
             "agent_id":   agent_col,
             "price_idx":  pidx_flat,
             "effort_idx": eidx_flat,
-            "price":      self.price_grid[pidx_flat],
+            "price":      self._decode_prices_flat(pidx_flat, agent_idx_flat=agent_idx_flat),
             "effort":     self.effort_grid[eidx_flat],
         }
         if self.demands is not None:

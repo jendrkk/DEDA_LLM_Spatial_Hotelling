@@ -250,6 +250,27 @@ class HotellingMarketEnv:
             return int(self.m * self.n_comp_bins * 3)
         return int(self._action_size ** self.k_neighbors)
 
+    def decode_prices(self, price_idxs: np.ndarray) -> np.ndarray:
+        """Convert (N,) price action indices to (N,) EUR prices.
+
+        Uses chain-specific grids when available, global grid otherwise.
+        This is the SINGLE canonical price-decoding path — all reporting,
+        logging, and analysis code must call this instead of
+        ``self.price_grid[pidx]``.
+
+        Parameters
+        ----------
+        price_idxs : (N,) int array of price grid indices (one per store).
+
+        Returns
+        -------
+        (N,) float64 array of EUR prices.
+        """
+        price_idxs = np.asarray(price_idxs, dtype=np.intp)
+        if self._store_price_grids is not None:
+            return self._store_price_grids[np.arange(len(self.firms)), price_idxs].astype(np.float64)
+        return self.price_grid[price_idxs].astype(np.float64)
+
     def _init_local_summary_competitors(self) -> None:
         """Precompute competitor CSR and price-bin edges for local_summary mode."""
         N = len(self.firms)

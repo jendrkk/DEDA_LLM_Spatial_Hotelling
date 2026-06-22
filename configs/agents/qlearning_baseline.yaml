@@ -11,7 +11,7 @@ use_batch: true
 # Action space dimensions
 # Union grid spans every chain's [Nash, monopoly] (~2x wider than global mean);
 # raise m so each chain still gets ~1 EUR resolution within its sub-band.
-m: 25             # number of discrete price levels (was 15 under global grid)
+m: 20             # number of discrete price levels (was 15 under global grid)
 # Phase-0 baseline replicates Calvano price-only. Raise m_effort (and recalibrate
 # beta_effort/e_max) only for the full effort-extended model.
 m_effort: 1       # Calvano validation limit: effort frozen (price-only game)
@@ -34,7 +34,10 @@ alpha_lr: 0.15         # learning rate α
 beta_decay: 4.0e-6     # exploration decay rate β; ε(t) = exp(−β·t)
                        # with T=1M steps: ε(1M) = exp(−4) ≈ 0.018 (mostly exploiting)
 delta: 0.95            # discount factor δ
-update_mode: sync      # "sync" (Calvano-style) or "async" (Asker-Fershtman-Pakes 2022)
+update_mode: async   # AFP (2022) "async": only visited (s,a) cell updated.
+                     # Calvano (2020) protocol. NOTE: BatchQLearningAgent
+                     # (use_batch=true) ignores this param; it always does
+                     # single-cell async update by construction.
 
 # Price grid bounds (relative to marginal cost = 0 baseline, ADR-014)
 min_price: 0.0         # lower bound (= marginal cost for mc=0 baseline)

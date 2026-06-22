@@ -38,6 +38,7 @@ def build_action_mask_and_epsilon(
     effort_grid: np.ndarray,
     m_effort: int,
     mask_effort: bool,
+    store_price_grids: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Build the (N, m*m_effort) action mask and (N,) epsilon vector.
 
@@ -54,6 +55,10 @@ def build_action_mask_and_epsilon(
     m_effort : number of effort levels (1 in the price-only baseline).
     mask_effort : if True (m_effort > 1) also constrain effort to [e_bar +/- delta_e];
         if False, all effort indices are allowed (effort dimension inert).
+    store_price_grids : optional (N, m) per-store price grids. When provided,
+        each store's envelope EUR band is matched against its OWN chain-specific
+        grid rather than the global union grid. Backward-compatible: None uses
+        ``price_grid`` for all stores (original behaviour).
 
     Returns
     -------
@@ -77,7 +82,8 @@ def build_action_mask_and_epsilon(
         groups = chain_envelopes[brand].groups
         label = store_group_labels[i]
         env = groups.get(label) or next(iter(groups.values()))  # fallback: first group
-        p_idx = _allowed_grid_indices(price_grid, env.p_bar, env.delta_p)
+        _grid_i = store_price_grids[i] if store_price_grids is not None else price_grid
+        p_idx = _allowed_grid_indices(_grid_i, env.p_bar, env.delta_p)
         if mask_effort and m_effort > 1:
             e_idx = _allowed_grid_indices(effort_grid, env.e_bar, env.delta_e)
         else:

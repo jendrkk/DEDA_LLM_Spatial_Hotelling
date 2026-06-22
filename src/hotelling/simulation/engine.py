@@ -118,12 +118,11 @@ class SimulationEngine:
 
             # Sample price/effort history at regular intervals (convergence monitoring)
             if (step + 1) % self.record_every == 0:
-                prices = [
-                    self.env.price_grid[
-                        self.env._current_joint_actions[aid] // self.env.m_effort
-                    ]
+                _pidxs = np.array([
+                    self.env._current_joint_actions[aid] // self.env.m_effort
                     for aid in self.env.agents
-                ]
+                ], dtype=np.intp)
+                prices = self.env.decode_prices(_pidxs).tolist()
                 efforts = [
                     self.env.effort_grid[
                         self.env._current_joint_actions[aid] % self.env.m_effort
@@ -138,13 +137,14 @@ class SimulationEngine:
                 break
 
         # --- Final prices per agent ---
-        final_prices = {
-            aid: float(
-                self.env.price_grid[
-                    self.env._current_joint_actions.get(aid, 0) // self.env.m_effort
-                ]
-            )
+        _final_pidxs = np.array([
+            self.env._current_joint_actions.get(aid, 0) // self.env.m_effort
             for aid in self.env.possible_agents
+        ], dtype=np.intp)
+        _final_eur = self.env.decode_prices(_final_pidxs)
+        final_prices = {
+            aid: float(_final_eur[i])
+            for i, aid in enumerate(self.env.possible_agents)
         }
 
         if self.recorder is not None:
@@ -279,8 +279,9 @@ class BatchSimulationEngine:
 
         # Read final prices from the array state (dict is stale on the array path)
         final_pidxs = self.env._current_joint_actions_arr // self.env.m_effort
+        final_prices_arr = self.env.decode_prices(final_pidxs)
         final_prices = {
-            self.env.possible_agents[i]: float(self.env.price_grid[final_pidxs[i]])
+            self.env.possible_agents[i]: float(final_prices_arr[i])
             for i in range(len(self.env.possible_agents))
         }
 
@@ -352,7 +353,7 @@ class BatchSimulationEngine:
 
         price_idxs = actions // self.env.m_effort
         effort_idxs = actions % self.env.m_effort
-        prices_arr = self.env.price_grid[price_idxs]
+        prices_arr = self.env.decode_prices(price_idxs)
         efforts_arr = self.env.effort_grid[effort_idxs]
 
         if self.dense_log is not None:

@@ -304,6 +304,13 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
         env.state_size * env._action_size,
     )
 
+    T_burnin = int(phase0_cfg.get("T_burnin", 1_000_000))
+
+    # --- Dynamic β: scale exploration decay to run length ---
+    if bool(agent_cfg.get("beta_decay_auto", True)):
+        _beta = compute_beta_decay(T_burnin)
+        agent_cfg["beta_decay"] = _beta
+
     use_batch = bool(agent_cfg.get("use_batch", True))
     agents: Dict[str, Any] | None = None
     batch_agent = None
@@ -323,6 +330,8 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
             state_mode=str(agent_cfg.get("state_mode", "neighbors")),
             state_size=env.state_size,
         )
+        # Defensive: ensure object's beta matches the (possibly auto-computed) config
+        batch_agent.beta_decay = float(agent_cfg.get("beta_decay", 4e-6))
     else:
         agents = {
             str(f.id): QLearningAgent(
@@ -340,14 +349,6 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
             for i, f in enumerate(firms)
         }
 
-    # --- 4. Run Phase 0 burn-in ---
-    T_burnin = int(phase0_cfg.get("T_burnin", 1_000_000))
-
-    # --- Dynamic β: scale exploration decay to run length ---
-    if bool(agent_cfg.get("beta_decay_auto", True)):
-        _beta = compute_beta_decay(T_burnin)
-        agent_cfg["beta_decay"] = _beta
-
     record_every = int(phase0_cfg.get("record_every", phase0_cfg.get("check_interval", 1_000)))
 
     dense_log = None
@@ -362,6 +363,7 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
             agent_ids=[str(f.id) for f in firms],
             price_grid=env.price_grid,
             effort_grid=env.effort_grid,
+            store_price_grids=getattr(env, '_store_price_grids', None),
             store_demand_profit=bool(
                 phase0_cfg.get("store_demand_profit", True)
             ),
@@ -925,6 +927,7 @@ def run_strategic_session(config: dict) -> dict:
         agent_ids=[str(f.id) for f in firms],
         price_grid=env.price_grid,
         effort_grid=env.effort_grid,
+        store_price_grids=getattr(env, '_store_price_grids', None),
         store_demand_profit=bool(phase2_cfg.get("store_demand_profit", True)),
         float_dtype=str(phase2_cfg.get("float_dtype", "float32")),
         dense_stride=int(phase2_cfg.get("dense_stride", 1)),

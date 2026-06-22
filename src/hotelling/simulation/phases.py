@@ -308,7 +308,7 @@ class Phase2StrategicGame:
 
             p_idx = actions // m_effort
             e_idx = actions % m_effort
-            prices = env.price_grid[p_idx]
+            prices = env.decode_prices(p_idx)
             efforts = env.effort_grid[e_idx]
             window.push(prices, efforts, demands, rewards)
 
@@ -384,14 +384,16 @@ class Phase2StrategicGame:
                 mask, eps = build_action_mask_and_epsilon(
                     chain_envelopes, store_chain, store_group_labels,
                     env.price_grid, env.effort_grid, m_effort, mask_effort,
+                    store_price_grids=getattr(env, '_store_price_grids', None),
                 )
                 batch_agent.set_action_mask(mask)
                 batch_agent.set_epsilon_override(eps)
                 epoch += 1
 
         final_pidx = env._current_joint_actions_arr // m_effort
+        final_prices_arr = env.decode_prices(final_pidx)
         final_prices = {
-            str(env.firms[i].id): float(env.price_grid[final_pidx[i]])
+            str(env.firms[i].id): float(final_prices_arr[i])
             for i in range(N)
         }
 

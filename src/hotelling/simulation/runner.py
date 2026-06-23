@@ -69,6 +69,84 @@ def compute_beta_decay(
     return beta
 
 
+def compute_two_stage_schedule(
+    T_burnin: int,
+    *,
+    explore_fraction: float = 0.65,
+    epsilon_transition: float = 0.10,
+    epsilon_min: float = 3e-4,
+    beta_floor: float = 1e-8,
+) -> dict:
+    """Two-stage exploration decay adaptive to T_burnin.
+
+    Stage 1 (0 ≤ t ≤ t₀): ε(t) = max(ε_min, exp(−β₁·t))
+    Stage 2 (t > t₀):      ε(t) = max(ε_min, ε_transition · exp(−β₂·(t−t₀)))
+
+    Continuous at t₀: ε(t₀⁻) = ε(t₀⁺) = ε_transition (no jump).
+
+    Calibration:
+        t₀  = round(f₀ × T_burnin)
+        β₁  = −ln(ε_transition) / t₀
+        β₂  = ln(ε_transition / ε_min) / (T_burnin − t₀)
+        β₂/β₁ = [ln(ε_transition/ε_min)·f₀] / [(−ln ε_transition)·(1−f₀)]
+                (constant for given shape params, independent of T_burnin)
+
+    Collusion rationale:
+        Long stage 1 (f₀≈0.65) lets agents discover that high-price coordination
+        raises Q-values.  The rapid stage-2 collapse (β₂/β₁≈4.7× at defaults)
+        locks in the collusive attractor before deviation rediscovery destabilizes it.
+
+    Mean exploration:
+        mean(ε) ≈ f₀·g(ε_transition) + (1−f₀)·h(ε_transition, ε_min)
+        where g(x) = (1−x)/(−ln x),  h(a,b) = (a−b)/ln(a/b)
+        (≈ 0.26 at defaults; comparable to Calvano's single-stage ≈ 0.245)
+
+    Parameters
+    ----------
+    T_burnin : total simulation steps
+    explore_fraction : f₀ ∈ (0,1); t₀ = round(f₀ × T_burnin)
+    epsilon_transition : ε(t₀) target at the stage switch [0.05, 0.20]
+    epsilon_min : ε floor and ε(T) target [1e-4, 1e-3]
+    beta_floor : hard lower bound on both β values (avoids numerical degeneracy)
+
+    Returns
+    -------
+    dict — keys: beta1, beta2, t0, epsilon_min, epsilon_transition,
+           beta_ratio, mean_epsilon_approx
+    """
+    t0 = max(1, round(explore_fraction * T_burnin))
+    t_exploit = max(1, T_burnin - t0)
+
+    beta1 = max(beta_floor, -math.log(epsilon_transition) / t0)
+    beta2 = max(beta_floor, math.log(epsilon_transition / epsilon_min) / t_exploit)
+    beta_ratio = beta2 / beta1
+
+    g = (1.0 - epsilon_transition) / (-math.log(epsilon_transition))
+    h = (epsilon_transition - epsilon_min) / math.log(epsilon_transition / epsilon_min)
+    mean_eps = explore_fraction * g + (1.0 - explore_fraction) * h
+
+    import logging as _log_sched
+    _log_sched.getLogger(__name__).info(
+        "Two-stage ε schedule: T=%d | t₀=%d (f₀=%.0f%%) | "
+        "β₁=%.2e → ε(t₀)=%.3f | β₂=%.2e → ε(T)=%.2e | "
+        "β₂/β₁=%.1f× | mean(ε)≈%.3f",
+        T_burnin, t0, explore_fraction * 100,
+        beta1, epsilon_transition,
+        beta2, epsilon_min,
+        beta_ratio, mean_eps,
+    )
+
+    return {
+        "beta1": beta1,
+        "beta2": beta2,
+        "t0": t0,
+        "epsilon_min": epsilon_min,
+        "epsilon_transition": epsilon_transition,
+        "beta_ratio": beta_ratio,
+        "mean_epsilon_approx": mean_eps,
+    }
+
+
 def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
     """Run a single simulation session from a Hydra config dict.
 
@@ -310,10 +388,39 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
 
     T_burnin = int(phase0_cfg.get("T_burnin", 1_000_000))
 
-    # --- Dynamic β: scale exploration decay to run length ---
-    if bool(agent_cfg.get("beta_decay_auto", True)):
-        _beta = compute_beta_decay(T_burnin)
-        agent_cfg["beta_decay"] = _beta
+    # --- Exploration schedule: two-stage (default) or single-stage fallback ---
+    _beta_auto = bool(agent_cfg.get("beta_decay_auto", True))
+    _sched_params: dict | None = None
+    if _beta_auto:
+        _use_two_stage = str(agent_cfg.get("beta_schedule", "two_stage")) == "two_stage"
+        if _use_two_stage:
+            _sched_params = compute_two_stage_schedule(
+                T_burnin,
+                explore_fraction=float(agent_cfg.get("explore_fraction", 0.65)),
+                epsilon_transition=float(agent_cfg.get("epsilon_transition", 0.10)),
+                epsilon_min=float(agent_cfg.get("epsilon_min", 3e-4)),
+            )
+            agent_cfg["beta_decay"] = _sched_params["beta1"]
+            agent_cfg["beta1"] = _sched_params["beta1"]
+            agent_cfg["beta2"] = _sched_params["beta2"]
+            agent_cfg["t0_schedule"] = _sched_params["t0"]
+            agent_cfg["epsilon_min"] = _sched_params["epsilon_min"]
+            agent_cfg["epsilon_transition"] = _sched_params["epsilon_transition"]
+            agent_cfg["mean_epsilon_approx"] = _sched_params["mean_epsilon_approx"]
+        else:
+            _beta = compute_beta_decay(T_burnin)
+            agent_cfg["beta_decay"] = _beta
+            agent_cfg["beta_schedule"] = "single"
+            agent_cfg["beta1"] = None
+            agent_cfg["beta2"] = None
+            agent_cfg["t0_schedule"] = 0
+            agent_cfg["mean_epsilon_approx"] = float("nan")
+    else:
+        agent_cfg["beta_schedule"] = "single"
+        agent_cfg.setdefault("beta1", None)
+        agent_cfg.setdefault("beta2", None)
+        agent_cfg.setdefault("t0_schedule", 0)
+        agent_cfg.setdefault("mean_epsilon_approx", float("nan"))
 
     use_batch = bool(agent_cfg.get("use_batch", True))
     agents: Dict[str, Any] | None = None
@@ -322,6 +429,9 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
     if use_batch:
         from hotelling.agents.batch_qlearning import BatchQLearningAgent
 
+        _b1 = agent_cfg.get("beta1")
+        _b2 = agent_cfg.get("beta2")
+        _t0_sched = int(agent_cfg.get("t0_schedule", 0))
         batch_agent = BatchQLearningAgent(
             n_agents=len(firms),
             m=int(agent_cfg.get("m", 15)),
@@ -333,9 +443,12 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
             seed=int(seed) if seed is not None else None,
             state_mode=str(agent_cfg.get("state_mode", "neighbors")),
             state_size=env.state_size,
+            epsilon_min=float(agent_cfg.get("epsilon_min", 3e-4)),
+            beta1=float(_b1) if _b1 is not None else None,
+            beta2=float(_b2) if _b2 is not None else None,
+            t0=_t0_sched,
+            epsilon_transition=float(agent_cfg.get("epsilon_transition", 0.10)),
         )
-        # Defensive: ensure object's beta matches the (possibly auto-computed) config
-        batch_agent.beta_decay = float(agent_cfg.get("beta_decay", 4e-6))
     else:
         agents = {
             str(f.id): QLearningAgent(
@@ -423,6 +536,7 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
                 if phase0_cfg.get("dense_tail") is not None
                 else None
             ),
+            store_effort=bool(phase0_cfg.get("store_effort", True)),
         )
     else:
         recorder = SimulationRecorder(
@@ -590,6 +704,14 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
         "chain_specific_grid": bool(agent_cfg.get("chain_specific_grid", False)),
         "beta_decay": float(agent_cfg.get("beta_decay", 4e-6)),
         "beta_decay_auto": bool(agent_cfg.get("beta_decay_auto", True)),
+        "beta_schedule": str(agent_cfg.get("beta_schedule", "two_stage")),
+        "beta1": float(agent_cfg["beta1"]) if agent_cfg.get("beta1") is not None else None,
+        "beta2": float(agent_cfg["beta2"]) if agent_cfg.get("beta2") is not None else None,
+        "t0_schedule": int(agent_cfg.get("t0_schedule", 0)),
+        "epsilon_min": float(agent_cfg.get("epsilon_min", 3e-4)),
+        "epsilon_transition": float(agent_cfg.get("epsilon_transition", 0.10)),
+        "explore_fraction": float(agent_cfg.get("explore_fraction", 0.65)),
+        "mean_epsilon_approx": float(agent_cfg.get("mean_epsilon_approx", float("nan"))),
         "qtable_init": str(config.get("qtable_init", "zero")),
         "deltas_by_chain": deltas_by_chain,
         "chain_price_table": chain_price_table,
@@ -641,6 +763,13 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
         "seed": seed,
         "elapsed_s": round(elapsed, 2),
         "beta_decay": float(agent_cfg.get("beta_decay", 4e-6)),
+        "beta_schedule": str(agent_cfg.get("beta_schedule", "two_stage")),
+        "beta1": agent_cfg.get("beta1"),
+        "beta2": agent_cfg.get("beta2"),
+        "t0_schedule": int(agent_cfg.get("t0_schedule", 0)),
+        "epsilon_min": float(agent_cfg.get("epsilon_min", 3e-4)),
+        "epsilon_transition": float(agent_cfg.get("epsilon_transition", 0.10)),
+        "mean_epsilon_approx": float(agent_cfg.get("mean_epsilon_approx", float("nan"))),
         "qtable_init": str(config.get("qtable_init", "zero")),
         **phase0_result,
     }
@@ -983,6 +1112,7 @@ def run_strategic_session(config: dict) -> dict:
         float_dtype=str(phase2_cfg.get("float_dtype", "float32")),
         dense_stride=int(phase2_cfg.get("dense_stride", 1)),
         dense_tail=(int(phase2_cfg["dense_tail"]) if phase2_cfg.get("dense_tail") is not None else None),
+        store_effort=bool(config.get("with_effort", False)) and bool(phase2_cfg.get("store_demand_profit", True)),
     )
     phase2 = Phase2StrategicGame(phase2_cfg)
     res = phase2.run(

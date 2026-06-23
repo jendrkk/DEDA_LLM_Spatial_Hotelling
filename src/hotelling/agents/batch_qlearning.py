@@ -32,6 +32,11 @@ class BatchQLearningAgent:
         max_qtable_gib: float = 8.0,
         state_mode: str = "neighbors",
         state_size: int | None = None,
+        epsilon_min: float = 3e-4,
+        beta1: float | None = None,
+        beta2: float | None = None,
+        t0: int = 0,
+        epsilon_transition: float = 0.10,
     ) -> None:
         self.n = n_agents
         self.m = m
@@ -42,6 +47,18 @@ class BatchQLearningAgent:
         self.delta = delta
         self.state_mode = state_mode
         self.action_size = m * m_effort
+        # ── Two-stage exploration schedule ─────────────────────────────────────
+        # When two_stage=True: stage-1 uses β₁, stage-2 uses β₂ starting from
+        # ε_transition (continuous at t₀). Single-stage path: uses beta_decay
+        # with an ε_min floor (backward-compatible, slightly stricter than old code).
+        self.epsilon_min = float(epsilon_min)
+        self.epsilon_transition = float(epsilon_transition)
+        self.two_stage = (
+            beta1 is not None and beta2 is not None and int(t0) > 0
+        )
+        self.beta1 = float(beta1) if beta1 is not None else float(beta_decay)
+        self.beta2 = float(beta2) if beta2 is not None else float(beta_decay)
+        self.t0 = int(t0)
         self.state_size = (
             int(state_size) if state_size is not None else self.action_size ** k
         )
@@ -186,6 +203,12 @@ class BatchQLearningAgent:
             m_effort=np.int64(self.m_effort),
             k=np.int64(self.k),
             state_mode=np.array(self.state_mode),
+            beta_schedule=np.array("two_stage" if self.two_stage else "single"),
+            beta1=np.float64(self.beta1),
+            beta2=np.float64(self.beta2),
+            t0_schedule=np.int64(self.t0),
+            epsilon_min=np.float64(self.epsilon_min),
+            epsilon_transition=np.float64(self.epsilon_transition),
         )
 
     def load_qtable(self, path) -> None:
@@ -252,11 +275,25 @@ class BatchQLearningAgent:
         """
         states = self._encode_states(neighbor_actions)
 
-        # Exploration rate: CEO override if set, else Calvano time-decay.
+        # Exploration rate: CEO override if set, else scheduled decay.
         if self._epsilon_override is not None:
             epsilons = self._epsilon_override
+        elif self.two_stage:
+            # Stage 1 (t ≤ t₀): standard exponential from ε(0)=1.
+            # Stage 2 (t > t₀): continue from ε_transition → collapse to ε_min.
+            # Continuous at t₀ — no jump.  Both branches floored at ε_min.
+            stage1_mask = self._t <= self.t0
+            eps_s1 = np.exp(-self.beta1 * self._t)
+            eps_s2 = self.epsilon_transition * np.exp(
+                -self.beta2 * np.maximum(np.int64(0), self._t - self.t0)
+            )
+            epsilons = np.maximum(
+                self.epsilon_min, np.where(stage1_mask, eps_s1, eps_s2)
+            )
         else:
-            epsilons = np.exp(-self.beta_decay * self._t)
+            epsilons = np.maximum(
+                self.epsilon_min, np.exp(-self.beta_decay * self._t)
+            )
 
         # Greedy action: argmax over (optionally masked) Q-row + tie-break noise.
         q_rows = self._q[np.arange(self.n), states]
@@ -305,7 +342,17 @@ class BatchQLearningAgent:
 
     @property
     def epsilon_mean(self) -> float:
-        """Mean exploration probability across agents (override if set, else decay)."""
+        """Mean exploration probability across agents (override if set, else scheduled decay)."""
         if self._epsilon_override is not None:
             return float(self._epsilon_override.mean())
-        return float(np.exp(-self.beta_decay * self._t).mean())
+        if self.two_stage:
+            stage1_mask = self._t <= self.t0
+            eps_s1 = np.exp(-self.beta1 * self._t)
+            eps_s2 = self.epsilon_transition * np.exp(
+                -self.beta2 * np.maximum(np.int64(0), self._t - self.t0)
+            )
+            raw = np.where(stage1_mask, eps_s1, eps_s2)
+            return float(np.maximum(self.epsilon_min, raw).mean())
+        return float(
+            np.maximum(self.epsilon_min, np.exp(-self.beta_decay * self._t)).mean()
+        )

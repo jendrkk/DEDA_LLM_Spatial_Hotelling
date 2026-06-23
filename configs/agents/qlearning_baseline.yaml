@@ -31,9 +31,31 @@ k_neighbors: 1    # number of nearest-rival joint actions in the Q-table state
 
 # Q-learning hyperparameters (Calvano 2020 calibration)
 alpha_lr: 0.15         # learning rate α
-beta_decay: 0.9e-6     # exploration decay rate β; ε(t) = exp(−β·t); base: 4.0e-6
-                       # with T=1M steps: ε(1M) = exp(−4) ≈ 0.018 (mostly exploiting)
+beta_decay: 0.9e-6     # single-stage fallback β (used only with --no-auto-beta)
 delta: 0.95            # discount factor δ
+
+# ── Two-stage exploration schedule (default when beta_decay_auto: true) ──────
+# Adaptive to T_burnin: both β values scale as 1/T, so the normalised shape
+# is invariant (β₂/β₁ ≈ 4.7× at defaults, independent of run length).
+#
+# Stage 1 (t ≤ t₀): ε(t) = max(ε_min, exp(−β₁·t))
+# Stage 2 (t > t₀): ε(t) = max(ε_min, ε_transition · exp(−β₂·(t−t₀)))
+#
+# Calibration (auto-computed in runner.py):
+#   β₁ = −ln(ε_transition) / t₀
+#   β₂ = ln(ε_transition / ε_min) / (T − t₀)
+#
+# Continuity:  ε(t₀) = ε_transition  (no jump at the stage switch).
+# Collusion support: long stage 1 explores the coordination space; rapid
+# stage 2 collapse locks the collusive attractor before deviation can unlearn it.
+#
+# mean(ε) ≈ f₀·g(ε_transition) + (1−f₀)·h(ε_transition, ε_min)
+#   where g(x)=(1−x)/(−ln x),  h(a,b)=(a−b)/ln(a/b)
+#   ≈ 0.26 at defaults (comparable to Calvano single-stage ≈ 0.245).
+beta_schedule: two_stage  # "two_stage" (default) or "single" (legacy Calvano)
+explore_fraction: 0.65    # f₀: t₀ = round(f₀ × T_burnin)
+epsilon_transition: 0.10  # ε(t₀): target exploration rate at the stage switch
+epsilon_min: 3.0e-4       # ε floor; also ε(T) target for β₂ calibration [1e-4, 1e-3]
 update_mode: async   # AFP (2022) "async": only visited (s,a) cell updated.
                      # Calvano (2020) protocol. NOTE: BatchQLearningAgent
                      # (use_batch=true) ignores this param; it always does

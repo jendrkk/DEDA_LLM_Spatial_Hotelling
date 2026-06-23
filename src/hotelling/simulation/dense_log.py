@@ -115,6 +115,7 @@ class DenseLog:
         float_dtype: str = "float32",
         dense_stride: int = 1,
         dense_tail: int | None = None,
+        store_effort: bool = True,
     ) -> None:
         if dense_stride < 1:
             raise ValueError(f"dense_stride must be >= 1, got {dense_stride}")
@@ -136,6 +137,18 @@ class DenseLog:
         self._dense_stride        = dense_stride
         self._dense_tail          = dense_tail
         self._flush_every         = 10_000
+        self._store_effort = store_effort
+        # Backing store for effort_idx memmap; None when store_effort=False.
+        # External access ALWAYS goes through the effort_idx property.
+        self._effort_idx_mm: np.ndarray | None = None
+        # Lazy-initialised zero array returned by the effort_idx property when
+        # no memmap exists.  Allocated once on first property access.
+        self._effort_idx_zeros: np.ndarray | None = None
+        # City reference for post-hoc demand/profit reconstruction.
+        # Populated via attach_city() (added in Step 2); None until then.
+        self._city: object | None = None
+        self._transport_cost: float | None = None
+        self._firm_arrays: object | None = None
 
         # ── Compute scheduled recording steps ─────────────────────────────
         scheduled: set[int] = set(range(0, T, dense_stride))
@@ -151,7 +164,9 @@ class DenseLog:
         self.run_dir.mkdir(parents=True, exist_ok=True)
 
         # ── Size estimation ────────────────────────────────────────────────
-        idx_bytes = 2 * n_rows * N * 1          # int8 × 2 arrays
+        idx_bytes = n_rows * N * 1               # price_idx: always stored (int8)
+        if store_effort:
+            idx_bytes += n_rows * N * 1          # effort_idx: stored only when active
         dp_bytes  = 0
         if store_demand_profit:
             dp_bytes = 2 * n_rows * N * np.dtype(float_dtype).itemsize
@@ -161,7 +176,7 @@ class DenseLog:
         print(
             f"DenseLog: {n_rows:,} recorded rows × {N} stores | "
             f"stride={dense_stride}, tail={dense_tail}, "
-            f"dp={store_demand_profit}, dtype={float_dtype} → "
+            f"dp={store_demand_profit}, effort={store_effort}, dtype={float_dtype} → "
             f"~{total_gb:.3f} GB projected"
         )
         if total_gb > _SIZE_WARN_GB:
@@ -177,10 +192,13 @@ class DenseLog:
             self.run_dir / "price_idx.npy",
             dtype="int8", mode="w+", shape=(n_rows, N),
         )
-        self.effort_idx = np.memmap(
-            self.run_dir / "effort_idx.npy",
-            dtype="int8", mode="w+", shape=(n_rows, N),
-        )
+        if store_effort:
+            self._effort_idx_mm = np.memmap(
+                self.run_dir / "effort_idx.npy",
+                dtype="int8", mode="w+", shape=(n_rows, N),
+            )
+        # else: self._effort_idx_mm remains None (set in Task 1.2);
+        #       effort_idx property returns zeros on demand.
 
         if store_demand_profit:
             _np_dtype = np.dtype(float_dtype)
@@ -197,12 +215,37 @@ class DenseLog:
             self.profits = None
 
         # ── Persist grids and planned steps ───────────────────────────────
-        np.save(self.run_dir / "agent_ids.npy",   np.array(agent_ids, dtype=str))
-        np.save(self.run_dir / "price_grid.npy",  self.price_grid)
-        np.save(self.run_dir / "effort_grid.npy", self.effort_grid)
+        np.save(self.run_dir / "agent_ids.npy",  np.array(agent_ids, dtype=str))
+        np.save(self.run_dir / "price_grid.npy", self.price_grid)
+        if store_effort:
+            np.save(self.run_dir / "effort_grid.npy", self.effort_grid)
         if self.store_price_grids is not None:
             np.save(self.run_dir / "store_price_grids.npy", self.store_price_grids)
         np.save(self.run_dir / "steps.npy",       self._recorded_steps)
+
+    # ------------------------------------------------------------------
+    # effort_idx property — transparent zeros fallback
+    # ------------------------------------------------------------------
+
+    @property
+    def effort_idx(self) -> np.ndarray:
+        """(R, N) int8 effort grid indices.
+
+        Returns the backing memmap when effort was stored (``store_effort=True``
+        at construction or loaded from a run that has ``effort_idx.npy``).
+        Returns a lazily-allocated zero-filled array of the same shape otherwise,
+        so all read paths work identically regardless of whether effort was
+        recorded.
+
+        Write path: always use ``self._effort_idx_mm`` directly with a None
+        guard — never write through this property.
+        """
+        if self._effort_idx_mm is None:
+            if self._effort_idx_zeros is None:
+                n = len(self._recorded_steps)
+                self._effort_idx_zeros = np.zeros((n, self.N), dtype="int8")
+            return self._effort_idx_zeros
+        return self._effort_idx_mm
 
     # ------------------------------------------------------------------
     # Hot-path write
@@ -234,8 +277,9 @@ class DenseLog:
         if row is None:
             return  # step not scheduled for recording
 
-        self.price_idx[row]  = price_idxs.astype("int8")
-        self.effort_idx[row] = effort_idxs.astype("int8")
+        self.price_idx[row] = price_idxs.astype("int8")
+        if self._effort_idx_mm is not None:
+            self._effort_idx_mm[row] = effort_idxs.astype("int8")
         if self.demands is not None:
             self.demands[row] = demands.astype(self._float_dtype_str)
         if self.profits is not None:
@@ -253,7 +297,8 @@ class DenseLog:
     def flush(self) -> None:
         """Flush all memmap arrays and write updated ``dense_log_meta.json``."""
         self.price_idx.flush()
-        self.effort_idx.flush()
+        if self._effort_idx_mm is not None:
+            self._effort_idx_mm.flush()
         if self.demands is not None:
             self.demands.flush()
         if self.profits is not None:
@@ -267,6 +312,7 @@ class DenseLog:
             "N":                   self.N,
             # ── Scaling parameters ──────────────────────────────────────
             "store_demand_profit": self._store_demand_profit,
+            "store_effort":        self._store_effort,
             "float_dtype":         self._float_dtype_str,
             "dense_stride":        self._dense_stride,
             "dense_tail":          self._dense_tail,
@@ -296,6 +342,7 @@ class DenseLog:
 
         # ── Scaling params with backward-compat defaults ─────────────────
         store_dp    = meta.get("store_demand_profit", True)
+        store_effort = meta.get("store_effort", True)   # True = backward-compat default
         float_dtype = meta.get("float_dtype", "float32")
         dense_stride = meta.get("dense_stride", 1)
         dense_tail   = meta.get("dense_tail",   None)
@@ -315,7 +362,12 @@ class DenseLog:
         # ── Load grids ───────────────────────────────────────────────────
         agent_ids   = list(np.load(run_dir / "agent_ids.npy"))
         price_grid  = np.load(run_dir / "price_grid.npy")
-        effort_grid = np.load(run_dir / "effort_grid.npy")
+        _effort_grid_path = run_dir / "effort_grid.npy"
+        effort_grid = (
+            np.load(_effort_grid_path)
+            if _effort_grid_path.exists()
+            else np.zeros(1, dtype=np.float32)   # effort-off run: single level at 0.0
+        )
         
         # ── Load per-store chain-specific grids (backward-compat: absent in older logs)
         spg_path = run_dir / "store_price_grids.npy"
@@ -339,15 +391,27 @@ class DenseLog:
         obj._float_dtype_str     = float_dtype
         obj._dense_stride        = dense_stride
         obj._dense_tail          = dense_tail
+        obj._store_effort        = store_effort
+        obj._effort_idx_zeros: np.ndarray | None = None
+        # City reference for post-hoc reconstruction (populated via attach_city())
+        obj._city                = None
+        obj._transport_cost      = None
+        obj._firm_arrays         = None
 
         # ── Memory-map the arrays (read-only) ────────────────────────────
         shape = (n_rows_allocated, N)
-        obj.price_idx  = np.memmap(
-            run_dir / "price_idx.npy",  dtype="int8", mode="r", shape=shape
+        obj.price_idx = np.memmap(
+            run_dir / "price_idx.npy", dtype="int8", mode="r", shape=shape
         )
-        obj.effort_idx = np.memmap(
-            run_dir / "effort_idx.npy", dtype="int8", mode="r", shape=shape
-        )
+        _effort_path = run_dir / "effort_idx.npy"
+        if store_effort and _effort_path.exists():
+            obj._effort_idx_mm = np.memmap(
+                _effort_path, dtype="int8", mode="r", shape=shape
+            )
+        else:
+            # effort_idx.npy absent (store_effort=False run, or legacy log without
+            # the file): effort_idx property returns zeros on demand.
+            obj._effort_idx_mm = None
 
         if store_dp:
             obj.demands = np.memmap(
@@ -363,6 +427,51 @@ class DenseLog:
             obj.profits = None
 
         return obj
+
+    # ------------------------------------------------------------------
+    # City binding for post-hoc demand/profit reconstruction
+    # ------------------------------------------------------------------
+
+    def attach_city(
+        self,
+        city: object,
+        transport_cost: float,
+        firm_arrays: object | None = None,
+    ) -> None:
+        """Bind a City object for on-demand demand/profit reconstruction.
+
+        After this call, ``to_dataframe()`` will reconstruct demand and
+        profit columns even when the log was created with
+        ``store_demand_profit=False`` (lean run).
+
+        Parameters
+        ----------
+        city : City
+            Loaded spatial market container (must match the N stores in this
+            log exactly).
+        transport_cost : float
+            Transport disutility coefficient used during the original run
+            (read from the run's ``config.yaml`` or the env YAML).
+        firm_arrays : FirmArrays | None
+            Pre-built per-firm attribute struct from
+            ``hotelling.core.market.precompute_firm_arrays``.  If None,
+            it is built automatically from ``city.firms`` on first use.
+
+        Notes
+        -----
+        This call is a no-op on logs that already store demands/profits
+        (``self.demands is not None``): reconstruction is never triggered
+        when the stored arrays exist.
+        """
+        from hotelling.core.market import precompute_firm_arrays
+
+        self._city = city
+        self._transport_cost = float(transport_cost)
+        self._firm_arrays = (
+            firm_arrays
+            if firm_arrays is not None
+            else precompute_firm_arrays(city.firms)
+        )
 
     # ------------------------------------------------------------------
     # Analysis helpers
@@ -410,6 +519,9 @@ class DenseLog:
         self,
         agent_idx: int | None = None,
         step_slice: slice | None = None,
+        city: object | None = None,
+        transport_cost: float | None = None,
+        firm_arrays: object | None = None,
     ) -> "pd.DataFrame":
         """Return a slice of the log as a :class:`~pandas.DataFrame`.
 
@@ -426,12 +538,29 @@ class DenseLog:
                      written data.  ``slice(None)`` (default) returns all
                      written rows.  Example: ``slice(-500, None)`` returns
                      the last 500 written rows.
+        city : City | None
+            City object for on-demand demand/profit reconstruction.  Only
+            needed when ``store_demand_profit=False`` (lean run) and demand/
+            profit columns are required.  Overrides a city bound via
+            :meth:`attach_city` for this call only.
+        transport_cost : float | None
+            Transport disutility coefficient.  Required together with ``city``
+            when reconstructing.  Ignored when demands are stored.
+        firm_arrays : FirmArrays | None
+            Pre-built per-firm attribute struct.  If ``None`` and
+            reconstruction is needed, built automatically from ``city.firms``.
 
         Notes
         -----
-        When ``store_demand_profit=False``, the returned DataFrame omits the
-        ``demand`` and ``profit`` columns.  Post-hoc reconstruction is
-        possible via ``market_clearing`` on the stored price/effort indices.
+        **Reconstruction** occurs when ``self.demands is None`` AND a city is
+        reachable (via ``city=`` kwarg or a prior :meth:`attach_city` call).
+        Each row in the slice is decoded independently via
+        ``market_clearing_arrays`` — this is O(rows_in_slice) numba JIT calls
+        and is fast for analysis-scale slices (thousands of rows) but not
+        intended for full-length 20 M-step slices.
+
+        When ``store_demand_profit=False`` and no city is available, the
+        ``demand`` and ``profit`` columns are omitted silently (with a warning).
         """
         import pandas as pd
 
@@ -440,33 +569,90 @@ class DenseLog:
 
         sl = step_slice if step_slice is not None else slice(None)
 
-        # Slice the relevant row window
-        steps_sl   = steps[sl]
-        pidx_rows  = self.price_idx[:rw][sl]   # (..., N)
-        eidx_rows  = self.effort_idx[:rw][sl]
+        # Normalise to 2-D arrays regardless of slice shape (safety net for
+        # integer-index slices, though the public API only accepts slice objects)
+        steps_sl  = steps[sl]
+        pidx_rows = self.price_idx[:rw][sl]   # (..., N)
+        eidx_rows = self.effort_idx[:rw][sl]  # (..., N) — zeros when not stored
+        if pidx_rows.ndim == 1:
+            pidx_rows = pidx_rows[np.newaxis, :]
+            eidx_rows = eidx_rows[np.newaxis, :]
 
+        # ── Resolve effective city / transport_cost / firm_arrays ─────────────
+        _city_eff   = city          if city           is not None else self._city
+        _tc_eff     = float(transport_cost) if transport_cost is not None else self._transport_cost
+        _fa_eff     = firm_arrays   if firm_arrays    is not None else self._firm_arrays
+
+        # ── Determine demand/profit source ────────────────────────────────────
+        _demands_src: np.ndarray | None = None
+        _profits_src: np.ndarray | None = None
+
+        if self.demands is not None:
+            # Normal (non-lean) run: read from stored memmaps
+            _demands_src = self.demands[:rw][sl]
+            _profits_src = self.profits[:rw][sl]
+            if _demands_src.ndim == 1:
+                _demands_src = _demands_src[np.newaxis, :]
+                _profits_src = _profits_src[np.newaxis, :]
+
+        elif _city_eff is not None and _tc_eff is not None:
+            # Lean run with city available: reconstruct row-by-row
+            from hotelling.core.market import market_clearing_arrays, precompute_firm_arrays
+            if _fa_eff is None:
+                _fa_eff = precompute_firm_arrays(_city_eff.firms)
+
+            n_rows_sl = pidx_rows.shape[0]
+            _demands_src = np.empty((n_rows_sl, self.N), dtype=np.float32)
+            _profits_src = np.empty((n_rows_sl, self.N), dtype=np.float32)
+            _arange_N    = np.arange(self.N)
+
+            for r in range(n_rows_sl):
+                pidx_r = pidx_rows[r].astype(np.intp)
+                eidx_r = eidx_rows[r].astype(np.intp)
+
+                if self.store_price_grids is not None:
+                    prices_r = self.store_price_grids[_arange_N, pidx_r].astype(np.float64)
+                else:
+                    prices_r = self.price_grid[pidx_r].astype(np.float64)
+
+                efforts_r = self.effort_grid[eidx_r].astype(np.float64)
+
+                d, p = market_clearing_arrays(prices_r, efforts_r, _city_eff, _tc_eff, _fa_eff)
+                _demands_src[r] = d.astype(np.float32)
+                _profits_src[r] = p.astype(np.float32)
+
+        else:
+            # Lean run, no city: omit demand/profit columns with a warning
+            if self.demands is None:
+                logger.warning(
+                    "DenseLog.to_dataframe: log has store_demand_profit=False and "
+                    "no city is available for reconstruction. demand/profit columns "
+                    "will be omitted. Call attach_city() or pass city=, transport_cost=."
+                )
+
+        # ── Single-agent path ─────────────────────────────────────────────────
         if agent_idx is not None:
-            pidx = pidx_rows[:, agent_idx] if pidx_rows.ndim == 2 else pidx_rows
-            eidx = eidx_rows[:, agent_idx] if eidx_rows.ndim == 2 else eidx_rows
+            pidx = pidx_rows[:, agent_idx]
+            eidx = eidx_rows[:, agent_idx]
             row: dict = {
-                "period":    steps_sl,
-                "agent_id":  self.agent_ids[agent_idx],
-                "price_idx": pidx,
+                "period":     steps_sl,
+                "agent_id":   self.agent_ids[agent_idx],
+                "price_idx":  pidx,
                 "effort_idx": eidx,
-                "price":     self._decode_prices_flat(pidx, single_agent=agent_idx),
-                "effort":    self.effort_grid[eidx],
+                "price":      self._decode_prices_flat(pidx, single_agent=agent_idx),
+                "effort":     self.effort_grid[eidx],
             }
-            if self.demands is not None:
-                row["demand"] = self.demands[:rw][sl, agent_idx]
-                row["profit"] = self.profits[:rw][sl, agent_idx]
+            if _demands_src is not None:
+                row["demand"] = _demands_src[:, agent_idx]
+                row["profit"] = _profits_src[:, agent_idx]
             return pd.DataFrame(row)
 
-        # All agents — long format
-        T_sl      = pidx_rows.shape[0]
-        periods   = np.repeat(steps_sl, self.N)
-        agent_col = np.tile(self.agent_ids, T_sl)
-        pidx_flat = pidx_rows.ravel()
-        eidx_flat = eidx_rows.ravel()
+        # ── All-agents path (long format) ─────────────────────────────────────
+        T_sl           = pidx_rows.shape[0]
+        periods        = np.repeat(steps_sl, self.N)
+        agent_col      = np.tile(self.agent_ids, T_sl)
+        pidx_flat      = pidx_rows.ravel()
+        eidx_flat      = eidx_rows.ravel()
         agent_idx_flat = np.tile(np.arange(self.N), T_sl)
         row = {
             "period":     periods,
@@ -476,7 +662,7 @@ class DenseLog:
             "price":      self._decode_prices_flat(pidx_flat, agent_idx_flat=agent_idx_flat),
             "effort":     self.effort_grid[eidx_flat],
         }
-        if self.demands is not None:
-            row["demand"] = self.demands[:rw][sl].ravel()
-            row["profit"] = self.profits[:rw][sl].ravel()
+        if _demands_src is not None:
+            row["demand"] = _demands_src.ravel()
+            row["profit"] = _profits_src.ravel()
         return pd.DataFrame(row)

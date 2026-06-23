@@ -504,6 +504,12 @@ def load_run(
     from hotelling.simulation.dense_log import DenseLog
 
     dense_log = DenseLog.load(run_dir)
+    # Bind city so that dense_log.to_dataframe() auto-reconstructs demands/profits
+    # on lean runs (store_demand_profit=False). No-op on non-lean runs.
+    dense_log.attach_city(
+        city,
+        transport_cost=float(env_cfg.get("transport_cost", 0.01)),
+    )
 
     # Reload geometry-only GDFs with canonical cell ordering
     grid_raw = gpd.read_parquet(grid_path)
@@ -551,6 +557,57 @@ def prices_efforts_at(
     return prices_t, efforts_t
 
 
+def _demands_at(
+    dense_log: Any,
+    t: int,
+    city: Any,
+    transport_cost: float,
+    firm_arrays: Any = None,
+) -> Optional[np.ndarray]:
+    """Return (N,) float64 demands at DenseLog row *t*; ``None`` if unrecoverable.
+
+    Three cases:
+
+    1. ``dense_log.demands`` is not ``None`` (normal non-lean run):
+       return the stored float array directly.
+    2. ``dense_log.demands`` is ``None`` AND *city* is provided (lean run):
+       reconstruct via :func:`~hotelling.core.market.market_clearing_arrays`
+       using decoded prices/efforts from the index arrays at row *t*.
+    3. ``dense_log.demands`` is ``None`` AND *city* is ``None``:
+       return ``None``; the caller should fall back to uniform scatter sizes.
+
+    Parameters
+    ----------
+    dense_log : DenseLog instance.
+    t : DenseLog row index (0-based, not absolute simulation step).
+    city : City — required for reconstruction in case 2; may be ``None``.
+    transport_cost : float — disutility coefficient used during the run.
+    firm_arrays : FirmArrays | None — pre-built per-firm attribute struct.
+        When ``None`` and reconstruction is needed, built automatically from
+        ``city.firms``.  Pass a precomputed instance to avoid re-building on
+        every call (important for animation loops).
+
+    Returns
+    -------
+    (N,) float64 array or ``None``.
+    """
+    if dense_log.demands is not None:
+        return dense_log.demands[t].astype(np.float64)
+    if city is None:
+        return None
+    from hotelling.core.market import market_clearing_arrays, precompute_firm_arrays
+    fa = firm_arrays if firm_arrays is not None else precompute_firm_arrays(city.firms)
+    prices_t, efforts_t = prices_efforts_at(dense_log, t)
+    d, _ = market_clearing_arrays(
+        prices_t.astype(np.float64),
+        efforts_t.astype(np.float64),
+        city,
+        float(transport_cost),
+        fa,
+    )
+    return d.astype(np.float64)
+
+
 def _plot_snapshot_from_loaded(
     dense_log: Any,
     city: Any,
@@ -588,7 +645,7 @@ def _plot_snapshot_from_loaded(
     metric_vals = cell_metrics(
         prices_t, efforts_t, city, transport_cost=tc, metric=metric
     )
-    demands_t = dense_log.demands[t].astype(np.float64)
+    # demands_t is fetched lazily below, only when point_size_by_demand=True
 
     # --- Colormap / norm setup -------------------------------------------
     is_categorical = metric == "dominant_chain"
@@ -660,8 +717,11 @@ def _plot_snapshot_from_loaded(
         sc_cmap, sc_norm = cmap_obj, _price_norm
 
     if point_size_by_demand:
-        sizes = np.sqrt(np.clip(demands_t, 0, None)) * 3.0
-        sizes = np.clip(sizes, 20, 600)
+        _demands_t = _demands_at(dense_log, t, city, tc)
+        if _demands_t is not None:
+            sizes = np.clip(np.sqrt(np.clip(_demands_t, 0, None)) * 3.0, 20, 600)
+        else:
+            sizes = np.full(len(firms), 80.0)
     else:
         sizes = 80.0
 
@@ -951,8 +1011,18 @@ def animate_market(
     # _chain_sc_list holds (mask, PathCollection) pairs for the _update closure.
     sx = stores_gdf.geometry.x.values
     sy = stores_gdf.geometry.y.values
-    demands_0 = dense_log.demands[frames_list[0]].astype(np.float64)
-    init_sizes = np.clip(np.sqrt(np.clip(demands_0, 0, None)) * 3.0, 20, 600)
+    # Precompute FirmArrays once for lean-mode reconstruction (avoids per-frame rebuild).
+    _anim_firm_arrays = None
+    if dense_log.demands is None:
+        from hotelling.core.market import precompute_firm_arrays
+        _anim_firm_arrays = precompute_firm_arrays(city.firms)
+
+    _demands_0 = _demands_at(dense_log, frames_list[0], city, tc, _anim_firm_arrays)
+    init_sizes = (
+        np.clip(np.sqrt(np.clip(_demands_0, 0, None)) * 3.0, 20, 600)
+        if _demands_0 is not None
+        else np.full(N_firms, 80.0)
+    )
 
     _chain_sc_list: list = []   # list of (boolean mask, PathCollection) tuples
     for _ct in _CHAIN_TYPE_ORDER:
@@ -1013,12 +1083,16 @@ def animate_market(
         metric_t = cell_metrics(
             prices_t, efforts_t, city, transport_cost=tc, metric=metric
         )
-        demands_t = dense_log.demands[t].astype(np.float64)
 
         poly_coll.set_array(metric_t)
 
         # Update each per-chain-type scatter independently.
-        sizes_t = np.clip(np.sqrt(np.clip(demands_t, 0, None)) * 3.0, 20, 600)
+        _demands_t = _demands_at(dense_log, t, city, tc, _anim_firm_arrays)
+        sizes_t = (
+            np.clip(np.sqrt(np.clip(_demands_t, 0, None)) * 3.0, 20, 600)
+            if _demands_t is not None
+            else np.full(N_firms, 80.0)
+        )
         for _mask, _sc_ct in _chain_sc_list:
             _sc_ct.set_array(prices_t[_mask])
             _sc_ct.set_sizes(sizes_t[_mask])

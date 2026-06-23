@@ -251,12 +251,25 @@ def print_summary(result: dict) -> None:
     print(f"  Joint-monopoly p:   {result.get('p_mono',           float('nan')):.4f}")
     if "epsilon_mean" in result:
         print(f"  Epsilon (mean):     {result['epsilon_mean']:.4f}")
-    beta = result.get("beta_decay")
-    if beta is not None:
-        import math as _math
-        T = result.get("n_steps", 0)
-        eps_final = _math.exp(-beta * T) if T > 0 else 1.0
-        print(f"  β (decay rate):     {beta:.2e}  (ε at T={T:,}: {eps_final:.6f})")
+    import math as _math
+    if (result.get("beta_schedule") == "two_stage"
+            and result.get("beta1") is not None):
+        _b1  = result["beta1"]
+        _b2  = result["beta2"]
+        _t0s = result.get("t0_schedule", 0)
+        _etr = result.get("epsilon_transition", 0.10)
+        _emn = result.get("epsilon_min", 3e-4)
+        _mea = result.get("mean_epsilon_approx", float("nan"))
+        print(f"  ε schedule:         two-stage")
+        print(f"    β₁ = {_b1:.2e}  β₂ = {_b2:.2e}  (β₂/β₁ = {_b2/_b1:.1f}×)")
+        print(f"    t₀ = {_t0s:,}  ε(t₀) = {_etr:.3f}  ε_min = {_emn:.1e}  "
+              f"mean(ε) ≈ {_mea:.3f}")
+    else:
+        beta = result.get("beta_decay")
+        if beta is not None:
+            T = result.get("n_steps", 0)
+            eps_final = _math.exp(-beta * T) if T > 0 else 1.0
+            print(f"  β (decay rate):     {beta:.2e}  (ε at T={T:,}: {eps_final:.6f})")
     print()
 
     final_prices = result.get("final_prices", {})
@@ -443,9 +456,24 @@ def main() -> None:
         "--no-auto-beta",
         action="store_true",
         help=(
-            "Disable automatic exploration decay (β) adaptation to T_burnin. "
-            "Uses the config file's beta_decay value directly (default 4e-6 = Calvano). "
-            "By default, β is automatically scaled for T > 1M steps."
+            "Disable all automatic β adaptation. Uses the config file's beta_decay "
+            "value directly as a single-stage exponential with no ε_min floor "
+            "(pure Calvano backward-compatibility mode)."
+        ),
+    )
+    parser.add_argument(
+        "--beta-schedule",
+        type=str,
+        choices=["two_stage", "single"],
+        default=None,
+        metavar="MODE",
+        help=(
+            "Exploration decay schedule when beta_decay_auto=true (i.e. without "
+            "--no-auto-beta). 'two_stage' (default): slow β₁ in stage 1 (t ≤ t₀) "
+            "and rapid β₂ collapse in stage 2 (t > t₀), with t₀ = explore_fraction "
+            "× T_burnin. 'single': legacy single-exponential auto-adapted to T_burnin "
+            "(compute_beta_decay). Edit explore_fraction / epsilon_transition / "
+            "epsilon_min in qlearning_baseline.yaml to tune the two-stage shape."
         ),
     )
     parser.add_argument(
@@ -519,6 +547,9 @@ def main() -> None:
         config["phase0"]["store_demand_profit"] = False
         logger.info("--lean: store_demand_profit=False "
                     "(demand/profit arrays not written; recomputable post-hoc).")
+    # store_effort: True only when --with-effort is active AND --lean is not set.
+    # Price-only runs (the default) never need effort_idx.npy or effort_grid.npy.
+    config["phase0"]["store_effort"] = bool(args.with_effort) and not bool(args.lean)
     if args.dense_stride is not None:
         config["phase0"]["dense_stride"] = args.dense_stride
         logger.info("dense_stride override: %d", args.dense_stride)
@@ -629,9 +660,13 @@ def main() -> None:
     if args.no_auto_beta:
         config["agents"]["beta_decay_auto"] = False
         logger.info(
-            "--no-auto-beta: using config beta_decay=%.2e directly.",
+            "--no-auto-beta: using config beta_decay=%.2e directly "
+            "(single-stage, no ε_min floor).",
             float(config["agents"].get("beta_decay", 4e-6)),
         )
+    if args.beta_schedule is not None:
+        config["agents"]["beta_schedule"] = args.beta_schedule
+        logger.info("--beta-schedule: %s", args.beta_schedule)
     if args.chs_grid:
         config["agents"]["chain_specific_grid"] = True
         logger.info("--chs-grid: chain-type-specific price grids enabled.")

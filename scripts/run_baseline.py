@@ -425,6 +425,21 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--hybrid-states",
+        action="store_true",
+        default=False,
+        help=(
+            "Hybrid profit-gap state: (own_price_bin, prev_profit_quantile_bin, "
+            "gap1_bin, gap2_bin) where gap = (p_own − p_rival) / p_rival for the "
+            "two nearest same-chain-type rivals. "
+            "State size = m × n_profit × n_gap² = 18×5×81 = 7290 (defaults). "
+            "Parameters are set via hybrid_n_profit / hybrid_n_gap / hybrid_gap_lo / "
+            "hybrid_gap_hi in qlearning_baseline.yaml. "
+            "Mutually exclusive with --local-sum, --local-sum-d, --base-states, "
+            "--full-states, --calvano-states, --strategic-states."
+        ),
+    )
+    parser.add_argument(
         "--no-auto-beta",
         action="store_true",
         help=(
@@ -517,12 +532,13 @@ def main() -> None:
         args.full_states is not None,
         args.calvano_states is not None,
         args.strategic_states is not None,
+        bool(args.hybrid_states),
     ]
     if sum(_state_flags) > 1:
         parser.error(
             "At most one state-mode flag is allowed: "
             "--local-sum, --local-sum-d, --base-states, "
-            "--full-states, --calvano-states, --strategic-states."
+            "--full-states, --calvano-states, --strategic-states, --hybrid-states."
         )
     if args.local_sum is not None and args.local_sum_d is not None:
         parser.error("--local-sum and --local-sum-d are mutually exclusive.")
@@ -584,6 +600,18 @@ def main() -> None:
             args.strategic_states,
             int(config["agents"].get("m", 15)) * args.strategic_states * 3,
         )
+    if args.hybrid_states:
+        config["agents"]["state_mode"] = "hybrid_profit_gap"
+        _m   = int(config["agents"].get("m", 18))
+        _np  = int(config["agents"].get("hybrid_n_profit", 5))
+        _ng  = int(config["agents"].get("hybrid_n_gap", 9))
+        _glo = float(config["agents"].get("hybrid_gap_lo", -0.20))
+        _ghi = float(config["agents"].get("hybrid_gap_hi",  0.20))
+        logger.info(
+            "state_mode=hybrid_profit_gap | m=%d × n_profit=%d × n_gap=%d² = %d states "
+            "| gap ∈ [%.2f, %.2f]",
+            _m, _np, _ng, _m * _np * _ng * _ng, _glo, _ghi,
+        )
     # ── Valid CLI combinations ──────────────────────────────────────────────────
     # Grid:  --chs-grid (optional, composes with any state mode)
     # State: exactly one of:
@@ -594,6 +622,7 @@ def main() -> None:
     #   --full-states [B]      → state_mode=design5_full
     #   --calvano-states K     → state_mode=calvano_local
     #   --strategic-states [B] → state_mode=strategic_hybrid
+    #   --hybrid-states        → state_mode=hybrid_profit_gap (7290 states)
     # Beta:   --no-auto-beta (optional, composes with any state mode)
     # Effort: --with-effort (optional, composes with any state mode)
     # ──────────────────────────────────────────────────────────────────────────

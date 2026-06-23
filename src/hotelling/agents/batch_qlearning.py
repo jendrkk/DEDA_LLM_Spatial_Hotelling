@@ -224,6 +224,7 @@ class BatchQLearningAgent:
         if self.state_mode in (
             "local_summary",
             "design4_ownprice", "design5_full", "calvano_local", "strategic_hybrid",
+            "hybrid_profit_gap",
         ):
             s = np.asarray(signal, dtype=np.int64)
             assert s.ndim == 1 and s.shape[0] == self.n, (

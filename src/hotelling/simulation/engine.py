@@ -347,6 +347,11 @@ class BatchSimulationEngine:
         _next_neighbor_actions, rewards_arr, demands_arr = self.env.step_array(actions)
 
         next_signal = self.env.current_state_signal()
+        # For hybrid_profit_gap: store current rewards as t−1 profits for the NEXT
+        # state signal call.  Must happen AFTER current_state_signal() (which reads
+        # _prev_rewards_arr as t−1) and BEFORE the next act() call.
+        if self.env.state_mode == "hybrid_profit_gap":
+            self.env.update_prev_rewards_for_hybrid(rewards_arr)
         states = self.batch_agent._encode_states(state_signal)
         next_states = self.batch_agent._encode_states(next_signal)
         self.batch_agent.update(states, actions, rewards_arr, next_states)

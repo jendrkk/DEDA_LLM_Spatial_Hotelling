@@ -31,7 +31,7 @@ k_neighbors: 1    # number of nearest-rival joint actions in the Q-table state
 
 # Q-learning hyperparameters (Calvano 2020 calibration)
 alpha_lr: 0.15         # learning rate α
-beta_decay: 0.9e-6     # exploration decay rate β; ε(t) = exp(−β·t); base: 4.0e-6
+beta_decay: 1.8e-6     # exploration decay rate β; ε(t) = exp(−β·t); base: 4.0e-6
                        # with T=1M steps: ε(1M) = exp(−4) ≈ 0.018 (mostly exploiting)
 delta: 0.95            # discount factor δ
 update_mode: async   # AFP (2022) "async": only visited (s,a) cell updated.
@@ -48,3 +48,17 @@ price_grid_mode: union   # "union" spans every chain's own [Nash, monopoly]
                          # "global" = legacy single-mean grid (clips discount
                          # floor / bio ceiling — kept only for reproducing old runs)
 price_grid_xi: 0.1       # grid margin beyond [p_nash, p_mono]
+
+# ── Hybrid profit-gap state (--hybrid-states) ──────────────────────────────────
+# State: (own_price_bin × prev_profit_bin × nearest_rival_gap_bin × 2nd_rival_gap_bin)
+# gap formula: (p_own − p_rival) / p_rival  (percentual deviation of own from rival EUR price)
+# State size = m × hybrid_n_profit × hybrid_n_gap² = 18×5×81 = 7290 (defaults)
+# Profit bins are chain-type-specific; thresholds computed at init from price-grid sweep.
+# Action space: m = 18 price actions (unchanged from baseline).
+# See: src/hotelling/env/market_env.py  _hybrid_state_signal()
+hybrid_n_profit: 5         # profit quantile bins: very_bad / bad / average / good / very_good
+                           # bin boundaries at q_0.2 / q_0.4 / q_0.6 / q_0.8 per chain type
+hybrid_n_gap: 9            # bins per rival price-gap dimension
+                           # default range [-0.20, +0.20] → step ≈ 0.044 per bin
+hybrid_gap_lo: -0.20       # lower bound of percentual price-gap range (clamps below → bin 0)
+hybrid_gap_hi:  0.20       # upper bound of percentual price-gap range (clamps above → bin 8)

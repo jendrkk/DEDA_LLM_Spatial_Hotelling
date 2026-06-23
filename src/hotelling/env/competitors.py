@@ -21,6 +21,11 @@ from scipy.sparse import csr_matrix
 
 logger = logging.getLogger(__name__)
 
+# Integer encoding used by bin_profits_by_chain and HotellingMarketEnv._chain_type_ids.
+# All three must stay in sync with the row ordering in the (3, n_thresh) threshold matrix.
+_CHAIN_TYPE_TO_ID: dict[str, int] = {"discount": 0, "standard": 1, "bio": 2}
+_CHAIN_ID_TO_TYPE: dict[int, str] = {v: k for k, v in _CHAIN_TYPE_TO_ID.items()}
+
 
 @dataclass
 class CompetitorSets:
@@ -318,3 +323,169 @@ def rival_price_indices(
             else:
                 result[j, r] = price_idxs[rival]
     return result
+
+
+@nb.njit(cache=True)
+def compute_rival_gap_bins(
+    prices: np.ndarray,      # (N,) float64  current EUR prices for all stores
+    rivals: np.ndarray,      # (N, 2) int64  nearest/2nd-nearest rival indices; -1 = no rival
+    gap_edges: np.ndarray,   # (n_gap+1,) float64  bin edges (e.g. linspace(-0.2, 0.2, 10))
+    n_gap: int,              # number of gap bins (default 9)
+) -> tuple:                  # (b_gap1, b_gap2): each (N,) int64
+    """Percentual price-gap bins for two nearest same-type rivals.
+
+    gap_i_r = (p_own_i − p_rival_r) / p_rival_r
+
+    Stores with no same-type rival (rivals[j, r] == -1) or zero-price rivals
+    receive the neutral bin (n_gap // 2 = 4 for default n_gap=9).
+    Values below gap_edges[0] → bin 0; values above gap_edges[-1] → bin n_gap-1.
+
+    The function assumes n_gap+1 == gap_edges.shape[0].  Verified by caller.
+    """
+    N = prices.shape[0]
+    b_gap1 = np.empty(N, dtype=np.int64)
+    b_gap2 = np.empty(N, dtype=np.int64)
+    mid = n_gap // 2
+    n_edges = gap_edges.shape[0]  # = n_gap + 1
+
+    for j in range(N):
+        p_own = prices[j]
+
+        # ── Rival 1 ─────────────────────────────────────────────────────────
+        r1 = rivals[j, 0]
+        if r1 < 0:
+            b_gap1[j] = mid
+        else:
+            p_r = prices[r1]
+            if p_r < 1e-9:
+                b_gap1[j] = mid
+            else:
+                gap = (p_own - p_r) / p_r
+                b = 0
+                for k in range(1, n_edges):
+                    if gap >= gap_edges[k]:
+                        b = k
+                    else:
+                        break
+                b_gap1[j] = min(b, n_gap - 1)
+
+        # ── Rival 2 ─────────────────────────────────────────────────────────
+        r2 = rivals[j, 1]
+        if r2 < 0:
+            b_gap2[j] = mid
+        else:
+            p_r = prices[r2]
+            if p_r < 1e-9:
+                b_gap2[j] = mid
+            else:
+                gap = (p_own - p_r) / p_r
+                b = 0
+                for k in range(1, n_edges):
+                    if gap >= gap_edges[k]:
+                        b = k
+                    else:
+                        break
+                b_gap2[j] = min(b, n_gap - 1)
+
+    return b_gap1, b_gap2
+
+
+@nb.njit(cache=True)
+def bin_profits_by_chain(
+    profits: np.ndarray,     # (N,) float64  previous period profits
+    chain_ids: np.ndarray,   # (N,) int64    chain-type IDs (0=discount, 1=standard, 2=bio)
+    thresholds: np.ndarray,  # (3, n_profit-1) float64  per-chain quantile thresholds
+    n_profit: int,           # number of profit bins (default 5)
+) -> np.ndarray:             # (N,) int64
+    """Map per-store profits to quantile-based profit bins per chain type.
+
+    Each chain type has (n_profit−1) sorted quantile thresholds defining n_profit bins:
+      bin 0: profit < q₀.₂           (very bad)
+      bin 1: q₀.₂ ≤ profit < q₀.₄   (bad)
+      bin 2: q₀.₄ ≤ profit < q₀.₆   (average)
+      bin 3: q₀.₆ ≤ profit < q₀.₈   (good)
+      bin 4: profit ≥ q₀.₈           (very good)
+
+    chain_ids indexing: 0=discount, 1=standard, 2=bio (matches _CHAIN_TYPE_TO_ID).
+    Assumes thresholds[ct] is sorted ascending.
+    """
+    N = profits.shape[0]
+    n_thresh = n_profit - 1  # = 4 for n_profit=5
+    result = np.empty(N, dtype=np.int64)
+    for j in range(N):
+        ct = chain_ids[j]
+        p = profits[j]
+        b = 0
+        for k in range(n_thresh):
+            if p >= thresholds[ct, k]:
+                b = k + 1
+            else:
+                break
+        result[j] = b
+    return result
+
+
+def compute_hybrid_profit_thresholds(
+    firms: list,
+    store_price_grids: "np.ndarray | None",  # (N, m) float64 per-store grids, or None
+    price_grid: np.ndarray,                  # (m,) float64 global price grid (fallback)
+    mc_arr: np.ndarray,                      # (N,) float64 marginal costs
+    n_profit: int = 5,
+) -> np.ndarray:                             # (3, n_profit-1) float64
+    """Compute per-chain-type profit quantile thresholds for hybrid_profit_gap state.
+
+    Proxy profit at price p for store i:  π̂_i(p) = max(p − mc_i, 0.0)
+    (unit-demand normalisation; captures relative profitability across the price grid
+    without requiring a full demand sweep at init time).
+
+    For each chain type the proxy profits are pooled across all stores of that type
+    and all prices in each store's grid, then n_profit−1 uniform quantile levels are
+    computed at {1/n_profit, 2/n_profit, ..., (n_profit−1)/n_profit}.
+
+    Falls back to linspace(0, 0.5, n_profit−1) if a chain type has no stores.
+
+    Parameters
+    ----------
+    firms : list of Firm objects (must have .chain_type and .marginal_cost attributes)
+    store_price_grids : (N, m) float64 or None — chain-specific grids; None → global grid
+    price_grid : (m,) float64 — global price grid (used when store_price_grids is None)
+    mc_arr : (N,) float64 — per-store marginal costs
+    n_profit : int — number of profit bins (default 5)
+
+    Returns
+    -------
+    (3, n_profit-1) float64 — rows: discount/standard/bio, columns: q thresholds (ascending)
+    """
+    n_thresh = n_profit - 1
+    thresholds = np.zeros((3, n_thresh), dtype=np.float64)
+    ct_names = ("discount", "standard", "bio")  # row order matches _CHAIN_TYPE_TO_ID
+
+    for ct_idx, ct_name in enumerate(ct_names):
+        pool: list[float] = []
+        for i, f in enumerate(firms):
+            if getattr(f, "chain_type", "standard") != ct_name:
+                continue
+            mc = float(mc_arr[i])
+            grid_i: np.ndarray = (
+                store_price_grids[i] if store_price_grids is not None else price_grid
+            )
+            for p in grid_i:
+                proxy = max(float(p) - mc, 0.0)
+                pool.append(proxy)
+
+        if len(pool) < n_thresh:
+            # Fallback for chain types absent from or under-represented in the market
+            thresholds[ct_idx] = np.linspace(0.0, 0.5, n_thresh + 2)[1:-1]
+        else:
+            levels = np.linspace(0.0, 1.0, n_thresh + 2)[1:-1]  # e.g. [0.2, 0.4, 0.6, 0.8]
+            thresholds[ct_idx] = np.quantile(
+                np.array(pool, dtype=np.float64), levels
+            )
+
+    logger.info(
+        "Hybrid profit thresholds (q per chain type) — discount: %s | standard: %s | bio: %s",
+        np.round(thresholds[0], 4).tolist(),
+        np.round(thresholds[1], 4).tolist(),
+        np.round(thresholds[2], 4).tolist(),
+    )
+    return thresholds

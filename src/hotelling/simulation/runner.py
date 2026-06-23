@@ -294,6 +294,10 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
         p_nash_arr=p_nash_arr,
         p_mono_arr=p_mono_arr,
         calvano_k=int(agent_cfg.get("calvano_k", 1)),
+        hybrid_n_profit=int(agent_cfg.get("hybrid_n_profit", 5)),
+        hybrid_n_gap=int(agent_cfg.get("hybrid_n_gap", 9)),
+        hybrid_gap_lo=float(agent_cfg.get("hybrid_gap_lo", -0.20)),
+        hybrid_gap_hi=float(agent_cfg.get("hybrid_gap_hi",  0.20)),
     )
 
     import logging as _log_state
@@ -579,6 +583,10 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
         "grid_max": float(grid_max) if grid_max is not None else None,
         "n_comp_bins": int(agent_cfg.get("n_comp_bins", 15)),
         "calvano_k": int(agent_cfg.get("calvano_k", 1)),
+        "hybrid_n_profit": int(agent_cfg.get("hybrid_n_profit", 5)),
+        "hybrid_n_gap": int(agent_cfg.get("hybrid_n_gap", 9)),
+        "hybrid_gap_lo": float(agent_cfg.get("hybrid_gap_lo", -0.20)),
+        "hybrid_gap_hi": float(agent_cfg.get("hybrid_gap_hi",  0.20)),
         "chain_specific_grid": bool(agent_cfg.get("chain_specific_grid", False)),
         "beta_decay": float(agent_cfg.get("beta_decay", 4e-6)),
         "beta_decay_auto": bool(agent_cfg.get("beta_decay_auto", True)),
@@ -789,7 +797,7 @@ def _build_components(config: dict) -> dict:
         n_comp_bins=int(agent_cfg.get("n_comp_bins", 15)),
         p_nash_arr=p_nash_arr,
         p_mono_arr=p_mono_arr,
-        calvano_k=int(agent_cfg.get("calvano_k", 1)),
+        calvano_k=int(agent_cfg.get("calvano_k", 1)),  # TODO: pass hybrid params to _build_components env constructor (see Step 3 prompt)
     )
     batch_agent = BatchQLearningAgent(
         n_agents=len(firms), m=int(agent_cfg.get("m", 25)),

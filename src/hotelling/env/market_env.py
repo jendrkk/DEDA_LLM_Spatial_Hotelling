@@ -102,6 +102,10 @@ class HotellingMarketEnv:
         p_nash_arr: np.ndarray | None = None,
         p_mono_arr: np.ndarray | None = None,
         calvano_k: int = 1,
+        hybrid_n_profit: int = 5,
+        hybrid_n_gap: int = 9,
+        hybrid_gap_lo: float = -0.20,
+        hybrid_gap_hi: float = 0.20,
     ) -> None:
         self.city = city
         self.firms = firms
@@ -129,6 +133,7 @@ class HotellingMarketEnv:
         if self.state_mode not in (
             "neighbors", "local_summary",
             "design4_ownprice", "design5_full", "calvano_local", "strategic_hybrid",
+            "hybrid_profit_gap",
         ):
             raise ValueError(
                 f"Unknown state_mode: {state_mode!r}"
@@ -197,6 +202,19 @@ class HotellingMarketEnv:
 
         self.n_comp_bins = int(n_comp_bins)
         self.calvano_k = int(calvano_k)
+        self.hybrid_n_profit = int(hybrid_n_profit)
+        self.hybrid_n_gap = int(hybrid_n_gap)
+        self.hybrid_gap_lo = float(hybrid_gap_lo)
+        self.hybrid_gap_hi = float(hybrid_gap_hi)
+        # ── Hybrid profit-gap state backing storage (None = mode not active) ──────────
+        # _hybrid_gap_edges : (n_gap+1,) float64 — bin edges for gap computation
+        # _prev_rewards_arr : (N,)       float64 — profits from previous period (t−1)
+        # _profit_quantile_thresholds: (3, n_profit-1) float64 — per-chain quantile thresholds
+        # _chain_type_ids:              (N,)       int64 — 0=discount/1=standard/2=bio
+        self._hybrid_gap_edges: np.ndarray | None = None
+        self._prev_rewards_arr: np.ndarray | None = None
+        self._profit_quantile_thresholds: np.ndarray | None = None
+        self._chain_type_ids: np.ndarray | None = None
         self._comp_sets = None
         self._p_nash_arr = p_nash_arr
         self._p_mono_arr = p_mono_arr
@@ -210,6 +228,7 @@ class HotellingMarketEnv:
 
         if self.state_mode in (
             "design4_ownprice", "design5_full", "calvano_local", "strategic_hybrid",
+            "hybrid_profit_gap",
         ):
             from hotelling.env.competitors import build_competitor_sets
             if self._chain_type_grids is not None:
@@ -236,6 +255,61 @@ class HotellingMarketEnv:
                 firm_locations=np.array([f.location for f in firms], dtype=np.float64),
             )
 
+        if self.state_mode == "hybrid_profit_gap":
+            from hotelling.env.competitors import (
+                compute_hybrid_profit_thresholds,
+                _CHAIN_TYPE_TO_ID,
+            )
+            N = len(firms)
+            # Gap bin edges: (n_gap+1,) spanning [gap_lo, gap_hi]
+            self._hybrid_gap_edges = np.linspace(
+                self.hybrid_gap_lo, self.hybrid_gap_hi, self.hybrid_n_gap + 1,
+            )
+            # Previous-period reward buffer — init to zeros (first step → all stores
+            # land in profit bin 0 "very bad"; settles naturally after a few steps)
+            self._prev_rewards_arr = np.zeros(N, dtype=np.float64)
+            # Chain-type integer IDs: (N,) int64 in {0,1,2}
+            self._chain_type_ids = np.array(
+                [
+                    _CHAIN_TYPE_TO_ID.get(getattr(f, "chain_type", "standard"), 1)
+                    for f in firms
+                ],
+                dtype=np.int64,
+            )
+            # Marginal costs for proxy-profit computation
+            _mc_arr = np.array(
+                [float(getattr(f, "marginal_cost", 0.0)) for f in firms],
+                dtype=np.float64,
+            )
+            # Profit quantile thresholds: (3, n_profit-1) float64
+            self._profit_quantile_thresholds = compute_hybrid_profit_thresholds(
+                firms=firms,
+                store_price_grids=self._store_price_grids,
+                price_grid=self.price_grid,
+                mc_arr=_mc_arr,
+                n_profit=self.hybrid_n_profit,
+            )
+            # Guard: nearest_same_type needs ≥ 2 columns for gap computation
+            if (
+                self._comp_sets is None
+                or self._comp_sets.nearest_same_type is None
+                or self._comp_sets.nearest_same_type.shape[1] < 2
+            ):
+                raise RuntimeError(
+                    "hybrid_profit_gap requires CompetitorSets.nearest_same_type "
+                    "with ≥ 2 columns. Ensure catch_indptr is available in city "
+                    "and k_max_rivals ≥ 2 in build_competitor_sets."
+                )
+            logger.info(
+                "hybrid_profit_gap: m=%d × n_profit=%d × n_gap=%d² = %d states | "
+                "gap ∈ [%.2f, %.2f], step≈%.3f | action_size=%d",
+                self.m, self.hybrid_n_profit, self.hybrid_n_gap,
+                self.m * self.hybrid_n_profit * self.hybrid_n_gap ** 2,
+                self.hybrid_gap_lo, self.hybrid_gap_hi,
+                (self.hybrid_gap_hi - self.hybrid_gap_lo) / self.hybrid_n_gap,
+                self._action_size,
+            )
+
     @property
     def state_size(self) -> int:
         if self.state_mode == "local_summary":
@@ -248,6 +322,8 @@ class HotellingMarketEnv:
             return int(self.m ** (self.calvano_k + 1))
         if self.state_mode == "strategic_hybrid":
             return int(self.m * self.n_comp_bins * 3)
+        if self.state_mode == "hybrid_profit_gap":
+            return int(self.m * self.hybrid_n_profit * self.hybrid_n_gap * self.hybrid_n_gap)
         return int(self._action_size ** self.k_neighbors)
 
     def decode_prices(self, price_idxs: np.ndarray) -> np.ndarray:
@@ -366,6 +442,8 @@ class HotellingMarketEnv:
 
     def current_state_signal(self) -> np.ndarray:
         """Return the Q-learning state signal for all agents at the current actions."""
+        if self.state_mode == "hybrid_profit_gap":
+            return self._hybrid_state_signal()
         if self.state_mode == "design4_ownprice":
             return self._design4_state_signal()
         if self.state_mode == "design5_full":
@@ -510,6 +588,87 @@ class HotellingMarketEnv:
 
         return (b_own * (B * 3) + b_comp * 3 + regime).astype(np.int64)
 
+    def _hybrid_state_signal(self) -> np.ndarray:
+        """Hybrid profit-gap state: (own_price, prev_profit_bin, gap1, gap2).
+
+        Encoding (big-endian, price most significant):
+          s = b_price*(n_profit*n_gap²) + b_profit*(n_gap²) + b_gap1*n_gap + b_gap2
+
+        Dimensions
+        ----------
+        b_price ∈ [0, m−1]             own price bin = current action // m_effort
+        b_profit ∈ [0, n_profit−1]     quantile bin of PREVIOUS period's profit
+                                        (from self._prev_rewards_arr; 0 on first step)
+        b_gap1 ∈ [0, n_gap−1]          gap to nearest same-type rival
+        b_gap2 ∈ [0, n_gap−1]          gap to 2nd nearest same-type rival
+                                        (neutral bin n_gap//2 if rival absent)
+
+        gap = (p_own − p_rival) / p_rival   (percentual deviation)
+
+        State size: m * n_profit * n_gap^2 = 7290 for defaults (18, 5, 9, 9).
+        """
+        from hotelling.env.competitors import compute_rival_gap_bins, bin_profits_by_chain
+
+        assert self._comp_sets is not None and self._comp_sets.nearest_same_type is not None
+        assert self._prev_rewards_arr is not None
+        assert self._profit_quantile_thresholds is not None
+        assert self._chain_type_ids is not None
+
+        N = len(self.firms)
+
+        # ── Own price bin ────────────────────────────────────────────────────
+        pidx = self._current_joint_actions_arr // self.m_effort
+        b_price = pidx.astype(np.int64)
+
+        # ── EUR prices for gap computation ───────────────────────────────────
+        if self._store_price_grids is not None:
+            prices = self._store_price_grids[np.arange(N), pidx].astype(np.float64)
+        else:
+            prices = self.price_grid[pidx].astype(np.float64)
+
+        # ── Rival price gap bins ─────────────────────────────────────────────
+        # nearest_same_type is (N, k_max≥3) int64; take first two columns
+        rivals_2 = np.ascontiguousarray(
+            self._comp_sets.nearest_same_type[:, :2], dtype=np.int64
+        )
+        b_gap1, b_gap2 = compute_rival_gap_bins(
+            prices, rivals_2, self._hybrid_gap_edges, self.hybrid_n_gap,
+        )
+
+        # ── Profit bins (previous period) ────────────────────────────────────
+        b_profit = bin_profits_by_chain(
+            self._prev_rewards_arr,
+            self._chain_type_ids,
+            self._profit_quantile_thresholds,
+            self.hybrid_n_profit,
+        )
+
+        # ── Mixed-radix encoding ─────────────────────────────────────────────
+        n_profit = self.hybrid_n_profit
+        n_gap = self.hybrid_n_gap
+        state = (
+            b_price * np.int64(n_profit * n_gap * n_gap)
+            + b_profit * np.int64(n_gap * n_gap)
+            + b_gap1 * np.int64(n_gap)
+            + b_gap2
+        )
+        return state.astype(np.int64)
+
+    def update_prev_rewards_for_hybrid(self, rewards: np.ndarray) -> None:
+        """Store the current period's rewards for use as t−1 profit in the next state.
+
+        Timing contract (enforced by BatchSimulationEngine):
+          1. env.step_array(actions)  → computes rewards_arr for period t
+          2. env.current_state_signal()  → encodes s_{t+1} using _prev_rewards_arr (= r_{t−1})
+          3. env.update_prev_rewards_for_hybrid(rewards_arr)  ← THIS CALL
+          4. agent.act(s_{t+1})  → next step uses updated t profits
+
+        Step 3 MUST happen AFTER step 2 and BEFORE the next step 1/2 cycle.
+        No-op when state_mode != "hybrid_profit_gap" (_prev_rewards_arr is None).
+        """
+        if self._prev_rewards_arr is not None:
+            self._prev_rewards_arr[:] = np.asarray(rewards, dtype=np.float64)
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -615,6 +774,9 @@ class HotellingMarketEnv:
 
         self._current_joint_actions = {a: mid_joint for a in self.possible_agents}
         self._current_joint_actions_arr[:] = mid_joint
+        # Reset hybrid profit buffer so new episodes start with "very bad" profit signal
+        if self._prev_rewards_arr is not None:
+            self._prev_rewards_arr[:] = 0.0
         self.agents = list(self.possible_agents)
 
         observations = {aid: self._build_observation(aid) for aid in self.agents}

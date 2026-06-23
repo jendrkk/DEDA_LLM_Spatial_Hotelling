@@ -31,7 +31,7 @@ k_neighbors: 1    # number of nearest-rival joint actions in the Q-table state
 
 # Q-learning hyperparameters (Calvano 2020 calibration)
 alpha_lr: 0.15         # learning rate α
-beta_decay: 1.8e-6     # exploration decay rate β; ε(t) = exp(−β·t); base: 4.0e-6
+beta_decay: 0.9e-6     # exploration decay rate β; ε(t) = exp(−β·t); base: 4.0e-6
                        # with T=1M steps: ε(1M) = exp(−4) ≈ 0.018 (mostly exploiting)
 delta: 0.95            # discount factor δ
 update_mode: async   # AFP (2022) "async": only visited (s,a) cell updated.

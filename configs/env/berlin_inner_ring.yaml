@@ -36,8 +36,8 @@ alpha_L: 0.5             # low-type (L) marginal utility of chain quality
 alpha_H: 1.5             # high-type (H) marginal utility of chain quality
 
 # Effort demand + cost parameters (sensitivity parameters — no Berlin data)
-beta_effort: 0.001       # homogeneous marginal utility of store effort β
-kappa0: 1.0              # quadratic effort cost coefficient κ₀ (chain-invariant, ADR-017)
+beta_effort: 0.0         # homogeneous marginal utility of store effort β, 0.001
+kappa0: 1.0              # quadratic effort cost coefficient κ₀ (chain-invariant, ADR-017), 1.0
 
 # Store physical parameters
 store_size: 600.0        # typical inner-Berlin LEH floor space in m² (used with rent)

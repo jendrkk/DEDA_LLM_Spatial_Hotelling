@@ -316,7 +316,7 @@ class DenseLog:
         agent_ids   = list(np.load(run_dir / "agent_ids.npy"))
         price_grid  = np.load(run_dir / "price_grid.npy")
         effort_grid = np.load(run_dir / "effort_grid.npy")
-
+        
         # ── Load per-store chain-specific grids (backward-compat: absent in older logs)
         spg_path = run_dir / "store_price_grids.npy"
         store_price_grids = np.load(spg_path) if spg_path.exists() else None

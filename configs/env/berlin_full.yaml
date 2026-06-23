@@ -37,8 +37,8 @@ q_B: 1.5
 alpha_L: 0.5
 alpha_H: 1.5
 
-beta_effort: 0.001
-kappa0: 1.0
+beta_effort: 0.0 #0.001
+kappa0: 1.0 #1.0
 
 store_size: 600.0
 

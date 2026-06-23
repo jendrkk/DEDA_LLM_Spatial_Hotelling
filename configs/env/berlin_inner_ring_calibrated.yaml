@@ -4,7 +4,7 @@ demand_grid_resolution_m: 100
 site_grid_resolution_m: 250
 transport_cost: 0.39471057884231536
 logit_scale: 8.017025504320396
-outside_option: -37.285342401282946
+outside_option: -37.28917392746844
 bounding_box:
   lat_min: 52.46
   lat_max: 52.55
@@ -18,7 +18,7 @@ q_S: 8.35481589434701
 q_B: 17.39319802957196
 alpha_L: 0.5223469002273923
 alpha_H: 1.2013978705230022
-beta_effort: 0.001
+beta_effort: 0.0
 kappa0: 1.0
 store_size: 600.0
 marginal_cost_D: 41.58

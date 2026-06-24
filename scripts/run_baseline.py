@@ -438,6 +438,26 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--graph-states",
+        nargs=5,
+        default=None,
+        metavar=("K", "M", "B", "GRID", "MATCH"),
+        help=(
+            "Reciprocal rival-graph state: (own_price, rival_1_bin, ..., rival_K_bin) where "
+            "the K rivals each store observes are chosen by max-weight diversion-ratio "
+            "b-matching on an UNDIRECTED graph (max degree K, so reciprocity is structural; "
+            "isolated stores -> local monopolists). Five positionals: K (rivals/store int>0), "
+            "M (action price bins int>0), B (rival price bins int>0), GRID in {CS,G} "
+            "(chain-specific or global own action grid), MATCH in {SC,A} (same-chain-type or "
+            "any-chain-type rivals). State size = M*B^K. All Q-learning params are taken from "
+            "the graph_states_params section of qlearning_baseline.yaml (which overrides every "
+            "other section); the 5 positionals override the structural knobs. Requires "
+            "catchment_minutes + auto_price_grid + dense benchmarks. Writes an interactive "
+            "rival_graph.html into the run folder. Mutually exclusive with the other "
+            "state-mode flags and with --chs-grid."
+        ),
+    )
+    parser.add_argument(
         "--hybrid-states",
         action="store_true",
         default=False,
@@ -564,12 +584,19 @@ def main() -> None:
         args.calvano_states is not None,
         args.strategic_states is not None,
         bool(args.hybrid_states),
+        args.graph_states is not None,
     ]
     if sum(_state_flags) > 1:
         parser.error(
             "At most one state-mode flag is allowed: "
             "--local-sum, --local-sum-d, --base-states, "
-            "--full-states, --calvano-states, --strategic-states, --hybrid-states."
+            "--full-states, --calvano-states, --strategic-states, --hybrid-states, "
+            "--graph-states."
+        )
+    if args.graph_states is not None and args.chs_grid:
+        parser.error(
+            "--graph-states already selects its own grid via the GRID positional "
+            "({CS,G}); do not also pass --chs-grid."
         )
     if args.local_sum is not None and args.local_sum_d is not None:
         parser.error("--local-sum and --local-sum-d are mutually exclusive.")
@@ -643,6 +670,38 @@ def main() -> None:
             "| gap ∈ [%.2f, %.2f]",
             _m, _np, _ng, _m * _np * _ng * _ng, _glo, _ghi,
         )
+    if args.graph_states is not None:
+        _gs = args.graph_states
+        try:
+            _gk, _gm, _gb = int(_gs[0]), int(_gs[1]), int(_gs[2])
+        except (ValueError, TypeError):
+            parser.error(f"--graph-states: K, M, B must be integers (got {_gs[:3]!r}).")
+        _ggrid = str(_gs[3]).upper()
+        _gmatch = str(_gs[4]).upper()
+        if _gk <= 0 or _gm <= 0 or _gb <= 0:
+            parser.error("--graph-states: K, M, B must all be > 0.")
+        if _ggrid not in ("CS", "G"):
+            parser.error(f"--graph-states GRID must be 'CS' or 'G' (got {_gs[3]!r}).")
+        if _gmatch not in ("SC", "A"):
+            parser.error(f"--graph-states MATCH must be 'SC' or 'A' (got {_gs[4]!r}).")
+        # graph_states_params overrides ALL other Q-learning params; the 5 CLI
+        # positionals then override the structural knobs.
+        _gsp = dict(config["agents"].get("graph_states_params", {}) or {})
+        config["agents"].update(_gsp)
+        config["agents"]["state_mode"] = "graph_states"
+        config["agents"]["graph_k"] = _gk
+        config["agents"]["m"] = _gm
+        config["agents"]["graph_n_rival_bins"] = _gb
+        config["agents"]["graph_own_grid_type"] = _ggrid
+        config["agents"]["chain_specific_grid"] = (_ggrid == "CS")
+        config["agents"]["graph_rival_match"] = _gmatch
+        config["agents"]["m_effort"] = 1
+        logger.info(
+            "state_mode=graph_states | k=%d, m=%d, B=%d, grid=%s, match=%s | "
+            "state_size=%d | Q-learning params from graph_states_params (override).",
+            _gk, _gm, _gb, _ggrid, _gmatch, _gm * _gb ** _gk,
+        )
+
     # ── Valid CLI combinations ──────────────────────────────────────────────────
     # Grid:  --chs-grid (optional, composes with any state mode)
     # State: exactly one of:
@@ -654,6 +713,7 @@ def main() -> None:
     #   --calvano-states K     → state_mode=calvano_local
     #   --strategic-states [B] → state_mode=strategic_hybrid
     #   --hybrid-states        → state_mode=hybrid_profit_gap (7290 states)
+    #   --graph-states K M B GRID MATCH → state_mode=graph_states
     # Beta:   --no-auto-beta (optional, composes with any state mode)
     # Effort: --with-effort (optional, composes with any state mode)
     # ──────────────────────────────────────────────────────────────────────────

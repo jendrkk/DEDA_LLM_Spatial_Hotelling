@@ -28,9 +28,9 @@ nan_fill_minutes: 120.0
 dense_distances: true
 rent_scale: 0.0
 rent_normalization: mean_ratio
-catchment_minutes: 20.0
-catchment_k_min: 12
-catchment_k_max: 60
+catchment_minutes: 8.0
+catchment_k_min: 1
+catchment_k_max: 500
 precompute_expweights: true
 low_precision_storage: false
 calibration_method: foc_inversion

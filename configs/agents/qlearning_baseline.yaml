@@ -53,8 +53,8 @@ delta: 0.95            # discount factor δ
 #   where g(x)=(1−x)/(−ln x),  h(a,b)=(a−b)/ln(a/b)
 #   ≈ 0.26 at defaults (comparable to Calvano single-stage ≈ 0.245).
 beta_schedule: two_stage  # "two_stage" (default) or "single" (legacy Calvano)
-explore_fraction: 0.65    # f₀: t₀ = round(f₀ × T_burnin)
-epsilon_transition: 0.10  # ε(t₀): target exploration rate at the stage switch
+explore_fraction: 0.4     # f₀: t₀ = round(f₀ × T_burnin), 0.65
+epsilon_transition: 0.06  # ε(t₀): target exploration rate at the stage switch
 epsilon_min: 3.0e-4       # ε floor; also ε(T) target for β₂ calibration [1e-4, 1e-3]
 update_mode: async   # AFP (2022) "async": only visited (s,a) cell updated.
                      # Calvano (2020) protocol. NOTE: BatchQLearningAgent
@@ -84,3 +84,37 @@ hybrid_n_gap: 9            # bins per rival price-gap dimension
                            # default range [-0.20, +0.20] → step ≈ 0.044 per bin
 hybrid_gap_lo: -0.20       # lower bound of percentual price-gap range (clamps below → bin 0)
 hybrid_gap_hi:  0.20       # upper bound of percentual price-gap range (clamps above → bin 8)
+
+# ── Graph-states reciprocal rival mode  (--graph-states K M B GRID MATCH) ───────
+# When --graph-states is active, EVERY key in this section OVERRIDES the matching
+# base Q-learning param above; the 5 CLI positionals then override the structural
+# knobs (graph_k, m, graph_n_rival_bins, graph_own_grid_type, graph_rival_match).
+# Edit learning hyperparameters for graph-states runs HERE, not in the base section.
+#
+# Rivals form an UNDIRECTED, degree-<=graph_k observation graph (reciprocity is
+# structural). Edge weight = symmetric average diversion ratio at Bertrand-Nash:
+#   W[a,b] = 1/2 * M[a,b] * (1/E[a] + 1/E[b]),  M[a,b]=Sum_ih w_ih s_ia s_ib.
+# The 1/E normalisation up-weights remote/isolated rivalries (where local collusion
+# is plausible). State size = m * graph_n_rival_bins ^ graph_k.
+graph_states_params:
+  # Learning hyperparameters (Calvano 2020 calibration; compatible with two_stage)
+  alpha_lr: 0.15
+  delta: 0.95
+  beta_decay_auto: true
+  beta_schedule: two_stage      # overridden by an explicit --beta-schedule flag
+  explore_fraction: 0.65
+  epsilon_transition: 0.08
+  epsilon_min: 3.0e-4
+  beta_decay: 0.9e-6            # single-stage fallback (only used with --beta-schedule single)
+  # Structural defaults (overridden by the 5 CLI positionals)
+  m: 18                         # int_2: action price bins
+  m_effort: 1                   # price-only Calvano baseline
+  graph_k: 2                    # int_1: rivals per store (max undirected degree)
+  graph_n_rival_bins: 10        # int_3: rival price bins in the state
+  graph_own_grid_type: "G"      # str_1: "CS" (chain-specific) or "G" (global)
+  graph_rival_match: "A"        # str_2: "SC" (same chain type) or "A" (any)
+  # Grid + graph construction
+  auto_price_grid: true
+  price_grid_xi: 0.1
+  graph_candidate_topn: 8       # per-store candidate edges considered before b-matching
+  graph_min_edge_weight: 0.0    # drop candidate edges with diversion weight <= this floor

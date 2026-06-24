@@ -65,6 +65,38 @@ def _local_price_summary(prices, indptr, indices):
     return mean, mn
 
 
+@nb.njit(cache=True)
+def _gather_rival_price_bins(prices, rivals, edges, B):
+    """Bin rivals' EUR prices onto a common axis; neutral bin (B//2) for absent rivals (-1).
+
+    prices : (N,) float64  current EUR price of every store
+    rivals : (N, k) int64   rival store indices, -1 = no rival in that slot
+    edges  : (B+1,) float64 common bin edges (linspace over the union of all action grids)
+    Returns (N, k) int64 bin indices in [0, B-1]; padded slots get the neutral middle bin.
+    """
+    N, k = rivals.shape
+    out = np.empty((N, k), dtype=np.int64)
+    mid = B // 2
+    n_edges = edges.shape[0]  # = B + 1
+    for j in range(N):
+        for r in range(k):
+            rv = rivals[j, r]
+            if rv < 0:
+                out[j, r] = mid
+            else:
+                v = prices[rv]
+                b = 0
+                for e in range(1, n_edges):
+                    if v >= edges[e]:
+                        b = e
+                    else:
+                        break
+                if b >= B:
+                    b = B - 1
+                out[j, r] = b
+    return out
+
+
 class HotellingMarketEnv:
     """PettingZoo-compatible Hotelling market environment.
 
@@ -106,6 +138,9 @@ class HotellingMarketEnv:
         hybrid_n_gap: int = 9,
         hybrid_gap_lo: float = -0.20,
         hybrid_gap_hi: float = 0.20,
+        graph_rivals: "np.ndarray | None" = None,
+        graph_k: int = 2,
+        graph_n_rival_bins: int = 10,
     ) -> None:
         self.city = city
         self.firms = firms
@@ -133,7 +168,7 @@ class HotellingMarketEnv:
         if self.state_mode not in (
             "neighbors", "local_summary",
             "design4_ownprice", "design5_full", "calvano_local", "strategic_hybrid",
-            "hybrid_profit_gap",
+            "hybrid_profit_gap", "graph_states",
         ):
             raise ValueError(
                 f"Unknown state_mode: {state_mode!r}"
@@ -310,6 +345,37 @@ class HotellingMarketEnv:
                 self._action_size,
             )
 
+        # ── graph_states: reciprocal rival observation graph ─────────────────────────
+        # graph_rivals (N, graph_k) int64, -1 padded — supplied by the runner after it
+        # builds the graph at Bertrand-Nash (hotelling.env.rival_graph). Rival prices are
+        # re-projected onto a common EUR axis of graph_n_rival_bins bins so cross-type
+        # rivals (different action grids) are comparable.  state_size = m * B^k.
+        self.graph_k = int(graph_k)
+        self.graph_n_rival_bins = int(graph_n_rival_bins)
+        self.graph_rivals = (
+            np.ascontiguousarray(graph_rivals, dtype=np.int64)
+            if graph_rivals is not None
+            else None
+        )
+        self._graph_state_bin_edges = None
+        if self.state_mode == "graph_states":
+            if self._store_price_grids is not None:
+                _glo = float(self._store_price_grids.min())
+                _ghi = float(self._store_price_grids.max())
+            else:
+                _glo = float(self.price_grid.min())
+                _ghi = float(self.price_grid.max())
+            self._graph_state_bin_edges = np.linspace(
+                _glo, _ghi, self.graph_n_rival_bins + 1
+            )
+            logger.info(
+                "graph_states: m=%d × B=%d^(k=%d) = %d states | rival EUR bins [%.2f, %.2f] | "
+                "graph_rivals=%s",
+                self.m, self.graph_n_rival_bins, self.graph_k,
+                self.m * self.graph_n_rival_bins ** self.graph_k, _glo, _ghi,
+                "set" if self.graph_rivals is not None else "MISSING(None)",
+            )
+
     @property
     def state_size(self) -> int:
         if self.state_mode == "local_summary":
@@ -318,6 +384,8 @@ class HotellingMarketEnv:
             return int(self.m * self.n_comp_bins)
         if self.state_mode == "design5_full":
             return int(self.m * self.n_comp_bins * self.n_comp_bins)
+        if self.state_mode == "graph_states":
+            return int(self.m * self.graph_n_rival_bins ** self.graph_k)
         if self.state_mode == "calvano_local":
             return int(self.m ** (self.calvano_k + 1))
         if self.state_mode == "strategic_hybrid":
@@ -448,6 +516,8 @@ class HotellingMarketEnv:
             return self._design4_state_signal()
         if self.state_mode == "design5_full":
             return self._design5_state_signal()
+        if self.state_mode == "graph_states":
+            return self._graph_state_signal()
         if self.state_mode == "calvano_local":
             return self._calvano_state_signal()
         if self.state_mode == "strategic_hybrid":
@@ -546,6 +616,36 @@ class HotellingMarketEnv:
         for r in range(k):
             state = state * m + b_rivals[:, r]
 
+        return state.astype(np.int64)
+
+    def _graph_state_signal(self) -> np.ndarray:
+        """graph_states: (own_price_idx, rival_1_bin, ..., rival_k_bin).
+
+        Own price uses the full action grid (m levels); each rival's last price is
+        re-projected onto the common EUR axis (graph_n_rival_bins bins). Absent rivals
+        (-1) take the neutral middle bin. Returns (N,) int64 in [0, m·B^k − 1].
+        Encoding (mixed radix, own most significant):
+            s = b_own·B^k + b_r1·B^(k-1) + ... + b_rk
+        """
+        assert self.graph_rivals is not None, (
+            "graph_states requires graph_rivals (set by the runner via rival_graph)."
+        )
+        N = len(self.firms)
+        pidx = (self._current_joint_actions_arr // self.m_effort).astype(np.int64)
+        b_own = np.clip(pidx, 0, self.m - 1)
+        if self._store_price_grids is not None:
+            prices = self._store_price_grids[np.arange(N), pidx].astype(np.float64)
+        else:
+            prices = self.price_grid[pidx].astype(np.float64)
+        B = self.graph_n_rival_bins
+        k = self.graph_k
+        rivals = np.ascontiguousarray(self.graph_rivals[:, :k], dtype=np.int64)
+        b_rivals = _gather_rival_price_bins(
+            prices, rivals, self._graph_state_bin_edges, B
+        )  # (N, k) int64
+        state = b_own.copy()
+        for r in range(k):
+            state = state * B + b_rivals[:, r]
         return state.astype(np.int64)
 
     def _strategic_state_signal(self) -> np.ndarray:

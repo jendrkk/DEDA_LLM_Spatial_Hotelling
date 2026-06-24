@@ -71,8 +71,8 @@ rent_scale: 0.0
 rent_normalization: mean_ratio
 
 # --- Demand kernel: sparse catchment (fast hot path) ---
-catchment_minutes: 20.0        # per-cell store catchment radius in transit minutes
-catchment_k_min: 12            # always keep at least this many nearest stores per cell
-catchment_k_max: 60            # hard cap on stores per cell
+catchment_minutes: 8.0        # per-cell store catchment radius in transit minutes # 20.0
+catchment_k_min: 1            # always keep at least this many nearest stores per cell # 12
+catchment_k_max: 500            # hard cap on stores per cell # 60
 precompute_expweights: true    # N exp() per period instead of one exp() per catchment entry
 low_precision_storage: false   # true = store exp-weights as float32 (faster, slightly less precise)

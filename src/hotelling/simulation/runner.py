@@ -349,6 +349,78 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
             "Falling back to global grid."
         )
 
+    # --- 1d. graph_states: reciprocal rival observation graph (built at Bertrand-Nash) ---
+    _graph_rivals = None
+    if str(agent_cfg.get("state_mode", "neighbors")) == "graph_states":
+        if not _can_run_benchmarks or p_nash_arr is None or p_mono_arr is None:
+            raise ValueError(
+                "--graph-states requires dense benchmarks (dense_distances=true, "
+                "auto_price_grid=true); Bertrand-Nash / monopoly arrays are unavailable."
+            )
+        if city.catch_indptr is None:
+            raise ValueError(
+                "--graph-states requires a sparse catchment; set catchment_minutes "
+                "in the env config (e.g. catchment_minutes: 8.0)."
+            )
+        import logging as _log_gs
+        from hotelling.env.rival_graph import (
+            build_rival_graph, compute_competition_matrix, diversion_edge_weights,
+        )
+        _gs_log = _log_gs.getLogger(__name__)
+
+        _graph_own_grid = str(agent_cfg.get("graph_own_grid_type", "G"))
+        _xi_gs = float(agent_cfg.get("price_grid_xi", 0.1))
+        _chain_types_gs = np.array([f.chain_type for f in firms], dtype=object)
+
+        # "G": one global grid over the union of per-chain Nash..mono bands, dropping the
+        # dead [MC, p_N) region (NO mc_min floor). "CS": chain_type_grids already built.
+        if _graph_own_grid == "G":
+            _los, _his = [], []
+            for _ct in ("discount", "standard", "bio"):
+                _mct = _chain_types_gs == _ct
+                if _mct.sum() == 0:
+                    continue
+                _pn = float(p_nash_arr[_mct].mean())
+                _pm = float(p_mono_arr[_mct].mean())
+                _gc = max(_pm - _pn, 1e-6)
+                _los.append(_pn - _xi_gs * _gc)
+                _his.append(_pm + _xi_gs * _gc)
+            grid_min = float(min(_los))
+            grid_max = float(max(_his))
+            chain_type_grids = None  # force a single global grid in the env
+            _gs_log.info(
+                "graph_states 'G' global grid: [%.2f, %.2f]; m=%d -> step=%.3f EUR.",
+                grid_min, grid_max, int(agent_cfg.get("m", 18)),
+                (grid_max - grid_min) / max(int(agent_cfg.get("m", 18)) - 1, 1),
+            )
+
+        _eff0 = np.zeros(len(firms), dtype=np.float64)
+        _M_mat, _E_vec = compute_competition_matrix(city, p_nash_arr, _eff0)
+        _W_mat = diversion_edge_weights(_M_mat, _E_vec)
+        _graph_obj = build_rival_graph(
+            _W_mat,
+            int(agent_cfg.get("graph_k", 2)),
+            match_mode=str(agent_cfg.get("graph_rival_match", "A")),
+            chain_types=_chain_types_gs,
+            candidate_topn=int(agent_cfg.get("graph_candidate_topn", 8)),
+            min_edge_weight=float(agent_cfg.get("graph_min_edge_weight", 0.0)),
+        )
+        _graph_rivals = _graph_obj.rivals
+        np.save(output_dir / "graph_rivals.npy", _graph_obj.rivals)
+
+        # Interactive rival-graph map into the run folder (best-effort).
+        try:
+            from hotelling.viz.rival_graph_map import write_rival_graph_map
+            write_rival_graph_map(
+                output_dir / "rival_graph.html", firms, _graph_obj,
+                title=(
+                    f"Rival graph (k={agent_cfg.get('graph_k', 2)}, "
+                    f"grid={_graph_own_grid}, match={agent_cfg.get('graph_rival_match', 'A')})"
+                ),
+            )
+        except Exception as _map_exc:  # noqa: BLE001
+            _gs_log.warning("Rival-graph map generation failed: %s", _map_exc)
+
     # --- 2. Create environment ---
     env = HotellingMarketEnv(
         city=city,
@@ -376,6 +448,9 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
         hybrid_n_gap=int(agent_cfg.get("hybrid_n_gap", 9)),
         hybrid_gap_lo=float(agent_cfg.get("hybrid_gap_lo", -0.20)),
         hybrid_gap_hi=float(agent_cfg.get("hybrid_gap_hi",  0.20)),
+        graph_rivals=_graph_rivals,
+        graph_k=int(agent_cfg.get("graph_k", 2)),
+        graph_n_rival_bins=int(agent_cfg.get("graph_n_rival_bins", 10)),
     )
 
     import logging as _log_state
@@ -697,6 +772,12 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
         "grid_max": float(grid_max) if grid_max is not None else None,
         "n_comp_bins": int(agent_cfg.get("n_comp_bins", 15)),
         "calvano_k": int(agent_cfg.get("calvano_k", 1)),
+        "graph_k": int(agent_cfg.get("graph_k", 2)),
+        "graph_n_rival_bins": int(agent_cfg.get("graph_n_rival_bins", 10)),
+        "graph_own_grid_type": str(agent_cfg.get("graph_own_grid_type", "G")),
+        "graph_rival_match": str(agent_cfg.get("graph_rival_match", "A")),
+        "graph_candidate_topn": int(agent_cfg.get("graph_candidate_topn", 8)),
+        "graph_min_edge_weight": float(agent_cfg.get("graph_min_edge_weight", 0.0)),
         "hybrid_n_profit": int(agent_cfg.get("hybrid_n_profit", 5)),
         "hybrid_n_gap": int(agent_cfg.get("hybrid_n_gap", 9)),
         "hybrid_gap_lo": float(agent_cfg.get("hybrid_gap_lo", -0.20)),

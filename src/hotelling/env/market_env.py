@@ -525,7 +525,7 @@ class HotellingMarketEnv:
         if self.state_mode != "local_summary":
             return self.get_neighbor_actions_arr()
         pidx = self._current_joint_actions_arr // self.m_effort
-        prices = self.price_grid[pidx].astype(np.float64)
+        prices = self.decode_prices(pidx)
         B = self.n_price_bins
         bins = []
         for set_name, stat in self._ls_channels:

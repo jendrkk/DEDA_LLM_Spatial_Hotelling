@@ -98,23 +98,23 @@ hybrid_gap_hi:  0.20       # upper bound of percentual price-gap range (clamps a
 # is plausible). State size = m * graph_n_rival_bins ^ graph_k.
 graph_states_params:
   # Learning hyperparameters (Calvano 2020 calibration; compatible with two_stage)
-  alpha_lr: 0.15
+  alpha_lr: 0.2
   delta: 0.95
   beta_decay_auto: true
   beta_schedule: two_stage      # overridden by an explicit --beta-schedule flag
   explore_fraction: 0.65
-  epsilon_transition: 0.08
-  epsilon_min: 3.0e-4
+  epsilon_transition: 0.10
+  epsilon_min: 1.0e-5
   beta_decay: 0.9e-6            # single-stage fallback (only used with --beta-schedule single)
   # Structural defaults (overridden by the 5 CLI positionals)
   m: 18                         # int_2: action price bins
   m_effort: 1                   # price-only Calvano baseline
   graph_k: 2                    # int_1: rivals per store (max undirected degree)
-  graph_n_rival_bins: 10        # int_3: rival price bins in the state
+  graph_n_rival_bins: 12        # int_3: rival price bins in the state
   graph_own_grid_type: "G"      # str_1: "CS" (chain-specific) or "G" (global)
   graph_rival_match: "A"        # str_2: "SC" (same chain type) or "A" (any)
   # Grid + graph construction
   auto_price_grid: true
   price_grid_xi: 0.1
-  graph_candidate_topn: 8       # per-store candidate edges considered before b-matching
+  graph_candidate_topn: 12      # per-store candidate edges considered before b-matching # 8.0
   graph_min_edge_weight: 0.0    # drop candidate edges with diversion weight <= this floor

@@ -99,7 +99,15 @@ class SimulationEngine:
             n_steps = step + 1
 
             if self.recorder is not None:
-                for firm in self.env.firms:
+                _rec_pidxs = np.array(
+                    [
+                        self.env._current_joint_actions[str(firm.id)] // self.env.m_effort
+                        for firm in self.env.firms
+                    ],
+                    dtype=np.intp,
+                )
+                _rec_prices = self.env.decode_prices(_rec_pidxs)
+                for i, firm in enumerate(self.env.firms):
                     aid = str(firm.id)
                     joint_idx = self.env._current_joint_actions[aid]
                     p_idx = joint_idx // self.env.m_effort
@@ -108,7 +116,7 @@ class SimulationEngine:
                     self.recorder.record_step(
                         period=step,
                         agent_id=aid,
-                        price=float(self.env.price_grid[p_idx]),
+                        price=float(_rec_prices[i]),
                         effort=float(self.env.effort_grid[e_idx]),
                         demand=step_info.get("demand", float("nan")),
                         profit=float(rewards.get(aid, float("nan"))),

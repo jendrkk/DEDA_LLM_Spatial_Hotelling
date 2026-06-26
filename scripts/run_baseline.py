@@ -202,21 +202,33 @@ def print_summary(result: dict) -> None:
         print(f"  Q-table init:       {qi}")
     print(f"  Elapsed:            {result.get('elapsed_s', 0):.1f} s")
     print()
-    print(f"  Δ (Calvano index):  {result.get('delta', float('nan')):.4f}")
-    print(f"    (Δ≈0 = competitive, Δ≈1 = monopoly, Δ>1 = super-monopoly)")
-    print()
+    # ── Calvano Δ table: price (analogue) + profit (canonical) ──────────────
+    _dp  = result.get("deltas_by_chain") or {}
+    _dpi = result.get("deltas_profit_by_chain") or {}
 
-    deltas_by_chain = result.get("deltas_by_chain")
-    if deltas_by_chain:
-        parts = []
-        for key in ("global", "discount", "standard", "bio"):
-            val = deltas_by_chain.get(key)
-            if val is not None and val == val:  # skip NaN
-                parts.append(f"{key}={val:.4f}")
-        if parts:
-            print("  Chain-specific Calvano Δ:")
-            print(f"    {' / '.join(parts)}")
-            print()
+    def _fv(v) -> str:
+        """Format a delta value; 'n/a' when None or NaN."""
+        return f"{v:.4f}" if (v is not None and v == v) else "  n/a"
+
+    print("  Calvano Δ  (Δ≈0 = Nash, Δ≈1 = monopoly; profit Δ is canonical)")
+    print(f"  {'':13s}{'global':>8}  {'discount':>8}  {'standard':>8}  {'bio':>7}")
+    print(
+        f"  {'Δ price':13s}"
+        f"{_fv(_dp.get('global')):>8}  "
+        f"{_fv(_dp.get('discount')):>8}  "
+        f"{_fv(_dp.get('standard')):>8}  "
+        f"{_fv(_dp.get('bio')):>7}"
+        f"   ← price analogue"
+    )
+    print(
+        f"  {'Δ profit':13s}"
+        f"{_fv(_dpi.get('global')):>8}  "
+        f"{_fv(_dpi.get('discount')):>8}  "
+        f"{_fv(_dpi.get('standard')):>8}  "
+        f"{_fv(_dpi.get('bio')):>7}"
+        f"   ← canonical (Calvano 2020 eq. 9)"
+    )
+    print()
 
     chain_price_table = result.get("chain_price_table")
     if chain_price_table:
@@ -792,14 +804,20 @@ def main() -> None:
     print()
 
     # --- Sanity check hint ---
-    delta = result.get("delta", float("nan"))
-    if 0.6 <= delta <= 0.95:
-        print("  ✓ Δ is in the Calvano (2020) expected range [0.7, 0.85].")
-    elif delta < 0.3:
-        print("  ✗ Δ is very low. Check: transport_cost, price grid range,")
+    # Sanity check uses the canonical profit Δ; falls back to price Δ / legacy
+    # `delta` key if profit Δ is unavailable (e.g. dense_distances=False run).
+    _dpi_global = (
+        (result.get("deltas_profit_by_chain") or {}).get("global")
+        or result.get("delta", float("nan"))
+    )
+    _delta_check = _dpi_global if (_dpi_global is not None and _dpi_global == _dpi_global) else float("nan")
+    if 0.6 <= _delta_check <= 0.95:
+        print("  ✓ Δ profit is in the Calvano (2020) expected range [0.7, 0.85].")
+    elif _delta_check < 0.3:
+        print("  ✗ Δ profit is very low. Check: transport_cost, price grid range,")
         print("    and whether Bertrand-Nash benchmark converged.")
-    elif delta > 1.1:
-        print("  ✗ Δ > 1. Prices above monopoly level; check price grid max.")
+    elif _delta_check > 1.1:
+        print("  ✗ Δ profit > 1. Supra-monopoly profits; check price grid max.")
     print()
 
 

@@ -97,6 +97,44 @@ def _gather_rival_price_bins(prices, rivals, edges, B):
     return out
 
 
+@nb.njit(cache=True)
+def _gather_rival_price_bins_per_store(prices, rivals, per_store_edges, B):
+    """Bin rivals' EUR prices using per-observing-store bin edges (CS + SC mode).
+
+    Identical logic to _gather_rival_price_bins but each observing store j uses
+    its own bin-edge row per_store_edges[j] instead of a shared global axis.
+    This ensures all B bins are reachable when rivals share the same chain-type
+    price range as the observer (guaranteed by MATCH=SC + GRID=CS).
+
+    prices           : (N,) float64  current EUR price of every store
+    rivals           : (N, k) int64  rival store indices, -1 = absent
+    per_store_edges  : (N, B+1) float64  per-observing-store linspace edge arrays
+    B                : int  number of rival price bins
+    Returns (N, k) int64 in [0, B-1]; absent (-1) rivals → neutral bin B//2.
+    """
+    N, k = rivals.shape
+    out = np.empty((N, k), dtype=np.int64)
+    mid = B // 2
+    n_edges = per_store_edges.shape[1]  # = B + 1
+    for j in range(N):
+        for r in range(k):
+            rv = rivals[j, r]
+            if rv < 0:
+                out[j, r] = mid
+            else:
+                v = prices[rv]
+                b = 0
+                for e in range(1, n_edges):
+                    if v >= per_store_edges[j, e]:
+                        b = e
+                    else:
+                        break
+                if b >= B:
+                    b = B - 1
+                out[j, r] = b
+    return out
+
+
 class HotellingMarketEnv:
     """PettingZoo-compatible Hotelling market environment.
 
@@ -141,6 +179,7 @@ class HotellingMarketEnv:
         graph_rivals: "np.ndarray | None" = None,
         graph_k: int = 2,
         graph_n_rival_bins: int = 10,
+        graph_rival_match: str = "A",
     ) -> None:
         self.city = city
         self.firms = firms
@@ -348,31 +387,68 @@ class HotellingMarketEnv:
         # ── graph_states: reciprocal rival observation graph ─────────────────────────
         # graph_rivals (N, graph_k) int64, -1 padded — supplied by the runner after it
         # builds the graph at Bertrand-Nash (hotelling.env.rival_graph). Rival prices are
-        # re-projected onto a common EUR axis of graph_n_rival_bins bins so cross-type
-        # rivals (different action grids) are comparable.  state_size = m * B^k.
+        # re-projected onto a bin axis of graph_n_rival_bins bins. When graph_rival_match
+        # is "SC" (same-chain-type) and chain-specific grids are active (GRID=CS), each
+        # store uses its own chain-type price range as the rival axis so all B bins are
+        # reachable (no dead bins from cross-type price bleeding). Otherwise a single
+        # global union axis is used — correct for MATCH=A (original behaviour).
+        # state_size = m * B^k  (unchanged in both cases).
         self.graph_k = int(graph_k)
         self.graph_n_rival_bins = int(graph_n_rival_bins)
+        self.graph_rival_match = str(graph_rival_match).upper()
         self.graph_rivals = (
             np.ascontiguousarray(graph_rivals, dtype=np.int64)
             if graph_rivals is not None
             else None
         )
-        self._graph_state_bin_edges = None
+        self._graph_state_bin_edges: np.ndarray | None = None
+        self._graph_rival_edges_per_store: np.ndarray | None = None
         if self.state_mode == "graph_states":
-            if self._store_price_grids is not None:
+            # Rival bin-edge strategy:
+            #   CS + SC → per-chain-type edges: each store's rival axis spans
+            #             [ct_lo_τ, ct_hi_τ] so all B bins are reachable.
+            #   G+A / G+SC / CS+A → single global union axis (original behaviour).
+            _use_per_store_bins = (
+                self._chain_type_grids is not None
+                and self.graph_rival_match == "SC"
+            )
+            if _use_per_store_bins:
+                _N_f = len(firms)
+                self._graph_rival_edges_per_store = np.empty(
+                    (_N_f, self.graph_n_rival_bins + 1), dtype=np.float64
+                )
+                for _j, _f in enumerate(firms):
+                    _ct = getattr(_f, "chain_type", "standard")
+                    _ct_grid = (
+                        self._chain_type_grids[_ct]
+                        if _ct in self._chain_type_grids
+                        else self.price_grid
+                    )
+                    self._graph_rival_edges_per_store[_j] = np.linspace(
+                        float(_ct_grid.min()), float(_ct_grid.max()),
+                        self.graph_n_rival_bins + 1,
+                    )
                 _glo = float(self._store_price_grids.min())
                 _ghi = float(self._store_price_grids.max())
             else:
-                _glo = float(self.price_grid.min())
-                _ghi = float(self.price_grid.max())
+                if self._store_price_grids is not None:
+                    _glo = float(self._store_price_grids.min())
+                    _ghi = float(self._store_price_grids.max())
+                else:
+                    _glo = float(self.price_grid.min())
+                    _ghi = float(self.price_grid.max())
+            # Global bin edges always built — used as fallback for MATCH!=SC and
+            # retained for external tooling / metadata regardless of mode.
             self._graph_state_bin_edges = np.linspace(
                 _glo, _ghi, self.graph_n_rival_bins + 1
             )
             logger.info(
-                "graph_states: m=%d × B=%d^(k=%d) = %d states | rival EUR bins [%.2f, %.2f] | "
-                "graph_rivals=%s",
+                "graph_states: m=%d × B=%d^(k=%d) = %d states | "
+                "rival axis=%s [%.2f, %.2f] | graph_rivals=%s",
                 self.m, self.graph_n_rival_bins, self.graph_k,
-                self.m * self.graph_n_rival_bins ** self.graph_k, _glo, _ghi,
+                self.m * self.graph_n_rival_bins ** self.graph_k,
+                "per-chain-type" if _use_per_store_bins else "global-union",
+                _glo, _ghi,
                 "set" if self.graph_rivals is not None else "MISSING(None)",
             )
 
@@ -640,9 +716,15 @@ class HotellingMarketEnv:
         B = self.graph_n_rival_bins
         k = self.graph_k
         rivals = np.ascontiguousarray(self.graph_rivals[:, :k], dtype=np.int64)
-        b_rivals = _gather_rival_price_bins(
-            prices, rivals, self._graph_state_bin_edges, B
-        )  # (N, k) int64
+        b_rivals = (
+            _gather_rival_price_bins_per_store(
+                prices, rivals, self._graph_rival_edges_per_store, B,
+            )
+            if self._graph_rival_edges_per_store is not None
+            else _gather_rival_price_bins(
+                prices, rivals, self._graph_state_bin_edges, B,
+            )
+        )  # (N, k) int64; per-chain-type edges when graph_rival_match=="SC" and GRID=CS
         state = b_own.copy()
         for r in range(k):
             state = state * B + b_rivals[:, r]

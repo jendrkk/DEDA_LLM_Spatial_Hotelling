@@ -1,0 +1,159 @@
+# =============================================================================
+# Run-report visualisation pipeline — master configuration
+# =============================================================================
+# Consumed by  scripts/visualize_run.py  /  hotelling.viz.run_report.run_pipeline.
+# Every key here is optional; omitted keys fall back to the dataclass defaults in
+# src/hotelling/viz/run_report/config.py.  Pass --config <path> to override.
+#
+# Usage:
+#   conda activate py314
+#   python scripts/visualize_run.py results/runs/20260625_211444_811193ee
+#   python scripts/visualize_run.py strategic_runs/runs/<id> --config configs/viz/run_report.yaml
+# =============================================================================
+
+# ── Global toggles ───────────────────────────────────────────────────────────
+global:
+  transparent: true          # GLOBAL transparent-background switch for EVERY figure/animation.
+                             #   Static figures  -> savefig(transparent=True), facecolor 'none'.
+                             #   Animations       -> rendered to RGBA and assembled as WebP/APNG
+                             #                        (true alpha). GIF only has 1-bit transparency,
+                             #                        so when transparent=true the animation format
+                             #                        auto-upgrades to 'webp' (see animation.format).
+  use_latex: true            # all text rendered with LaTeX (matches report/plot_calibration.py).
+                             #   Falls back to mathtext automatically if a LaTeX toolchain is absent.
+  dpi: 200
+  output_subdir: figures/run_report   # written under <run_dir>/<output_subdir>/
+  overwrite: true
+
+# ── Which artefacts to produce (toggle each independently) ───────────────────
+produce:
+  price_trajectory: true            # 1
+  profit_trajectory: true           # 2
+  delta_trajectory: true            # 3
+  store_price_animation: true       # 4
+  store_profit_animation: true      # 5
+  cell_price_delta_animation: true  # 6  (4 gifs: D/S/B/all)
+  cell_profit_delta_animation: true # 7  (4 gifs: D/S/B/all)
+  local_hhi_animation: true         # 8
+  graph_loop_deltas: true           # 9  (only when state_mode == graph_states)
+  # extras
+  delta_over_time_extra: true       # global+per-chain price & profit Delta(t) (smoothed)
+  market_shares_trajectory: true    # chain-type inside-share over time
+  welfare_trajectory: true          # consumer-surplus logsum over time (dense path only)
+  global_hhi_trajectory: true       # market-wide HHI over time
+  price_dispersion_trajectory: true # cross-store price std over time
+  final_price_distribution: true    # histogram of final per-store prices vs Nash/mono
+  envelope_plots: true              # strategic runs only: CEO envelope bands / Delta / epsilon
+
+# ── Static colours (per chain type) — used everywhere a fixed colour is needed
+colours:
+  discount: royalblue
+  standard: firebrick
+  bio: forestgreen
+  global: black
+  nash: "#444444"
+  mono: "#b22222"
+
+# ── Per-chain-type colormaps for price/profit-coloured markers (#4,#5) ───────
+chain_cmaps:
+  discount: winter
+  standard: autumn
+  bio: summer
+
+# ── Frame sampling for all animations ────────────────────────────────────────
+frames:
+  n_frames: 60               # evenly spaced DenseLog rows; capped at rows_written.
+  mode: even                 # 'even' (n_frames evenly spaced) or 'all' (every recorded row).
+  max_frames: 240            # hard cap for mode: all.
+
+# ── Animation encoding ───────────────────────────────────────────────────────
+animation:
+  fps: 8
+  format: webp               # webp | apng | gif | mp4.
+                             #   webp/apng preserve full alpha (recommended with transparent: true).
+                             #   gif has only 1-bit transparency; mp4 has none.
+                             #   When global.transparent: true and format is gif/mp4, it is
+                             #   auto-upgraded to transparent_format below.
+  transparent_format: webp   # format substituted when transparency is required but `format`
+                             #   cannot carry alpha.
+  loop: 0                    # 0 = loop forever.
+  lossless_webp: true
+
+# ── Trajectory plots (#1,#2,#3 and time-series extras) ───────────────────────
+trajectory:
+  ma_window_steps: 1000      # moving-average window in SIMULATION STEPS (converted to recorded
+                             #   points using the dense-log stride). Set 0 to disable the MA.
+  ma_kind: trailing          # trailing | centered
+  raw_alpha: 0.25            # opacity of the raw (un-smoothed) trajectory under the MA line.
+  show_benchmarks: true      # draw p^N_tau / p^M_tau (and pi^N_tau / pi^M_tau) reference levels.
+  max_lean_points: 4000      # lean runs: cap reconstructed rows for profit trajectories (subsampled).
+  delta_clip: [-0.5, 1.5]    # clip range for Calvano Delta(t) (matches runner.py).
+  figsize: [11.0, 5.2]
+
+# ── Store-marker animations (#4 price, #5 profit) ────────────────────────────
+store_markers:
+  marker_size: 70            # STATIC marker area (pt^2) — does NOT change across frames.
+  edge_width: 0.4
+  edge_colour: black
+  basemap_alpha: 1.0
+  # Per-chain colour-scale interval (the fixed cmap span over all timestamps).
+  #   price:
+  #     action_grid -> [max(0, p^N_tau - xi*span_tau), p^M_tau + xi*span_tau]   (mirrors the
+  #                    chain-specific Q-learning action grid; works for global-grid runs too).
+  #     learned     -> [min, max] of observed learned prices for that chain type across frames.
+  price_scale_mode: action_grid
+  price_scale_xi: null       # null -> use the run's agents.price_grid_xi (default 0.1).
+  price_scale_anchor: chain_mean   # chain_mean -> p^N_tau/p^M_tau are the per-chain-type means
+                                   # store_minmax -> per-store min(p^N)/max(p^M) within the chain type.
+  #   profit (per-store gross variable profit (p-c)*D):
+  #     bench   -> [min over tau stores of pi^N_j, max over tau stores of pi^M_j] (+margin).
+  #     learned -> [min,max] of observed learned per-store profit for that chain type.
+  profit_scale_mode: bench
+  profit_scale_margin: 0.05  # fractional padding added to each side of the profit interval.
+
+# ── Cell choropleth animations (#6 price-Delta, #7 profit-Delta, #8 HHI) ─────
+cells:
+  alpha: 0.5                 # choropleth opacity over the OSM basemap (user spec).
+  delta_cmap: RdYlGn_r       # [0,1] collusion colourmap (green=competitive 0, red=collusive 1).
+  delta_vmin: 0.0
+  delta_vmax: 1.0
+  min_cell_demand: 1.0e-6    # cells whose served demand for the chain type is below this are masked.
+  variants: [discount, standard, bio, all]   # which of the 4 maps to render for #6 and #7.
+
+hhi:
+  radius_m: 500.0            # local-market radius (metres, EPSG:3035) around each cell.
+  group_by: chain            # 'chain' (brand-level, ~15) or 'chain_type' (D/S/B).
+  include_outside: false     # include the outside option as a competitor when forming shares.
+  normalised: true           # HHI in [0,1] (sum of squared shares) vs [0,10000].
+  cmap: magma
+  vmin: null                 # null -> 0.0 (normalised) / 0 (raw)
+  vmax: null                 # null -> 1.0 (normalised) / 10000 (raw)
+
+# ── Graph-state loop deltas (#9) ─────────────────────────────────────────────
+graph_loops:
+  which_delta: both          # price | profit | both.
+  loop_cmap: RdYlGn_r        # [0,1] colourmap for per-loop Delta.
+  draw_candidate_edges: false
+  annotate: true             # print the Delta value at each loop centroid.
+  min_loop_size: 3           # smallest cycle length to treat as a 'loop'.
+  per_loop_timeseries: true  # also emit a small-multiples Delta(t) panel per loop.
+
+# ── Per-store windowed learned state (used by #9 and summaries) ──────────────
+window:
+  tail_fraction: 0.1         # average the last 10% of recorded rows to define the converged
+                             #   per-store learned prices/profits. Overridden by tail_steps if set.
+  tail_steps: null           # absolute number of trailing simulation steps to average (overrides
+                             #   tail_fraction when not null).
+
+# ── Basemap ──────────────────────────────────────────────────────────────────
+basemap:
+  provider: OpenStreetMap.Mapnik   # contextily provider path.
+  zoom: auto
+
+# ── Legends (always OUTSIDE the axes so they never cover data) ───────────────
+legend:
+  outside: true
+  loc: center left
+  bbox: [1.02, 0.5]          # anchor just outside the right edge.
+  fontsize: 8
+  title_fontsize: 9

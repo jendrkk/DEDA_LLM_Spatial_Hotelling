@@ -451,6 +451,7 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
         graph_rivals=_graph_rivals,
         graph_k=int(agent_cfg.get("graph_k", 2)),
         graph_n_rival_bins=int(agent_cfg.get("graph_n_rival_bins", 10)),
+        graph_rival_match=str(agent_cfg.get("graph_rival_match", "A")),
     )
 
     import logging as _log_state
@@ -661,6 +662,7 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
     chain_price_table: Dict[str, Any] = {}
     realized_outside_share = float("nan")
     realized_chain_shares: Dict[str, float] = {}
+    deltas_profit_by_chain: Dict[str, float] = {}
 
     if p_nash_arr is not None and p_mono_arr is not None:
         N = len(firms)
@@ -732,10 +734,65 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
             realized_outside_share = float("nan")
             realized_chain_shares = {}
 
+        # ── Gross profit Δ ────────────────────────────────────────────────
+        #    Canonical Calvano Δ on profits: (Σπ* − Σπᴺ) / (Σπᴹ − Σπᴺ)
+        #
+        #    Phase-0 / price-only mode: all efforts are frozen at zero for
+        #    all three benchmark evaluations so the footing is identical.
+        #    Demands at p_learned, p_nash, and p_mono are recomputed
+        #    analytically via market_clearing (zero effort), avoiding any
+        #    dependence on per-period demand noise in the simulation output.
+        #
+        #    In --with-effort mode this remains a gross price-driven index
+        #    (effort=0 for all three); a joint (price, effort) cartel
+        #    benchmark is a documented follow-up.
+        try:
+            from hotelling.core.market import market_clearing as _mc_prd
+            import logging as _log_prd
+            _prd_log = _log_prd.getLogger(__name__)
+
+            _costs_prd = np.array([f.marginal_cost for f in firms], dtype=np.float64)
+            _e0_prd = np.zeros(N, dtype=np.float64)
+
+            if not np.any(np.isnan(p_learned)):
+                _d_lrn, _ = _mc_prd(p_learned,    _e0_prd, city, tc)
+                _d_nsh, _ = _mc_prd(p_nash_arr,   _e0_prd, city, tc)
+                _d_mno, _ = _mc_prd(p_mono_arr,   _e0_prd, city, tc)
+
+                _pi_lrn = (p_learned    - _costs_prd) * _d_lrn
+                _pi_nsh = (p_nash_arr   - _costs_prd) * _d_nsh
+                _pi_mno = (p_mono_arr   - _costs_prd) * _d_mno
+
+                def _dpi_baseline(mask: np.ndarray) -> float:
+                    if mask.sum() == 0:
+                        return float("nan")
+                    rn = float(np.nansum(_pi_lrn[mask]))
+                    nn = float(_pi_nsh[mask].sum())
+                    mn = float(_pi_mno[mask].sum())
+                    d = mn - nn
+                    if abs(d) < 1e-9:
+                        return float("nan")
+                    return float(np.clip((rn - nn) / d, -0.5, 1.5))
+
+                deltas_profit_by_chain = {
+                    "global":   _dpi_baseline(np.ones(N, dtype=bool)),
+                    "discount": _dpi_baseline(chain_types == "discount"),
+                    "standard": _dpi_baseline(chain_types == "standard"),
+                    "bio":      _dpi_baseline(chain_types == "bio"),
+                }
+            else:
+                _prd_log.warning("Baseline profit-Δ skipped: NaN in learned prices.")
+        except Exception as _e_prd:
+            import logging as _log_prd_exc
+            _log_prd_exc.getLogger(__name__).warning(
+                "Baseline profit-Δ computation failed: %s", _e_prd
+            )
+
     phase0_result["deltas_by_chain"] = deltas_by_chain
     phase0_result["chain_price_table"] = chain_price_table
     phase0_result["realized_outside_share"] = realized_outside_share
     phase0_result["realized_chain_shares"] = realized_chain_shares
+    phase0_result["deltas_profit_by_chain"] = deltas_profit_by_chain
 
     # Save metadata.json
     metadata = {
@@ -776,6 +833,14 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
         "graph_n_rival_bins": int(agent_cfg.get("graph_n_rival_bins", 10)),
         "graph_own_grid_type": str(agent_cfg.get("graph_own_grid_type", "G")),
         "graph_rival_match": str(agent_cfg.get("graph_rival_match", "A")),
+        "graph_rival_bin_axis": (
+            "per_chain_type"
+            if (
+                bool(agent_cfg.get("chain_specific_grid", False))
+                and str(agent_cfg.get("graph_rival_match", "A")).upper() == "SC"
+            )
+            else "global_union"
+        ),
         "graph_candidate_topn": int(agent_cfg.get("graph_candidate_topn", 8)),
         "graph_min_edge_weight": float(agent_cfg.get("graph_min_edge_weight", 0.0)),
         "hybrid_n_profit": int(agent_cfg.get("hybrid_n_profit", 5)),
@@ -798,6 +863,8 @@ def run_single_session(config: Dict[str, Any]) -> Dict[str, Any]:
         "chain_price_table": chain_price_table,
         "realized_outside_share": realized_outside_share,
         "realized_chain_shares": realized_chain_shares,
+        "deltas_profit_by_chain": deltas_profit_by_chain,
+        "profit_delta_is_gross": True,
     }
     with (output_dir / "metadata.json").open("w") as _f:
         json.dump(metadata, _f, indent=2)

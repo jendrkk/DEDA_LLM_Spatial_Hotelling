@@ -184,12 +184,32 @@ def main() -> None:
     if result.get("ceo_all_failed"):
         print("  *** WARNING: ALL CEO CALLS FAILED — Δ BELOW IS INVALID ***")
         print("  *** Inspect <run>/llm_calls.jsonl for FAILED records.       ***")
-    d = result.get("deltas_by_chain", {})
-    print(f"  Δ global:           {d.get('global')}")
-    print(f"  Δ D/S/B:            {d.get('discount')} / {d.get('standard')} / {d.get('bio')}")
-    dpc = result.get("deltas_profit_by_chain", {})
-    print(f"  Δπ global (gross):  {dpc.get('global')}")
-    print(f"  Δπ D/S/B (gross):   {dpc.get('discount')} / {dpc.get('standard')} / {dpc.get('bio')}")
+    # ── Calvano Δ table: price (analogue) + profit (canonical) ──────────────
+    _dp  = result.get("deltas_by_chain") or {}
+    _dpi = result.get("deltas_profit_by_chain") or {}
+
+    def _fv(v) -> str:
+        """Format a delta value; 'n/a' when None or NaN."""
+        return f"{v:.4f}" if (v is not None and v == v) else "  n/a"
+
+    print("  Calvano Δ  (Δ≈0 = Nash, Δ≈1 = monopoly; profit Δ is canonical)")
+    print(f"  {'':13s}{'global':>8}  {'discount':>8}  {'standard':>8}  {'bio':>7}")
+    print(
+        f"  {'Δ price':13s}"
+        f"{_fv(_dp.get('global')):>8}  "
+        f"{_fv(_dp.get('discount')):>8}  "
+        f"{_fv(_dp.get('standard')):>8}  "
+        f"{_fv(_dp.get('bio')):>7}"
+        f"   ← price analogue"
+    )
+    print(
+        f"  {'Δ profit':13s}"
+        f"{_fv(_dpi.get('global')):>8}  "
+        f"{_fv(_dpi.get('discount')):>8}  "
+        f"{_fv(_dpi.get('standard')):>8}  "
+        f"{_fv(_dpi.get('bio')):>7}"
+        f"   ← canonical (Calvano 2020 eq. 9)"
+    )
     print(f"  Run folder:         {result.get('output_dir')}")
     print("=" * 60 + "\n")
 

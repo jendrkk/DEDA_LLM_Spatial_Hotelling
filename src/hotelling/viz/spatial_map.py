@@ -549,10 +549,28 @@ def prices_efforts_at(
     ``price_idx`` and ``effort_idx`` are stored as ``int8`` indices into
     ``price_grid`` and ``effort_grid`` respectively.  The int8 encoding uses
     the range ``[0, m-1]`` where *m* is the grid size.
+
+    Chain-specific grids
+    --------------------
+    When the run used ``--chs-grid``, ``dense_log.store_price_grids`` is an
+    ``(N, m)`` array giving each store its own price grid, and ``price_idx[t]``
+    must be decoded per store: ``prices_t[j] = store_price_grids[j, price_idx[t, j]]``.
+    For global-grid runs ``store_price_grids`` is ``None`` and the shared
+    ``price_grid`` is used (unchanged behaviour). Effort grids are never
+    chain-specific, so efforts always decode through ``effort_grid``.
     """
     pidx = dense_log.price_idx[t].astype(np.int64)
     eidx = dense_log.effort_idx[t].astype(np.int64)
-    prices_t = dense_log.price_grid[pidx].astype(np.float64)
+
+    store_price_grids = getattr(dense_log, "store_price_grids", None)
+    if store_price_grids is not None:
+        # Per-store decode: row j of store_price_grids holds store j's grid.
+        n_stores = pidx.shape[0]
+        prices_t = store_price_grids[np.arange(n_stores), pidx].astype(np.float64)
+    else:
+        # Global grid shared by all stores (unchanged path).
+        prices_t = dense_log.price_grid[pidx].astype(np.float64)
+
     efforts_t = dense_log.effort_grid[eidx].astype(np.float64)
     return prices_t, efforts_t
 

@@ -21,5 +21,5 @@ no_ceo: false         # true => matched control (Phase 2 == extended burn-in)
 # Dense per-step log (enables the spatial animation pipeline on strategic runs).
 dense_stride: 1            # record every step (raise for very long T_game)
 dense_tail: null           # also always record the last N steps (null = disabled)
-store_demand_profit: true  # write demand/profit arrays (needed for demand-sized markers)
+store_demand_profit: false  # write demand/profit arrays (needed for demand-sized markers)
 float_dtype: float32

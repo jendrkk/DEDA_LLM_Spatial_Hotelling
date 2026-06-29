@@ -107,10 +107,22 @@ class AnalysisCfg:
 @dataclass
 class AnimationCfg:
     fps: int = 8
-    format: str = "webp"        # webp | apng | gif | mp4
-    transparent_format: str = "webp"
+    format: str = "mov"              # mov | webp | apng | gif | mp4
+    transparent_format: str = "mov"  # fallback when transparent=True and format lacks alpha
     loop: int = 0
     lossless_webp: bool = True
+    # ── .mov / ffmpeg settings ────────────────────────────────────────────────
+    anim_dpi: Optional[int] = None   # None → use global_.dpi. Set 100–120 for .mov to
+                                     # keep file sizes manageable. 100 DPI → 1100×1000 px
+                                     # for an 11×10 figure → ~35–45 MB / 60 ProRes frames.
+    mov_codec: str = "prores_ks"     # QuickTime codec: prores_ks (ProRes 4444, alpha,
+                                     # Keynote-native) | png (lossless, larger) | qtrle.
+    mov_bits_per_mb: int = 8000      # prores_ks target bits per 16×16 macroblock.
+                                     # 8000 = standard ProRes 4444 quality.
+                                     # Reduce to 2000–4000 for smaller files at imperceptible
+                                     # quality loss on screen content (choropleths, scatter).
+    ffmpeg_path: str = "ffmpeg"      # path to ffmpeg binary; can be absolute,
+                                     # e.g. /opt/homebrew/bin/ffmpeg (brew install ffmpeg).
 
 
 @dataclass
@@ -239,13 +251,29 @@ class VizConfig:
     def animation_format(self) -> str:
         """Effective animation container, honouring the global transparency switch.
 
-        GIF carries only 1-bit transparency and MP4 none; when a transparent
+        GIF carries only 1-bit transparency, MP4 none; when a transparent
         background is requested these are upgraded to ``transparent_format``.
+        MOV (ProRes 4444 via prores_ks) carries true per-pixel RGBA alpha
+        natively and is never auto-upgraded.
         """
         fmt = self.animation.format.lower()
         if self.global_.transparent and fmt in ("gif", "mp4"):
             return self.animation.transparent_format.lower()
         return fmt
+
+    def animation_dpi(self) -> int:
+        """DPI for rasterising animation frames.
+
+        Returns ``animation.anim_dpi`` when set, otherwise falls back to
+        ``global_.dpi``. Decoupling animation DPI from static-figure DPI
+        lets .mov files stay under the 50 MB / clip budget while PNG/PDF
+        exports remain at full resolution (global_.dpi = 200 by default).
+
+        Typical values: 100–120 for .mov, None (→ global_.dpi) for webp/apng.
+        """
+        if self.animation.anim_dpi is not None:
+            return int(self.animation.anim_dpi)
+        return int(self.global_.dpi)
 
 
 # ── Deep-merge machinery ─────────────────────────────────────────────────────

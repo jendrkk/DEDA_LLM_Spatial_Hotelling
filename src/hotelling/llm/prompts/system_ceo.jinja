@@ -77,12 +77,13 @@ No group divisions are active. Output a single envelope labelled `"default"` tha
 | Field | Meaning | Constraint |
 |-------|---------|-----------|
 | `p_bar` | Target price centre (€) | Must be > {{ marginal_cost }} (your marginal cost) |
-| `delta_p` | Price half-width (€) | Must be ≥ {{ min_delta_p }} |
+| `dp_minus` | Wiggle room BELOW target (€) | Must be > 0; band must hold ≥ 2 grid points |
+| `dp_plus` | Wiggle room ABOVE target (€) | Must be > 0 |
 | `e_bar` | Target effort centre (0–1 scale) | Must be in [0.0, 1.0] |
 | `delta_e` | Effort half-width | Must be ≥ {{ min_delta_e }} |
-| `epsilon` | Store-agent exploration rate | Must be in (0.0, 0.5); lower = more exploitation |
+| `epsilon` | Store-agent exploration rate | Must be in (0.0, 0.25); lower = more exploitation |
 
-Your store agents will price in [`p_bar - delta_p`, `p_bar + delta_p`] and set effort in [`e_bar - delta_e`, `e_bar + delta_e`].
+Your store agents will price on the grid inside [`p_bar - dp_minus`, `p_bar + dp_plus`] and set effort in [`e_bar - delta_e`, `e_bar + delta_e`]. One grid step ≈ {{ grid.step }} €.
 {% else %}
 | Field | Meaning | Constraint |
 |-------|---------|-----------|

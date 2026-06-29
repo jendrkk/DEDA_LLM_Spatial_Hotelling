@@ -1478,7 +1478,10 @@ def run_strategic_session(config: dict) -> dict:
         float_dtype=str(phase2_cfg.get("float_dtype", "float32")),
         dense_stride=int(phase2_cfg.get("dense_stride", 1)),
         dense_tail=(int(phase2_cfg["dense_tail"]) if phase2_cfg.get("dense_tail") is not None else None),
-        store_effort=bool(config.get("with_effort", False)) and bool(phase2_cfg.get("store_demand_profit", True)),
+        store_effort=bool(phase2_cfg.get(
+            "store_effort",
+            bool(config.get("with_effort", False)) and bool(phase2_cfg.get("store_demand_profit", True)),
+        )),
     )
     phase2 = Phase2StrategicGame(phase2_cfg)
     res = phase2.run(

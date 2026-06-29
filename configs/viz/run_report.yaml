@@ -75,22 +75,45 @@ analysis:
 
 # ── Frame sampling for all animations ────────────────────────────────────────
 frames:
-  n_frames: 216              # evenly spaced DenseLog rows; capped at rows_written.
+  n_frames: 200              # evenly spaced DenseLog rows to animate.
+                             # 60 frames @ 18 fps = 3.3 s clip.
+                             # ProRes 4444 @ anim_dpi=100: ~35–45 MB per animation (< 50 MB).
+                             # Increase to 120 for richer animations (~70–90 MB, > budget).
   mode: even                 # 'even' (n_frames evenly spaced) or 'all' (every recorded row).
-  max_frames: 216            # hard cap for mode: all.
+  max_frames: 200            # hard cap for mode: all.
 
 # ── Animation encoding ───────────────────────────────────────────────────────
 animation:
-  fps: 18
-  format: webp               # webp | apng | gif | mp4.
-                             #   webp/apng preserve full alpha (recommended with transparent: true).
+  fps: 10
+  format: mov                # mov | webp | apng | gif | mp4.
+                             #   mov  = ProRes 4444 in QuickTime container. True RGBA alpha,
+                             #          Keynote-native, constant FPS via container time base.
+                             #          Requires ffmpeg (brew install ffmpeg on macOS).
+                             #   webp = Pillow-muxed; timing is decoder-dependent and may
+                             #          be irregular on macOS. Keynote cannot play it as video.
                              #   gif has only 1-bit transparency; mp4 has none.
-                             #   When global.transparent: true and format is gif/mp4, it is
+                             #   When global.transparent=true and format is gif/mp4, it is
                              #   auto-upgraded to transparent_format below.
-  transparent_format: webp   # format substituted when transparency is required but `format`
-                             #   cannot carry alpha.
-  loop: 0                    # 0 = loop forever.
+  transparent_format: mov    # auto-upgrade target when format=gif/mp4 and transparent=true.
+                             # mov carries full RGBA alpha natively; never auto-upgraded itself.
+  loop: 0                    # 0 = loop forever (irrelevant for .mov, which plays once in Keynote).
   lossless_webp: false
+  # ── .mov / ffmpeg settings (ignored for webp / apng / gif) ──────────────
+  anim_dpi: 100              # DPI for animation frame rasterisation, independent of global.dpi.
+                             # 100 DPI → 1100×1000 px for an 11×10 figure.
+                             # 60 frames × ProRes 4444 @ 100 DPI ≈ 35–45 MB per animation.
+                             # Increase to 120–150 for crisper output (file size grows linearly).
+                             # null → uses global.dpi (200) — likely exceeds 50 MB target.
+  mov_codec: prores_ks       # QuickTime codec: prores_ks (ProRes 4444, alpha, Keynote-native)
+                             #   | png (lossless RGBA, larger files)
+                             #   | qtrle (QuickTime RLE, lossless RGBA).
+                             # prores_ks recommended: best Keynote compatibility + smallest
+                             # files among lossless-alpha options for presentation content.
+  mov_bits_per_mb: 6000      # prores_ks quality per 16×16 macroblock.
+                             # 8000 = standard ProRes 4444 (Apple reference quality).
+                             # 2000–4000 → ~30–50% smaller files, imperceptible on screen content.
+  ffmpeg_path: ffmpeg        # path to ffmpeg binary; use absolute path if brew ffmpeg is not
+                             # in conda PATH, e.g. /opt/homebrew/bin/ffmpeg.
 
 # ── Trajectory plots (#1,#2,#3 and time-series extras) ───────────────────────
 trajectory:

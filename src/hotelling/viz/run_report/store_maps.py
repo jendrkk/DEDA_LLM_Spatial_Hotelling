@@ -132,13 +132,16 @@ def animate_store_metric(bundle, cfg, out_dir: Path, metric: str) -> Path:
             scatters[ct].set_array(vals[fi, bundle.type_masks[ct]])
         step = int(bundle.recorded_steps[int(t)])
         title.set_text(latex_or_plain(rf"Store {metric}s --- step $t={step}$", f"Store {metric}s — step t={step}"))
-        frames.append(_aio.fig_to_rgba(fig, cfg.global_.dpi, cfg.global_.transparent))
+        frames.append(_aio.fig_to_rgba(fig, cfg.animation_dpi(), cfg.global_.transparent))
     plt.close(fig)
 
     name = "04_store_price_animation" if metric == "price" else "05_store_profit_animation"
     return _aio.save_animation(
         frames, Path(out_dir) / name, cfg.animation.fps, cfg.animation_format(),
         cfg.global_.transparent, cfg.animation.loop, cfg.animation.lossless_webp,
+        mov_codec=cfg.animation.mov_codec,
+        mov_bits_per_mb=cfg.animation.mov_bits_per_mb,
+        ffmpeg_path=cfg.animation.ffmpeg_path,
     )
 
 

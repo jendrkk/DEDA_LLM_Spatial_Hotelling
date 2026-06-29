@@ -137,11 +137,16 @@ def _render_choropleth(bundle, cfg, out_dir, name, frame_vals, cmap_name,
         poly.set_array(np.ma.masked_invalid(frame_vals[fi]))
         step = int(bundle.recorded_steps[int(t)])
         title.set_text(latex_or_plain(rf"{title_prefix} --- step $t={step}$", f"{title_prefix} — step t={step}"))
-        frames.append(_aio.fig_to_rgba(fig, cfg.global_.dpi, cfg.global_.transparent))
+        frames.append(_aio.fig_to_rgba(fig, cfg.animation_dpi(), cfg.global_.transparent))
     plt.close(fig)
-    return _aio.save_animation(frames, Path(out_dir) / name, cfg.animation.fps,
-                               cfg.animation_format(), cfg.global_.transparent,
-                               cfg.animation.loop, cfg.animation.lossless_webp)
+    return _aio.save_animation(
+        frames, Path(out_dir) / name, cfg.animation.fps,
+        cfg.animation_format(), cfg.global_.transparent,
+        cfg.animation.loop, cfg.animation.lossless_webp,
+        mov_codec=cfg.animation.mov_codec,
+        mov_bits_per_mb=cfg.animation.mov_bits_per_mb,
+        ffmpeg_path=cfg.animation.ffmpeg_path,
+    )
 
 
 def render_cell_animations(bundle, cfg, out_dir, want_price, want_profit, want_hhi) -> List[Path]:

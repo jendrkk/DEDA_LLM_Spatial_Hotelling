@@ -44,11 +44,11 @@ This is one epoch of a repeated game. The numbers below summarise the most recen
 ### 2. Your previous envelope decisions{% if with_comm %} and signals{% endif %}
 
 {% if history %}
-| Epoch | p_bar | delta_p |{% if with_effort %} e_bar | delta_e |{% endif %} epsilon |{% if with_comm %} signalled willing | proposed price |{% endif %} Realised profit |
-|-------|-------|---------|{% if with_effort %}-------|---------|{% endif %}---------|{% if with_comm %}-------------------|----------------|{% endif %}----------------|
+| Epoch | p_bar | dp- | dp+ |{% if with_effort %} e_bar | delta_e |{% endif %} epsilon |{% if with_comm %} signalled willing | proposed price |{% endif %} Realised profit |
+|-------|-------|-----|-----|{% if with_effort %}-------|---------|{% endif %}---------|{% if with_comm %}-------------------|----------------|{% endif %}----------------|
 {% for h in history %}
 {% set env = h.envelopes.default if h.envelopes.default is defined else (h.envelopes.values()|list)[0] %}
-| {{ h.epoch }} | {{ "%.3f"|format(env.p_bar) }} | {{ "%.3f"|format(env.delta_p) }} |{% if with_effort %} {{ "%.3f"|format(env.e_bar) }} | {{ "%.3f"|format(env.delta_e) }} |{% endif %} {{ "%.3f"|format(env.epsilon) }} |{% if with_comm %} {{ h.signal.willing if h.signal is defined and h.signal else "—" }} | {{ ("%.2f"|format(h.signal.proposed_tier_price)) if h.signal is defined and h.signal else "—" }} |{% endif %} {{ "%.2f"|format(h.profit_realized) }} € |
+| {{ h.epoch }} | {{ "%.3f"|format(env.p_bar) }} | {{ "%.3f"|format(env.dp_minus if env.dp_minus is defined else env.delta_p) }} | {{ "%.3f"|format(env.dp_plus if env.dp_plus is defined else env.delta_p) }} |{% if with_effort %} {{ "%.3f"|format(env.e_bar) }} | {{ "%.3f"|format(env.delta_e) }} |{% endif %} {{ "%.3f"|format(env.epsilon) }} |{% if with_comm %} {{ h.signal.willing if h.signal is defined and h.signal else "—" }} | {{ ("%.2f"|format(h.signal.proposed_tier_price)) if h.signal is defined and h.signal else "—" }} |{% endif %} {{ "%.2f"|format(h.profit_realized) }} € |
 {% endfor %}
 {% else %}
 No previous epochs recorded (this is the first CEO call).
@@ -89,7 +89,7 @@ High-status consumer share (ring-wide): {{ "%.1f"|format(consumers.high_status_s
 
 - Marginal cost: **{{ marginal_cost }} €** — all `p_bar`{% if with_comm %} and `proposed_tier_price`{% endif %} values must strictly exceed this.
 - Price band: **dp_minus > 0 and dp_plus > 0**, band must hold ≥ 2 grid points (one grid step ≈ {{ grid.step }} €){% if with_effort %}; **delta_e ≥ {{ min_delta_e }}**{% endif %}.
-- Exploration rate: **epsilon ∈ (0.0, 0.5)** per group.
+- Exploration rate: **epsilon ∈ (0.0, 0.25)** per group (it replaces the training schedule; keep it low, ~0.02–0.10).
 
 ---
 

@@ -367,7 +367,9 @@ class Phase2StrategicGame:
                     ceo_history[brand].append({
                         "epoch": epoch,
                         "envelopes": {
-                            k: {"p_bar": g.p_bar, "delta_p": g.delta_p,
+                            k: {"p_bar": g.p_bar,
+                                "dp_minus": g.dp_minus, "dp_plus": g.dp_plus,
+                                "delta_p": g.delta_p,
                                 "e_bar": g.e_bar, "delta_e": g.delta_e,
                                 "epsilon": g.epsilon}
                             for k, g in out.groups.items()
@@ -378,8 +380,10 @@ class Phase2StrategicGame:
                     for k, g in out.groups.items():
                         envelope_log.append({
                             "epoch": epoch, "step": t + 1, "chain": brand, "group": k,
-                            "p_bar": g.p_bar, "delta_p": g.delta_p, "e_bar": g.e_bar,
-                            "delta_e": g.delta_e, "epsilon": g.epsilon,
+                            "p_bar": g.p_bar,
+                            "dp_minus": g.dp_minus, "dp_plus": g.dp_plus,
+                            "delta_p": g.delta_p,
+                            "e_bar": g.e_bar, "delta_e": g.delta_e, "epsilon": g.epsilon,
                         })
                 mask, eps = build_action_mask_and_epsilon(
                     chain_envelopes, store_chain, store_group_labels,

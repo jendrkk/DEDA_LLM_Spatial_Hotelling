@@ -116,6 +116,18 @@ def main() -> None:
              "--graph-states selects its own grid via the GRID positional, so do not combine "
              "the two.",
     )
+    ap.add_argument("--lean", action="store_true",
+                    help="Dense log stores only price/effort indices + steps + grids "
+                         "(skips demand & profit arrays, which are recomputed post-hoc by "
+                         "visualize_run / RunBundle). Lossless for analysis; ~89%% smaller "
+                         "dense log. Recommended for long production runs.")
+    ap.add_argument("--dense-stride", type=int, default=None, metavar="INT",
+                    help="Record only every INT-th step in the dense log (default from "
+                         "phase2.yaml = 1). E.g. --dense-stride 1000 on a 9M-step run.")
+    ap.add_argument("--dense-tail", type=int, default=None, metavar="INT",
+                    help="Always densely record the last INT steps regardless of stride "
+                         "(captures the converged collusive regime at full resolution), "
+                         "e.g. --dense-tail 200000.")
     args = ap.parse_args()
 
     env_yaml = Path(args.env_config)
@@ -215,6 +227,23 @@ def main() -> None:
         ceo_cfg["temperature"] = t
     if args.T_measure is not None:
         phase2_cfg["T_measure"] = args.T_measure
+
+    # ── Dense-log size controls (parity with run_baseline.py) ───────────────────
+    if args.lean:
+        phase2_cfg["store_demand_profit"] = False
+        logger.info("--lean: store_demand_profit=False (demand/profit arrays not "
+                    "written; reconstructed on demand by visualize_run / RunBundle).")
+    # store_effort: only meaningful with effort active AND not lean. Mirrors
+    # run_baseline: a lean price-only run writes no effort arrays. run_strategic_session
+    # already gates store_effort on store_demand_profit, but set it explicitly so the
+    # written phase2 config records the intent.
+    phase2_cfg["store_effort"] = bool(args.with_effort) and not bool(args.lean)
+    if args.dense_stride is not None:
+        phase2_cfg["dense_stride"] = args.dense_stride
+        logger.info("dense_stride override: %d", args.dense_stride)
+    if args.dense_tail is not None:
+        phase2_cfg["dense_tail"] = args.dense_tail
+        logger.info("dense_tail override: %d", args.dense_tail)
 
     config = {
         "env": env_cfg, "agents": agent_cfg, "groups": groups_cfg, "ceo": ceo_cfg,

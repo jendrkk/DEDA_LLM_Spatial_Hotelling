@@ -54,14 +54,19 @@ def _allowed_grid_indices_asym(
     elif i_star == m - 1:
         pair = (m - 2, m - 1)
     else:
-        # Choose the neighbour on the side of ``centre`` with the larger gap,
-        # so the pair brackets the target rather than sitting entirely to one side.
-        left_gap = centre - grid[i_star - 1]
-        right_gap = grid[i_star + 1] - centre
-        if right_gap >= left_gap:
+        # Bias toward the side the CEO gave more room: a larger dp_plus means the
+        # CEO wants headroom ABOVE → include the upper neighbour; a larger dp_minus
+        # means room BELOW → include the lower neighbour. Ties (symmetric bands)
+        # fall back to the side of ``centre`` with the larger gap so the pair
+        # brackets the target. Always returns two contiguous in-range indices.
+        if dp_plus > dp_minus:
             pair = (i_star, i_star + 1)
-        else:
+        elif dp_minus > dp_plus:
             pair = (i_star - 1, i_star)
+        else:
+            left_gap = centre - grid[i_star - 1]
+            right_gap = grid[i_star + 1] - centre
+            pair = (i_star, i_star + 1) if right_gap >= left_gap else (i_star - 1, i_star)
     return np.array(pair, dtype=np.int64)
 
 

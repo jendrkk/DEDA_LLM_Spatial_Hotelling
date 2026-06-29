@@ -94,6 +94,74 @@ class TestAllowedGridIndicesAsym:
         assert idx.tolist() == [0]
 
 
+class TestWidenerIntent:
+    """Widener bias toward the CEO's deliberately wider side (Task 6.4).
+
+    Grid: np.linspace(50, 90, 11), step=4.0 €
+    centre=60.0 → i_star=2 (grid[2]=58 is nearest? No: grid[2]=58, grid[3]=62;
+    |60-58|=2, |60-62|=2 — tie → index 2 or 3. Let's check:
+    grid = [50,54,58,62,66,70,74,78,82,86,90]
+    |60-58|=2, |60-62|=2 → argmin picks 2 (first tie).
+    i_star=2; neighbours: grid[1]=54, grid[3]=62.
+    """
+
+    def test_symmetric_sub_step_yields_two_actions(self):
+        """dp_minus=dp_plus=0.5 < step → widener fires, returns ≥2."""
+        idx = _allowed_grid_indices_asym(GRID, 60.0, 0.5, 0.5)
+        assert idx.size >= 2
+
+    def test_upper_bias_when_dp_plus_larger(self):
+        """dp_plus=1.5 > dp_minus=0.5, both sub-step → widener fires, picks upper pair.
+
+        centre=60.0; band [59.5, 61.5] contains no grid point (58 and 62 outside).
+        i_star=2 (|60-58|=2 == |60-62|=2, argmin picks first → grid[2]=58).
+        dp_plus > dp_minus → pair = (i_star, i_star+1) = (2, 3).
+        """
+        idx = _allowed_grid_indices_asym(GRID, 60.0, 0.5, 1.5)
+        i_star = int(np.argmin(np.abs(GRID - 60.0)))
+        expected = np.array([i_star, i_star + 1], dtype=np.int64)
+        assert np.array_equal(idx, expected), (
+            f"Expected upper pair {expected.tolist()}, got {idx.tolist()}"
+        )
+
+    def test_lower_bias_when_dp_minus_larger(self):
+        """dp_minus=1.5 > dp_plus=0.5, both sub-step → widener fires, picks lower pair.
+
+        centre=60.0; band [58.5, 60.5] contains no grid point.
+        i_star=2; dp_minus > dp_plus → pair = (i_star-1, i_star) = (1, 2).
+        """
+        idx = _allowed_grid_indices_asym(GRID, 60.0, 1.5, 0.5)
+        i_star = int(np.argmin(np.abs(GRID - 60.0)))
+        expected = np.array([i_star - 1, i_star], dtype=np.int64)
+        assert np.array_equal(idx, expected), (
+            f"Expected lower pair {expected.tolist()}, got {idx.tolist()}"
+        )
+
+    def test_wide_symmetric_band_not_widened(self):
+        """dp_minus=dp_plus=5.0 → band [55,65] covers grid[2]=58, grid[3]=62 naturally."""
+        idx = _allowed_grid_indices_asym(GRID, 60.0, 5.0, 5.0)
+        assert idx.size >= 2
+        # Widener not triggered: all returned indices should be within [55, 65]
+        assert GRID[idx].min() >= 55.0 - 1e-9
+        assert GRID[idx].max() <= 65.0 + 1e-9
+
+    def test_upper_bias_via_mask_helper(self):
+        """End-to-end: build_action_mask_and_epsilon with dp_plus > dp_minus (sub-step)."""
+        row = _mask_row(p_bar=60.0, dp_minus=0.5, dp_plus=1.5)
+        assert row.sum() >= 2
+        i_star = int(np.argmin(np.abs(GRID - 60.0)))
+        assert row[i_star], f"i_star={i_star} should be set"
+        assert row[i_star + 1], f"i_star+1={i_star+1} should be set (upper bias)"
+
+    def test_lower_bias_via_mask_helper(self):
+        """End-to-end: build_action_mask_and_epsilon with dp_minus > dp_plus (sub-step)."""
+        row = _mask_row(p_bar=60.0, dp_minus=1.5, dp_plus=0.5)
+        assert row.sum() >= 2
+        i_star = int(np.argmin(np.abs(GRID - 60.0)))
+        assert row[i_star - 1], f"i_star-1={i_star-1} should be set (lower bias)"
+        assert row[i_star], f"i_star={i_star} should be set"
+
+
 class TestEpsilonClamp:
     def test_epsilon_clamped_to_eps_lo(self):
         """epsilon below _EPS_LO (1e-3) is clamped up; but schema rejects < 0 anyway."""

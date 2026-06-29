@@ -1,54 +1,45 @@
-# agents/chain_ceo.yaml - LLM chain CEO agent parameters (v1: Google AI Studio Gemma 4)
-# LiteLLM routes "gemini/<model>" to Google AI Studio when GEMINI_API_KEY is set
-# (NOT Vertex). gemma-4-31b-it is the dense 31B Gemma 4 model (released 2026-04-02,
-# Gemini 3 architecture, structured-JSON + function calling). Record the exact model
-# string in metadata for reproducibility (ADR-002).
-model: "gemini/gemma-4-31b-it"     # set GEMINI_API_KEY in the environment
+# agents/chain_ceo.yaml - LLM chain CEO agent parameters (v2: AWS Bedrock Claude Haiku 4.5)
+# LiteLLM routes "bedrock/<model>" to AWS Bedrock using boto3 and the standard AWS
+# credential chain (AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY + AWS_DEFAULT_REGION).
+# Cross-region inference profile prefix "us." is required for Haiku 4.5+ on Bedrock
+# (bare model IDs are not supported for on-demand invocation of Claude 4.x models).
+model: "bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0"   # set AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_DEFAULT_REGION
 ceo_mode: "single"                 # "single" v1; "decomposed" (analyst sub-agents) reserved
-temperature: 0                     # deterministic; override via --temp [0.0, 2.0]
+temperature: 1                     # deterministic; override via --temp [0.0, 2.0]
                                    # (default 0 = deterministic; 0.3–0.7 recommended for CEO exploration)
 max_tokens: 2048                   # room for the full structured envelope JSON
 max_retries: 3                 # legacy field (kept for compatibility; retry cadence
                                # is now governed by the backoff settings below)
 log_path: "results/llm_calls.jsonl"
 
-# Transient-error resilience. Google AI Studio returns sporadic HTTP 500 INTERNAL
-# (and 503/429). The client retries ONLY transient errors with exponential backoff +
-# jitter; permanent (auth/bad-request) and parse/validation errors are not retried
-# this way (the JSON fallback handles parsing). Spreading attempts across tens of
-# seconds reliably catches a recovered server.
-timeout: 120.0                 # per-call wall-clock timeout (seconds)
-transient_max_attempts: 5      # total attempts per call on transient errors
-backoff_base: 2.0              # wait_random_exponential multiplier (seconds)
-backoff_max: 60.0              # backoff ceiling (seconds)
+# Transient-error resilience. Bedrock is highly reliable; transient errors are rare
+# (only ThrottlingException / 429 under load, or occasional 503 during AWS incidents).
+# Much tighter timeout than AI Studio — Haiku 4.5 responds in 300–600ms.
+timeout: 30.0                  # per-call wall-clock timeout (seconds)
+transient_max_attempts: 3      # total attempts per call on transient errors
+backoff_base: 1.0              # wait_random_exponential multiplier (seconds)
+backoff_max: 15.0              # backoff ceiling (seconds)
 save_communication: false      # usually toggled via --save-LLM-con, not here
 
-# Google AI Studio free-tier limits for Gemma 4 (verify live in AI Studio; quota
-# depends on tier). The runner throttles to stay under rpm and stops when rpd is hit.
-requests_per_minute: 15
-requests_per_day: 1500
+# Bedrock on-demand: per-token billing, no hard daily cap. Soft quota is ~50 RPM
+# by default (requestable increase). Disable the RateLimiter (0 = no limit enforced
+# client-side); transient 429s are handled by the tenacity backoff above instead.
+requests_per_minute: 0
+requests_per_day: 0
 
-# reasoning_effort is now capability-gated in LLMClient. LiteLLM's model DB does not
-# (yet) register gemma-4-31b-it as reasoning-capable, so by default the param is
-# OMITTED and thinking falls back to the Gemini-API default (high for Gemini-3-arch
-# models). "none" is the LiteLLM-canonical off value used when the model IS registered
-# or when forced below.
-reasoning_effort: "none"
-# Set true to FORCE reasoning_effort through via allowed_openai_params so the gemini
-# transform maps it to thinking-off. Gemma 4 supports configurable thinking, so this
-# is the lever that actually disables it and conserves the free-tier daily quota.
-# Recommended workflow: leave false for the first verified run; flip to true and
-# compare tokens_used in llm_calls.jsonl to confirm thinking is off before production.
+# Haiku 4.5 supports extended thinking but we disable it: deterministic pricing
+# decisions (temperature=0) need no chain-of-thought, and thinking tokens would
+# inflate cost and latency with no benefit for JSON envelope generation.
+reasoning_effort: null
 force_reasoning_effort: false
-instructor_mode: "json"            # JSON mode (response_format); "md_json" if JSON errors
+instructor_mode: "tools"           # TOOLS mode (function-calling): canonical for Claude;
+                                   # more reliable than JSON mode for complex Pydantic schemas
 
-# Gemma chat template: fold the system prompt into the first user turn. Gemma models
-# on the Gemini API are most robust this way; set false only if you confirm the
-# separate system role is accepted.
-merge_system_prompt: true
+# Claude natively supports a separate system role — no prompt folding needed.
+merge_system_prompt: false
 
 # Euro-basket envelope guidance shown to the CEO and used by the safe-default fallback.
-min_delta_p: 1.5
+min_delta_p: 1.0
 min_delta_e: 0.1
 
 group_analytics: false   # baseline 2.0: per-group competitive analytics in the prompt

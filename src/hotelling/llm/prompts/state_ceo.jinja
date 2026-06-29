@@ -88,7 +88,7 @@ High-status consumer share (ring-wide): {{ "%.1f"|format(consumers.high_status_s
 ### 5. Constraints reminder
 
 - Marginal cost: **{{ marginal_cost }} €** — all `p_bar`{% if with_comm %} and `proposed_tier_price`{% endif %} values must strictly exceed this.
-- Minimum half-width: **delta_p ≥ {{ min_delta_p }}**{% if with_effort %}, **delta_e ≥ {{ min_delta_e }}**{% endif %}.
+- Price band: **dp_minus > 0 and dp_plus > 0**, band must hold ≥ 2 grid points (one grid step ≈ {{ grid.step }} €){% if with_effort %}; **delta_e ≥ {{ min_delta_e }}**{% endif %}.
 - Exploration rate: **epsilon ∈ (0.0, 0.5)** per group.
 
 ---

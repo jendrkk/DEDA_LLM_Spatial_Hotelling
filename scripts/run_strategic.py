@@ -79,6 +79,43 @@ def main() -> None:
                          "reasoning if returned) to results/.../LLM_communication/"
                          "[chain]_[epoch].txt")
     ap.add_argument("--output-dir", type=str, default="results/strategic_runs")
+    ap.add_argument(
+        "--graph-states", nargs=5, default=None,
+        metavar=("K", "M", "B", "GRID", "MATCH"),
+        help="Reciprocal rival-graph Q-state, identical to run_baseline --graph-states: "
+             "K rivals/store (undirected max-weight diversion-ratio b-matching), M own price "
+             "bins, B rival price bins, GRID in {CS,G} (chain-specific or global own grid), "
+             "MATCH in {SC,A} (same-chain-type or any-chain-type rivals). state_size = M*B^K. "
+             "All Q-learning params come from graph_states_params in qlearning_baseline.yaml; "
+             "the 5 positionals override the structural knobs. Forces m_effort=1. Mutually "
+             "exclusive with --local-sum-d, --chs-grid, and --with-effort.",
+    )
+    ap.add_argument(
+        "--qtable-init", type=str, default=None,
+        choices=["zero", "nash-anchor", "solve", "optimistic"], metavar="MODE",
+        help="Q-table initialization for a FRESH burn-in (ignored with --from-run, which loads "
+             "a converged table). 'zero' (default), 'nash-anchor', 'solve', 'optimistic'. "
+             "Non-zero modes require dense benchmarks.",
+    )
+    ap.add_argument(
+        "--beta-schedule", type=str, default=None, choices=["two_stage", "single"],
+        metavar="MODE",
+        help="Exploration (epsilon) decay schedule when beta_decay_auto is true. 'two_stage' "
+             "(default): slow stage 1 then rapid stage-2 collapse; 'single': legacy "
+             "single-exponential. Edit explore_fraction / epsilon_transition / epsilon_min in "
+             "the agent config (or graph_states_params) to tune the shape.",
+    )
+    ap.add_argument(
+        "--no-auto-beta", action="store_true",
+        help="Disable automatic beta adaptation; use the config beta_decay directly as a "
+             "single-stage exponential with no epsilon_min floor.",
+    )
+    ap.add_argument(
+        "--chs-grid", action="store_true",
+        help="Chain-type-specific price grids (composes with non-graph state modes). "
+             "--graph-states selects its own grid via the GRID positional, so do not combine "
+             "the two.",
+    )
     args = ap.parse_args()
 
     env_yaml = Path(args.env_config)
@@ -103,6 +140,57 @@ def main() -> None:
         agent_cfg["local_sum_n"] = None
     if args.model is not None:
         ceo_cfg["model"] = args.model
+
+    # ── State-mode / schedule / grid CLI (parity with run_baseline) ─────────────
+    if args.graph_states is not None:
+        if args.local_sum_d:
+            ap.error("--graph-states and --local-sum-d are mutually exclusive.")
+        if args.chs_grid:
+            ap.error("--graph-states already selects its grid via the GRID positional "
+                     "({CS,G}); do not also pass --chs-grid.")
+        if args.with_effort:
+            ap.error("--graph-states forces m_effort=1 (price-only Calvano baseline); "
+                     "it is incompatible with --with-effort.")
+        _gs = args.graph_states
+        try:
+            _gk, _gm, _gb = int(_gs[0]), int(_gs[1]), int(_gs[2])
+        except (ValueError, TypeError):
+            ap.error(f"--graph-states: K, M, B must be integers (got {_gs[:3]!r}).")
+        _ggrid = str(_gs[3]).upper()
+        _gmatch = str(_gs[4]).upper()
+        if _gk <= 0 or _gm <= 0 or _gb <= 0:
+            ap.error("--graph-states: K, M, B must all be > 0.")
+        if _ggrid not in ("CS", "G"):
+            ap.error(f"--graph-states GRID must be 'CS' or 'G' (got {_gs[3]!r}).")
+        if _gmatch not in ("SC", "A"):
+            ap.error(f"--graph-states MATCH must be 'SC' or 'A' (got {_gs[4]!r}).")
+        # graph_states_params overrides ALL other Q-learning params; the 5 CLI
+        # positionals then override the structural knobs (identical to run_baseline).
+        _gsp = dict(agent_cfg.get("graph_states_params", {}) or {})
+        agent_cfg.update(_gsp)
+        agent_cfg["state_mode"] = "graph_states"
+        agent_cfg["graph_k"] = _gk
+        agent_cfg["m"] = _gm
+        agent_cfg["graph_n_rival_bins"] = _gb
+        agent_cfg["graph_own_grid_type"] = _ggrid
+        agent_cfg["chain_specific_grid"] = (_ggrid == "CS")
+        agent_cfg["graph_rival_match"] = _gmatch
+        agent_cfg["m_effort"] = 1
+        logger.info(
+            "state_mode=graph_states | k=%d, m=%d, B=%d, grid=%s, match=%s | "
+            "state_size=%d | Q-learning params from graph_states_params (override).",
+            _gk, _gm, _gb, _ggrid, _gmatch, _gm * _gb ** _gk,
+        )
+    if args.no_auto_beta:
+        agent_cfg["beta_decay_auto"] = False
+        logger.info("--no-auto-beta: single-stage beta_decay, no epsilon_min floor.")
+    if args.beta_schedule is not None:
+        agent_cfg["beta_schedule"] = args.beta_schedule
+        logger.info("--beta-schedule: %s", args.beta_schedule)
+    if args.chs_grid:
+        agent_cfg["chain_specific_grid"] = True
+        logger.info("--chs-grid: chain-type-specific price grids enabled.")
+
     if args.T_burnin is not None:
         phase2_cfg["T_burnin"] = args.T_burnin
     if args.T_game is not None:
@@ -135,6 +223,9 @@ def main() -> None:
         "with_effort": bool(args.with_effort),
         "with_comm": bool(args.with_comm),
     }
+    config["qtable_init"] = (
+        args.qtable_init.replace("-", "_") if args.qtable_init is not None else "zero"
+    )
 
     if float(config["env"].get("lambda_val", 0)) <= 0:
         logger.warning("lambda_val <= 0; run scripts/run_baseline.py --calibrate-only first.")

@@ -102,8 +102,8 @@ graph_states_params:
   delta: 0.98
   beta_decay_auto: true
   beta_schedule: two_stage      # overridden by an explicit --beta-schedule flag
-  explore_fraction: 0.70
-  epsilon_transition: 0.06
+  explore_fraction: 0.25
+  epsilon_transition: 0.08
   epsilon_min: 1.0e-4
   beta_decay: 0.9e-6            # single-stage fallback (only used with --beta-schedule single)
   # Structural defaults (overridden by the 5 CLI positionals)

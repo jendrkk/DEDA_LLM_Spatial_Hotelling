@@ -1,9 +1,17 @@
 """Translate CEO strategy envelopes into per-store action masks + epsilon.
 
 The mask constrains the absolute (nominal-price) joint action grid of the
-BatchQLearningAgent to the CEO's [p_bar +/- delta_p] (and effort band when
-effort is active). Q-values over the fixed grid stay valid across epochs;
-only the feasible set changes. See ADR-009 and the CEO layer design.
+BatchQLearningAgent to the CEO's asymmetric price band
+[p_bar - dp_minus, p_bar + dp_plus] (and effort band when effort is active).
+Q-values over the fixed grid stay valid across epochs; only the feasible set
+changes. See ADR-009 and the CEO layer design.
+
+Hard feasibility guarantee
+--------------------------
+Every store is given at least TWO contiguous allowed price-grid points, even if
+the CEO's euro band is narrower than one grid step. This makes a sub-step p_bar
+change impossible to turn into a no-op and always leaves the store room to
+explore within the envelope. See _allowed_grid_indices_asym.
 
 Public API: build_action_mask_and_epsilon
 """
@@ -13,21 +21,48 @@ import numpy as np
 
 from hotelling.llm.schemas import ChainEnvelopeOutput
 
+# Defensive epsilon clamp (matches GroupEnvelope's (0, 0.25) bound; guards against
+# any malformed value reaching the agent and destabilising the substrate).
+_EPS_LO = 1.0e-3
+_EPS_HI = 0.25
 
-def _allowed_grid_indices(
-    grid: np.ndarray, centre: float, half_width: float
+
+def _allowed_grid_indices_asym(
+    grid: np.ndarray, centre: float, dp_minus: float, dp_plus: float
 ) -> np.ndarray:
-    """Indices of grid points within [centre - hw, centre + hw].
+    """Indices of grid points within [centre - dp_minus, centre + dp_plus].
 
-    Guarantees at least one index: if the band contains no grid point, returns
-    the single nearest index to ``centre`` (snap-to-nearest). This makes the
-    mask robust to bands narrower than the grid step at euro scale.
+    Hard feasibility guarantee: ALWAYS returns at least two contiguous indices.
+    If the euro band contains < 2 grid points, the window is widened around the
+    nearest index ``i*`` to include ``i*`` and one neighbour (preferring the side
+    with more headroom inside the grid). This guarantees that (a) the store can
+    always explore at least 2 prices within the envelope, and (b) a one-step
+    change in ``centre`` shifts ``i*`` and therefore the feasible window.
     """
-    lo, hi = centre - half_width, centre + half_width
-    idx = np.nonzero((grid >= lo) & (grid <= hi))[0]
-    if idx.size == 0:
-        idx = np.array([int(np.argmin(np.abs(grid - centre)))], dtype=np.int64)
-    return idx.astype(np.int64)
+    m = int(grid.shape[0])
+    lo, hi = centre - dp_minus, centre + dp_plus
+    idx = np.nonzero((grid >= lo) & (grid <= hi))[0].astype(np.int64)
+    if idx.size >= 2:
+        return idx
+
+    # Fewer than 2 points inside the band → snap-and-widen to guarantee 2.
+    i_star = int(np.argmin(np.abs(grid - centre)))
+    if m == 1:
+        return np.array([0], dtype=np.int64)  # degenerate grid; nothing else possible
+    if i_star == 0:
+        pair = (0, 1)
+    elif i_star == m - 1:
+        pair = (m - 2, m - 1)
+    else:
+        # Choose the neighbour on the side of ``centre`` with the larger gap,
+        # so the pair brackets the target rather than sitting entirely to one side.
+        left_gap = centre - grid[i_star - 1]
+        right_gap = grid[i_star + 1] - centre
+        if right_gap >= left_gap:
+            pair = (i_star, i_star + 1)
+        else:
+            pair = (i_star - 1, i_star)
+    return np.array(pair, dtype=np.int64)
 
 
 def build_action_mask_and_epsilon(
@@ -44,26 +79,22 @@ def build_action_mask_and_epsilon(
 
     Joint action encoding (matches HotellingMarketEnv): a = price_idx * m_effort + effort_idx.
 
+    Uses the asymmetric price band [p_bar - dp_minus, p_bar + dp_plus] from each
+    group envelope (GroupEnvelope guarantees dp_minus/dp_plus are populated even
+    for legacy delta_p-only envelopes). Effort, when active, still uses a
+    symmetric [e_bar +/- delta_e] band. Epsilon is clamped to [_EPS_LO, _EPS_HI].
+
     Parameters
     ----------
-    chain_envelopes : brand -> validated ChainEnvelopeOutput for the current epoch.
-        Every brand present in ``store_chain`` must have an entry.
-    store_chain : (N,) brand per store, canonical order (firm.chain).
-    store_group_labels : (N,) composite group label per store (from assign_groups).
-    price_grid : (m,) nominal price levels.
-    effort_grid : (m_effort,) effort levels.
-    m_effort : number of effort levels (1 in the price-only baseline).
-    mask_effort : if True (m_effort > 1) also constrain effort to [e_bar +/- delta_e];
-        if False, all effort indices are allowed (effort dimension inert).
-    store_price_grids : optional (N, m) per-store price grids. When provided,
-        each store's envelope EUR band is matched against its OWN chain-specific
-        grid rather than the global union grid. Backward-compatible: None uses
-        ``price_grid`` for all stores (original behaviour).
+    store_price_grids : optional (N, m) per-store price grids. When provided each
+        store's envelope EUR band is matched against its OWN chain-specific grid;
+        None uses ``price_grid`` for all stores.
 
     Returns
     -------
-    mask : (N, m*m_effort) bool — True = allowed.
-    eps  : (N,) float — per-store exploration rate from the group envelope.
+    mask : (N, m*m_effort) bool — True = allowed (every row has >= 2 True price
+        columns by construction).
+    eps  : (N,) float — per-store exploration rate, clamped to [_EPS_LO, _EPS_HI].
     """
     N = len(store_chain)
     m = int(len(price_grid))
@@ -83,13 +114,18 @@ def build_action_mask_and_epsilon(
         label = store_group_labels[i]
         env = groups.get(label) or next(iter(groups.values()))  # fallback: first group
         _grid_i = store_price_grids[i] if store_price_grids is not None else price_grid
-        p_idx = _allowed_grid_indices(_grid_i, env.p_bar, env.delta_p)
+        p_idx = _allowed_grid_indices_asym(
+            _grid_i, float(env.p_bar), float(env.dp_minus), float(env.dp_plus)
+        )
         if mask_effort and m_effort > 1:
-            e_idx = _allowed_grid_indices(effort_grid, env.e_bar, env.delta_e)
+            # Effort stays symmetric; reuse the asymmetric helper with equal widths.
+            e_idx = _allowed_grid_indices_asym(
+                effort_grid, float(env.e_bar), float(env.delta_e), float(env.delta_e)
+            )
         else:
             e_idx = all_effort
         joint = (p_idx[:, None] * m_effort + e_idx[None, :]).ravel()
         mask[i, joint] = True
-        eps[i] = float(env.epsilon)
+        eps[i] = float(np.clip(env.epsilon, _EPS_LO, _EPS_HI))
 
     return mask, eps

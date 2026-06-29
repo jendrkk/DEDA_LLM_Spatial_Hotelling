@@ -491,6 +491,131 @@ class HotellingMarketEnv:
             return self._store_price_grids[np.arange(len(self.firms)), price_idxs].astype(np.float64)
         return self.price_grid[price_idxs].astype(np.float64)
 
+    def grid_spec(self, chain_type: str | None = None) -> dict:
+        """Describe the discrete price grid a given chain type prices on.
+
+        Single source of truth for the CEO prompt's "action grid" section. Reads
+        the live grids (chain-specific when active, else the global grid); never
+        recomputes bounds, so it cannot drift from what the agents actually use.
+
+        Parameters
+        ----------
+        chain_type : "discount" | "standard" | "bio" | None
+            When chain-specific grids are active and chain_type is given, returns
+            that chain type's own grid. Otherwise returns the global grid.
+
+        Returns
+        -------
+        dict with keys:
+            regime : "CS" | "G"          chain-specific or global
+            m      : int                 number of price levels
+            lo     : float               lowest grid price (€)
+            hi     : float               highest grid price (€)
+            step   : float               uniform spacing (€) = (hi-lo)/(m-1)
+            grid   : list[float]         the full euro lattice for this chain
+            other_chain_grids : dict     {ct: {"lo","hi","step"}} for the OTHER
+                                         chain types (empty in G regime)
+        """
+        import numpy as np
+
+        def _spec_from_grid(g: np.ndarray) -> tuple[float, float, float]:
+            g = np.asarray(g, dtype=np.float64)
+            lo = float(g.min())
+            hi = float(g.max())
+            step = float((hi - lo) / (len(g) - 1)) if len(g) > 1 else 0.0
+            return lo, hi, step
+
+        cs_active = self._chain_type_grids is not None
+        if cs_active and chain_type is not None and chain_type in self._chain_type_grids:
+            own_grid = np.asarray(self._chain_type_grids[chain_type], dtype=np.float64)
+            regime = "CS"
+        else:
+            own_grid = np.asarray(self.price_grid, dtype=np.float64)
+            regime = "CS" if cs_active else "G"
+
+        lo, hi, step = _spec_from_grid(own_grid)
+        other: dict[str, dict] = {}
+        if cs_active:
+            for ct, g in self._chain_type_grids.items():
+                if ct == chain_type:
+                    continue
+                glo, ghi, gstep = _spec_from_grid(g)
+                other[ct] = {"lo": glo, "hi": ghi, "step": gstep}
+
+        return {
+            "regime": regime,
+            "m": int(len(own_grid)),
+            "lo": lo,
+            "hi": hi,
+            "step": step,
+            "grid": [float(x) for x in own_grid.tolist()],
+            "other_chain_grids": other,
+        }
+
+    def graph_degree_spec(self, chain_type: str | None = None) -> dict:
+        """Describe how many rivals the stores of a chain type OBSERVE in their state.
+
+        Pure read-only summary for the CEO prompt's "who your stores watch"
+        section. In graph_states mode the observed-rival count is the number of
+        non-(-1) entries per store row of ``graph_rivals``; in other modes it
+        reports the implicit observation structure so the prompt stays correct.
+
+        IMPORTANT semantics (must be conveyed to the CEO downstream): observing a
+        rival is NOT the same as competing only against it. Every store competes
+        for demand against ALL nearby stores via the catchment logit; graph_k /
+        MATCH only set which rivals enter the Q-learning STATE.
+
+        Parameters
+        ----------
+        chain_type : restrict the summary to one chain type's stores; None = all.
+
+        Returns
+        -------
+        dict with keys:
+            mode            : str   the env state_mode
+            match           : "SC" | "A" | "n/a"
+            grid_regime     : "CS" | "G"
+            k               : int   configured max observed rivals (graph_k) or
+                                    k_neighbors for "neighbors" mode
+            n_stores        : int   stores covered by this summary
+            mean_observed   : float mean observed-rival degree over those stores
+            max_observed    : int
+            n_isolated      : int   stores observing zero rivals (degree 0)
+        """
+        import numpy as np
+
+        cts = np.array([getattr(f, "chain_type", "standard") for f in self.firms], dtype=object)
+        sel = np.ones(len(self.firms), dtype=bool) if chain_type is None else (cts == chain_type)
+        n_sel = int(sel.sum())
+        regime = "CS" if self._chain_type_grids is not None else "G"
+
+        if self.state_mode == "graph_states" and self.graph_rivals is not None:
+            deg = (self.graph_rivals[:, : self.graph_k] >= 0).sum(axis=1).astype(np.int64)
+            deg_sel = deg[sel] if n_sel else np.zeros(0, dtype=np.int64)
+            return {
+                "mode": self.state_mode,
+                "match": str(self.graph_rival_match),
+                "grid_regime": regime,
+                "k": int(self.graph_k),
+                "n_stores": n_sel,
+                "mean_observed": float(deg_sel.mean()) if deg_sel.size else 0.0,
+                "max_observed": int(deg_sel.max()) if deg_sel.size else 0,
+                "n_isolated": int((deg_sel == 0).sum()) if deg_sel.size else 0,
+            }
+
+        # Non-graph modes: report the implicit observation structure.
+        k_obs = int(self.k_neighbors) if self.state_mode == "neighbors" else 0
+        return {
+            "mode": self.state_mode,
+            "match": "n/a",
+            "grid_regime": regime,
+            "k": k_obs,
+            "n_stores": n_sel,
+            "mean_observed": float(k_obs),
+            "max_observed": k_obs,
+            "n_isolated": 0,
+        }
+
     def _init_local_summary_competitors(self) -> None:
         """Precompute competitor CSR and price-bin edges for local_summary mode."""
         N = len(self.firms)

@@ -102,6 +102,14 @@ class RunBundle:
     _qual: np.ndarray = field(default=None, repr=False)
     _fa: Any = field(default=None, repr=False)
 
+    # analysis-row subsampling (populated by _init_analysis; see AnalysisCfg)
+    analysis_rows: np.ndarray = field(default=None, repr=False)
+    analysis_steps: np.ndarray = field(default=None, repr=False)
+    analysis_step_spacing: int = 1
+    analysis_prices: np.ndarray = field(default=None, repr=False)
+    _analysis_demands: Optional[np.ndarray] = field(default=None, repr=False)
+    _analysis_profits: Optional[np.ndarray] = field(default=None, repr=False)
+
     # ── construction ─────────────────────────────────────────────────────────
 
     @classmethod
@@ -258,6 +266,7 @@ class RunBundle:
         )
         obj._qual = np.array([f.quality for f in firms], dtype=np.float64)
         obj._fa = fa
+        obj._init_analysis(viz_cfg)
         obj._compute_window(viz_cfg)
         return obj
 
@@ -354,3 +363,76 @@ class RunBundle:
 
     def all_steps(self) -> np.ndarray:
         return self.recorded_steps
+
+    # ── analysis-row subsampling & cached reconstruction ──────────────────────
+
+    def _init_analysis(self, viz_cfg) -> None:
+        """Pick the analysis rows (stride / auto-stride) and decode prices eagerly.
+
+        Prices are cheap (index gather) so they are materialised now.
+        Demands/profits are reconstructed lazily on first use via
+        :meth:`get_analysis_demands` / :meth:`get_analysis_profits`, so a
+        price-only report never pays the spatial market-clearing cost.
+        """
+        ac = viz_cfg.analysis
+        R = len(self.recorded_steps)
+        if getattr(ac, "auto_stride", True):
+            stride = max(1, int(round(ac.target_steps_per_point / max(self.step_spacing, 1))))
+        else:
+            stride = max(1, int(ac.stride))
+        rows = np.arange(0, R, stride)
+        if rows.size == 0 or rows[-1] != R - 1:
+            rows = np.append(rows, R - 1)
+        rows = np.unique(rows)
+        if rows.size > int(ac.max_points):
+            rows = np.unique(np.linspace(0, R - 1, int(ac.max_points)).round().astype(int))
+        self.analysis_rows = rows
+        self.analysis_steps = self.recorded_steps[rows]
+        self.analysis_step_spacing = (int(np.median(np.diff(self.analysis_steps)))
+                                      if rows.size > 1 else self.step_spacing)
+        self.analysis_step_spacing = max(self.analysis_step_spacing, 1)
+        self.analysis_prices = self.decode_prices_rows(rows)
+        self._analysis_demands = None
+        self._analysis_profits = None
+        logger.info("Analysis sampling: %d of %d recorded rows "
+                    "(target ~%d steps/point, effective spacing %d steps).",
+                    rows.size, R, getattr(ac, "target_steps_per_point", 0),
+                    self.analysis_step_spacing)
+
+    def _ensure_analysis_dp(self) -> None:
+        """Populate the cached (A, N) demands & profits over the analysis rows once."""
+        if self._analysis_demands is not None and self._analysis_profits is not None:
+            return
+        rows = self.analysis_rows
+        A = len(rows)
+        if self.dense_log.demands is not None:
+            # Non-lean: slice the memmaps once (no reconstruction).
+            self._analysis_demands = np.asarray(self.dense_log.demands[rows], dtype=np.float64)
+            self._analysis_profits = np.asarray(self.dense_log.profits[rows], dtype=np.float64)
+            return
+        # Lean: reconstruct via the spatial kernel once over the analysis rows.
+        from hotelling.core.market import market_clearing_arrays
+        D = np.empty((A, self.N), dtype=np.float64)
+        P = np.empty((A, self.N), dtype=np.float64)
+        log_every = max(1, A // 10)
+        for i, t in enumerate(rows):
+            prices = self.analysis_prices[i]
+            efforts = self.efforts_at(int(t))
+            d, p = market_clearing_arrays(prices, efforts, self.city,
+                                          self.transport_cost, self._fa)
+            D[i] = d
+            P[i] = p
+            if i % log_every == 0:
+                logger.info("  reconstructing demands/profits %d/%d ...", i, A)
+        self._analysis_demands = D
+        self._analysis_profits = P
+
+    def get_analysis_demands(self) -> np.ndarray:
+        """(A, N) demands over the analysis rows (reconstructed once, cached)."""
+        self._ensure_analysis_dp()
+        return self._analysis_demands
+
+    def get_analysis_profits(self) -> np.ndarray:
+        """(A, N) gross profits over the analysis rows (reconstructed once, cached)."""
+        self._ensure_analysis_dp()
+        return self._analysis_profits

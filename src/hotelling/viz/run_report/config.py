@@ -79,6 +79,32 @@ class FramesCfg:
 
 
 @dataclass
+class AnalysisCfg:
+    """Row-subsampling for trajectory / time-series plots.
+
+    Trajectories do not need every recorded DenseLog row: a moving-average
+    smoothed series is visually identical when sampled at a coarser stride, and
+    on lean runs each retained row costs one full spatial market-clearing
+    reconstruction.  This block controls that subsampling.  It does NOT affect
+    the animations (#4–#9), which sample independently via ``frames.n_frames``.
+
+    auto_stride : derive the stride so there is ~one analysis point per
+        ``target_steps_per_point`` simulation steps, given the run's native
+        recording stride.
+    target_steps_per_point : target spacing (in simulation steps) between
+        retained analysis points when ``auto_stride`` is true. Default 100.
+    stride : take every ``stride``-th recorded row when ``auto_stride`` is
+        false. ``1`` == use every recorded row (legacy behaviour).
+    max_points : hard upper bound on retained analysis points (safety cap that
+        overrides the stride with an even ``linspace`` when exceeded).
+    """
+    auto_stride: bool = True
+    target_steps_per_point: int = 100
+    stride: int = 1
+    max_points: int = 20000
+
+
+@dataclass
 class AnimationCfg:
     fps: int = 8
     format: str = "webp"        # webp | apng | gif | mp4
@@ -181,6 +207,7 @@ class VizConfig:
     colours: ColoursCfg = field(default_factory=ColoursCfg)
     chain_cmaps: ChainCmapsCfg = field(default_factory=ChainCmapsCfg)
     frames: FramesCfg = field(default_factory=FramesCfg)
+    analysis: AnalysisCfg = field(default_factory=AnalysisCfg)
     animation: AnimationCfg = field(default_factory=AnimationCfg)
     trajectory: TrajectoryCfg = field(default_factory=TrajectoryCfg)
     store_markers: StoreMarkersCfg = field(default_factory=StoreMarkersCfg)

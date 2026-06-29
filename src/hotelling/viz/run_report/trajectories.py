@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Dict, List
 
 import numpy as np
+import pandas as pd
 from matplotlib.lines import Line2D
 
 from . import metrics as _m
@@ -57,26 +58,14 @@ def _colour(bundle_cfg, v: str) -> str:
     return bundle_cfg.colours.for_type(v)
 
 
-def _demands_rows(bundle, rows: np.ndarray, max_lean_points: int):
-    """(len(rows'), N) demand matrix + the actually-used rows (subsampled if lean)."""
-    if bundle.dense_log.demands is not None:
-        return bundle.dense_log.demands[rows].astype(np.float64), rows
-    if len(rows) > max_lean_points:
-        rows = np.unique(np.linspace(rows[0], rows[-1], max_lean_points).round().astype(int))
-    out = np.empty((len(rows), bundle.N), dtype=np.float64)
-    for i, t in enumerate(rows):
-        d, _ = bundle.demands_profits_at(int(t))
-        out[i] = d
-    return out, rows
-
 
 # ── 1 / 2 : price & profit trajectories ──────────────────────────────────────
 
 def _trajectory(bundle, cfg, out_dir, kind: str, name: str) -> Path:
     import matplotlib.pyplot as plt
-    steps, series = _m.chain_mean_series(bundle, kind, cfg.trajectory.max_lean_points)
+    steps, series = _m.chain_mean_series(bundle, kind)
     nash, mono = _m.chain_benchmark_levels(bundle, kind)
-    w = _m.steps_to_points(cfg.trajectory.ma_window_steps, bundle.step_spacing)
+    w = _m.steps_to_points(cfg.trajectory.ma_window_steps, bundle.analysis_step_spacing)
 
     fig, ax = plt.subplots(figsize=tuple(cfg.trajectory.figsize))
     handles: List = []
@@ -85,7 +74,8 @@ def _trajectory(bundle, cfg, out_dir, kind: str, name: str) -> Path:
         y = series[v]
         if cfg.trajectory.raw_alpha > 0 and w > 1:
             ax.plot(steps, y, color=c, lw=0.8, alpha=cfg.trajectory.raw_alpha, zorder=1)
-        ma = _m.moving_average(y, w, cfg.trajectory.ma_kind)
+        #ma = _m.moving_average(y, w, cfg.trajectory.ma_kind)
+        ma = pd.Series(y).rolling(window=w).mean()
         lbl = {"global": r"Global", "discount": r"Discount $(D)$",
                "standard": r"Standard $(S)$", "bio": r"Bio $(B)$"}[v]
         line, = ax.plot(steps, ma, color=c, lw=2.0 if v == "global" else 1.6,
@@ -128,12 +118,14 @@ def plot_profit_trajectory(bundle, cfg, out_dir) -> Path:
 def plot_delta_trajectory(bundle, cfg, out_dir) -> Path:
     import matplotlib.pyplot as plt
     clip = tuple(cfg.trajectory.delta_clip)
-    w = _m.steps_to_points(cfg.trajectory.ma_window_steps, bundle.step_spacing)
+    w = _m.steps_to_points(cfg.trajectory.ma_window_steps, bundle.analysis_step_spacing)
 
-    steps_p, sp = _m.chain_mean_series(bundle, "price", cfg.trajectory.max_lean_points)
-    steps_pi, spi = _m.chain_mean_series(bundle, "profit", cfg.trajectory.max_lean_points)
-    sp_ma = {v: _m.moving_average(sp[v], w, cfg.trajectory.ma_kind) for v in _VARIANTS}
-    spi_ma = {v: _m.moving_average(spi[v], w, cfg.trajectory.ma_kind) for v in _VARIANTS}
+    steps_p, sp = _m.chain_mean_series(bundle, "price")
+    steps_pi, spi = _m.chain_mean_series(bundle, "profit")
+    #sp_ma = {v: _m.moving_average(sp[v], w, cfg.trajectory.ma_kind) for v in _VARIANTS}
+    sp_ma = {v: pd.Series(sp[v]).rolling(window=w).mean() for v in _VARIANTS}
+    #spi_ma = {v: _m.moving_average(spi[v], w, cfg.trajectory.ma_kind) for v in _VARIANTS}
+    spi_ma = {v: pd.Series(spi[v]).rolling(window=w).mean() for v in _VARIANTS}
     dp = _m.delta_series_from_means(sp_ma, bundle, "price", clip)
     dpi = _m.delta_series_from_means(spi_ma, bundle, "profit", clip)
 
@@ -164,11 +156,13 @@ def plot_delta_trajectory(bundle, cfg, out_dir) -> Path:
 def plot_delta_over_time(bundle, cfg, out_dir) -> Path:
     import matplotlib.pyplot as plt
     clip = tuple(cfg.trajectory.delta_clip)
-    w = _m.steps_to_points(cfg.trajectory.ma_window_steps, bundle.step_spacing)
-    steps_p, sp = _m.chain_mean_series(bundle, "price", cfg.trajectory.max_lean_points)
-    steps_pi, spi = _m.chain_mean_series(bundle, "profit", cfg.trajectory.max_lean_points)
-    dp = _m.delta_series_from_means({v: _m.moving_average(sp[v], w, cfg.trajectory.ma_kind) for v in _VARIANTS}, bundle, "price", clip)
-    dpi = _m.delta_series_from_means({v: _m.moving_average(spi[v], w, cfg.trajectory.ma_kind) for v in _VARIANTS}, bundle, "profit", clip)
+    w = _m.steps_to_points(cfg.trajectory.ma_window_steps, bundle.analysis_step_spacing)
+    steps_p, sp = _m.chain_mean_series(bundle, "price")
+    steps_pi, spi = _m.chain_mean_series(bundle, "profit")
+    #dp = _m.delta_series_from_means({v: _m.moving_average(sp[v], w, cfg.trajectory.ma_kind) for v in _VARIANTS}, bundle, "price", clip)
+    dp = _m.delta_series_from_means({v: pd.Series(sp[v]).rolling(window=w).mean() for v in _VARIANTS}, bundle, "price", clip)
+    #dpi = _m.delta_series_from_means({v: _m.moving_average(spi[v], w, cfg.trajectory.ma_kind) for v in _VARIANTS}, bundle, "profit", clip)
+    dpi = _m.delta_series_from_means({v: pd.Series(spi[v]).rolling(window=w).mean() for v in _VARIANTS}, bundle, "profit", clip)
 
     fig, axes = plt.subplots(1, 2, figsize=(cfg.trajectory.figsize[0] * 1.25, cfg.trajectory.figsize[1]))
     for ax, (d, steps, ttl) in zip(axes, [(dp, steps_p, latex_or_plain(r"Price $\Delta$", "Price Delta")),
@@ -186,14 +180,15 @@ def plot_delta_over_time(bundle, cfg, out_dir) -> Path:
 
 def plot_market_shares(bundle, cfg, out_dir) -> Path:
     import matplotlib.pyplot as plt
-    D, rows = _demands_rows(bundle, np.arange(len(bundle.recorded_steps)), cfg.trajectory.max_lean_points)
-    steps = bundle.recorded_steps[rows]
+    D = bundle.get_analysis_demands()
+    steps = bundle.analysis_steps
     tot = D.sum(axis=1, keepdims=True)
     fig, ax = plt.subplots(figsize=tuple(cfg.trajectory.figsize))
     for ct in CHAIN_TYPES:
         m = bundle.type_masks[ct]
         share = D[:, m].sum(axis=1) / tot[:, 0]
-        ax.plot(steps, _m.moving_average(share, _m.steps_to_points(cfg.trajectory.ma_window_steps, bundle.step_spacing), cfg.trajectory.ma_kind),
+        #ax.plot(steps, _m.moving_average(share, _m.steps_to_points(cfg.trajectory.ma_window_steps, bundle.analysis_step_spacing), cfg.trajectory.ma_kind),
+        ax.plot(steps, pd.Series(share).rolling(window=_m.steps_to_points(cfg.trajectory.ma_window_steps, bundle.analysis_step_spacing)).mean(),
                 color=_colour(cfg, ct), lw=1.6,
                 label={"discount": "Discount", "standard": "Standard", "bio": "Bio"}[ct])
     ax.set_xlabel(r"Simulation step $t$"); ax.set_ylabel("Inside-market share")
@@ -207,9 +202,9 @@ def plot_global_hhi(bundle, cfg, out_dir) -> Path:
     import matplotlib.pyplot as plt
     gids, _, ng = _m.group_ids_from_labels(
         bundle.chains if cfg.hhi.group_by == "chain" else bundle.chain_types)
-    D, rows = _demands_rows(bundle, np.arange(len(bundle.recorded_steps)), cfg.trajectory.max_lean_points)
-    steps = bundle.recorded_steps[rows]
-    hhi = np.array([_m.global_hhi(D[i], gids, ng, cfg.hhi.normalised) for i in range(len(rows))])
+    D = bundle.get_analysis_demands()
+    steps = bundle.analysis_steps
+    hhi = np.array([_m.global_hhi(D[i], gids, ng, cfg.hhi.normalised) for i in range(len(steps))])
     fig, ax = plt.subplots(figsize=tuple(cfg.trajectory.figsize))
     ax.plot(steps, hhi, color="black", lw=1.6, label="Market HHI")
     ax.set_xlabel(r"Simulation step $t$")
@@ -222,16 +217,17 @@ def plot_global_hhi(bundle, cfg, out_dir) -> Path:
 
 def plot_price_dispersion(bundle, cfg, out_dir) -> Path:
     import matplotlib.pyplot as plt
-    R = len(bundle.recorded_steps)
-    P = bundle.decode_prices_rows(np.arange(R))
-    steps = bundle.recorded_steps
+    P = bundle.analysis_prices
+    steps = bundle.analysis_steps
     fig, ax = plt.subplots(figsize=tuple(cfg.trajectory.figsize))
-    w = _m.steps_to_points(cfg.trajectory.ma_window_steps, bundle.step_spacing)
-    ax.plot(steps, _m.moving_average(P.std(axis=1), w, cfg.trajectory.ma_kind),
+    w = _m.steps_to_points(cfg.trajectory.ma_window_steps, bundle.analysis_step_spacing)
+    #ax.plot(steps, _m.moving_average(P.std(axis=1), w, cfg.trajectory.ma_kind),
+    ax.plot(steps, pd.Series(P.std(axis=1)).rolling(window=w).mean(),
             color="black", lw=1.6, label="Global")
     for ct in CHAIN_TYPES:
         m = bundle.type_masks[ct]
-        ax.plot(steps, _m.moving_average(P[:, m].std(axis=1), w, cfg.trajectory.ma_kind),
+        #ax.plot(steps, _m.moving_average(P[:, m].std(axis=1), w, cfg.trajectory.ma_kind),
+        ax.plot(steps, pd.Series(P[:, m].std(axis=1)).rolling(window=w).mean(),
                 color=_colour(cfg, ct), lw=1.3,
                 label={"discount": "Discount", "standard": "Standard", "bio": "Bio"}[ct])
     ax.set_xlabel(r"Simulation step $t$"); ax.set_ylabel("Cross-store price std.\\ (EUR)")

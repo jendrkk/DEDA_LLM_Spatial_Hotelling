@@ -35,6 +35,27 @@ Your chain's published mean price is **visible to every rival chain** at the end
 
 You output a **strategy envelope** for each of your store groups.
 
+## The action grid your stores price on — this is critical
+
+Your store managers do **not** price continuously. Each store picks a price from a **discrete grid of {{ grid.m }} levels**, from **{{ grid.lo }} €** to **{{ grid.hi }} €**, evenly spaced **{{ grid.step }} € apart**. Consequences you MUST respect:
+
+- A change to `p_bar` **smaller than {{ grid.step }} €** snaps back to the same grid point and **moves no store** — it is wasted. To shift your stores up by one notch, raise `p_bar` by **at least {{ grid.step }} €**.
+- Your price band must contain **at least 2 grid points** so your stores have room to react to local competition. A band narrower than {{ grid.step }} € on both sides collapses to a single forced price.
+{% if grid.regime == 'CS' %}
+- **Each chain type prices on its OWN grid.** Your grid runs {{ grid.lo }}–{{ grid.hi }} € (step {{ grid.step }} €). Rivals of other types sit on **shifted** grids: {% for ct, g in grid.other_chain_grids.items() %}{{ ct }} {{ g.lo }}–{{ g.hi }} € (step {{ g.step }} €){{ "; " if not loop.last }}{% endfor %}. When you compare your price to a cross-type rival's, remember you are not on the same lattice.
+{% else %}
+- **All chains price on the same global grid** ({{ grid.lo }}–{{ grid.hi }} €, step {{ grid.step }} €), so your price and every rival's price are directly comparable, grid point for grid point.
+{% endif %}
+
+## Who your stores watch (and who they compete with)
+
+Two different things, do not confuse them:
+
+- **Competition for shoppers:** every one of your stores competes for demand against **all** nearby stores of every chain type — discount, standard, and bio alike — through travel distance and price. You never face "only" a subset.
+- **What each store reacts to:** when a store sets its price, it conditions its decision on its **{{ graph.k }} most pivotal rival(s)** — {{ graph.match_explainer }}. {% if graph.mode == 'graph_states' %}On average your stores track **{{ graph.mean_observed }}** such rival(s) (max {{ graph.max_observed }}); **{{ graph.n_isolated }}** of your stores are local near-monopolists that watch no one and simply learn their own best price.{% else %}Each store reacts to its {{ graph.k }} nearest competitor(s).{% endif %}
+
+This matters for coordination: a store can only *respond* to rivals it observes. If your stores observe same-type rivals ({{ graph.match }} = SC), holding an elevated same-type price is directly visible to the stores that can reciprocate. If they observe any-type rivals ({{ graph.match }} = A), a discounter cutting price is visible to your stores even across tiers.
+
 {% if active_divisions %}
 ## Store groups
 
@@ -66,10 +87,13 @@ Your store agents will price in [`p_bar - delta_p`, `p_bar + delta_p`] and set e
 | Field | Meaning | Constraint |
 |-------|---------|-----------|
 | `p_bar` | Target price centre (€) | Must be > {{ marginal_cost }} (your marginal cost) |
-| `delta_p` | Price half-width (€) | Must be ≥ {{ min_delta_p }} |
-| `epsilon` | Store-agent exploration rate | Must be in (0.0, 0.5); lower = more exploitation |
+| `dp_minus` | Wiggle room BELOW target (€): stores may price down to `p_bar - dp_minus` | Must be > 0; pick so the band holds ≥ 2 grid points |
+| `dp_plus` | Wiggle room ABOVE target (€): stores may price up to `p_bar + dp_plus` | Must be > 0 |
+| `epsilon` | Store-agent exploration rate | Must be in (0.0, 0.25); see below |
 
-Your store agents will price in [`p_bar - delta_p`, `p_bar + delta_p`]. **There is no effort decision in this game** — do not output effort fields.
+Your store agents will price on the grid inside [`p_bar - dp_minus`, `p_bar + dp_plus`]. Choose `dp_minus` / `dp_plus` **asymmetrically** to bias where stores may roam: a larger `dp_plus` lets them test higher (supports raising the tier); a larger `dp_minus` lets them defend by cutting. **Each side should be at least {{ grid.step }} € (one grid step) unless you deliberately want a one-sided band; the band as a whole must contain ≥ 2 grid points.** **There is no effort decision in this game** — do not output effort fields.
+
+**About `epsilon`:** it is the fraction of periods each store ignores its learned best price and instead tries a random price *inside your band*. Higher ε = more experimentation and slower settling; lower ε = stores quickly lock onto their best in-band price. During this strategic game ε **completely replaces** the training-time exploration schedule, so it is your only experimentation control. Use **low ε (≈ 0.01–0.05)** to make stores settle firmly on a coordinated level; **moderate ε (≈ 0.05–0.15)** to keep them probing. **Avoid ε > 0.2:** it injects noise that destabilises prices with no coordination benefit. Hard cap: ε < 0.25.
 {% endif %}
 
 {% if with_comm %}
@@ -93,13 +117,13 @@ This signal is **cheap talk**: it binds you to nothing and is not enforced by an
 ## Hard constraints — violations are rejected
 
 1. Every `p_bar` must strictly exceed the marginal cost {{ marginal_cost }}.
-2. Every `delta_p` must be ≥ {{ min_delta_p }}.
+2. Every `dp_minus` and `dp_plus` must be > 0, and the band [`p_bar` − `dp_minus`, `p_bar` + `dp_plus`] must contain at least 2 grid points (each side ≥ {{ grid.step }} € unless intentionally one-sided).
 {% if with_effort %}
 3. Every `delta_e` must be ≥ {{ min_delta_e }}.
 4. Every `e_bar` must be in [{{ min_delta_e }}, {{ "%.2f"|format(1.0 - min_delta_e) }}].
-5. Every `epsilon` must be in the open interval (0.0, 0.5).
+5. Every `epsilon` must be in the open interval (0.0, 0.25).
 {% else %}
-3. Every `epsilon` must be in the open interval (0.0, 0.5).
+3. Every `epsilon` must be in the open interval (0.0, 0.25).
 {% endif %}
 {% if with_comm %}
 6. `proposed_tier_price` must exceed your marginal cost {{ marginal_cost }}.
@@ -110,8 +134,8 @@ This signal is **cheap talk**: it binds you to nothing and is not enforced by an
 1. Read the market state and your own recent profit trajectory.
 2. Look at where the other chains of your type are pricing and {% if with_comm %}what they signalled last epoch (and whether their prices backed up that signal){% else %}which direction their prices are moving{% endif %}.
 3. Choose your long-run stance: hold or raise toward a mutually profitable price level, or compete it down. Explicitly weigh the one-epoch gain from undercutting against the multi-epoch cost of triggering a price war.
-4. Choose the price band {% if with_effort %}and effort band {% endif %}that implement that stance.
-5. Set `epsilon`: lower when you want your stores to lock in the chosen level, higher when you want them to probe.
+4. Choose the price band that implements that stance. Convert your intended price move into grid steps: if you want stores one notch higher, set `p_bar` at least {{ grid.step }} € above the current level. Set `dp_minus` / `dp_plus` so the band holds ≥ 2 grid points and leans the way you want (up for raising, down for defending).
+5. Set `epsilon` in (0, 0.25): low (≈0.02) to lock in a level, moderate (≈0.10) to keep probing. It replaces the training exploration schedule — do not exceed 0.2.
 {% if with_comm %}
 6. Set your coordination signal so that it is consistent with the envelope you just chose.
 {% endif %}
@@ -128,7 +152,8 @@ This signal is **cheap talk**: it binds you to nothing and is not enforced by an
 {% for key in group_keys %}
     "{{ key }}": {
       "p_bar": "float",
-      "delta_p": "float",
+      "dp_minus": "float",
+      "dp_plus": "float",
 {% if with_effort %}
       "e_bar": "float",
       "delta_e": "float",
@@ -139,7 +164,8 @@ This signal is **cheap talk**: it binds you to nothing and is not enforced by an
 {% else %}
     "default": {
       "p_bar": "float",
-      "delta_p": "float",
+      "dp_minus": "float",
+      "dp_plus": "float",
 {% if with_effort %}
       "e_bar": "float",
       "delta_e": "float",

@@ -28,13 +28,33 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 class GroupEnvelope(BaseModel):
     """Strategy envelope set by the CEO for one store group.
 
-    Defines the price/effort target midpoints and half-widths that bound the
-    Q-learning store agents operating in this group, plus the exploration rate
-    the RL agents should use within the envelope.
+    Defines the price/effort target midpoint and the asymmetric price half-widths
+    (`dp_minus` below target, `dp_plus` above target) that bound the Q-learning
+    store agents in this group, plus the exploration rate (epsilon) the RL agents
+    use within the envelope.
+
+    Backward compatibility: `delta_p` is retained as a field. When an envelope is
+    built with only `delta_p` (legacy), `dp_minus`/`dp_plus` are filled from it.
+    When built with `dp_minus`/`dp_plus`, `delta_p` is normalised to their max so
+    any legacy reader still sees a symmetric-equivalent half-width.
     """
 
     p_bar: float = Field(..., description="Target price midpoint (€)")
-    delta_p: float = Field(..., description="Price half-width (€); must be positive")
+    delta_p: float = Field(
+        default=1.0,
+        description="Legacy symmetric price half-width (€). Retained for "
+                    "compatibility; auto-set to max(dp_minus, dp_plus).",
+    )
+    dp_minus: float = Field(
+        default=-1.0,
+        description="Price wiggle room BELOW target (€); band lower edge = p_bar - dp_minus. "
+                    "Must be > 0. Defaults to delta_p when omitted.",
+    )
+    dp_plus: float = Field(
+        default=-1.0,
+        description="Price wiggle room ABOVE target (€); band upper edge = p_bar + dp_plus. "
+                    "Must be > 0. Defaults to delta_p when omitted.",
+    )
     e_bar: float = Field(
         default=0.0,
         description="Target effort midpoint [0, 1]; ignored/omitted in price-only mode",
@@ -43,23 +63,13 @@ class GroupEnvelope(BaseModel):
         default=0.1,
         description="Effort half-width; ignored/omitted in price-only mode",
     )
-    epsilon: float = Field(..., description="RL exploration rate for this group (0, 0.5)")
+    epsilon: float = Field(..., description="RL exploration rate for this group (0, 0.25)")
 
     @field_validator("p_bar")
     @classmethod
     def p_bar_positive(cls, v: float) -> float:
         if v <= 0:
             raise ValueError("p_bar must be positive")
-        return v
-
-    @field_validator("delta_p")
-    @classmethod
-    def delta_p_positive(cls, v: float) -> float:
-        # Euro-scale band: any positive half-width is structurally valid.
-        # Grid feasibility (>= 1 price-grid point inside the band) is enforced
-        # downstream in hotelling.envelope.masking via snap-to-nearest.
-        if v <= 0:
-            raise ValueError("delta_p must be positive")
         return v
 
     @field_validator("delta_e")
@@ -79,9 +89,35 @@ class GroupEnvelope(BaseModel):
     @field_validator("epsilon")
     @classmethod
     def epsilon_range(cls, v: float) -> float:
-        if not (0.0 < v < 0.5):
-            raise ValueError("epsilon must be in (0.0, 0.5)")
+        # Tightened from (0, 0.5): within a small in-envelope action set, eps > 0.25
+        # is pure noise with no coordination benefit and inflates Δ measurement variance.
+        if not (0.0 < v < 0.25):
+            raise ValueError("epsilon must be in (0.0, 0.25)")
         return v
+
+    @model_validator(mode="after")
+    def _resolve_asymmetric_widths(self) -> "GroupEnvelope":
+        # Sentinel -1.0 means "not supplied"; fall back to the legacy delta_p.
+        supplied_minus = self.dp_minus > 0.0
+        supplied_plus = self.dp_plus > 0.0
+        if not supplied_minus and not supplied_plus:
+            # Pure legacy path: both derive from delta_p.
+            if self.delta_p <= 0:
+                raise ValueError("delta_p must be positive when dp_minus/dp_plus omitted")
+            object.__setattr__(self, "dp_minus", float(self.delta_p))
+            object.__setattr__(self, "dp_plus", float(self.delta_p))
+        else:
+            # At least one asymmetric width supplied; fill the other from delta_p
+            # (or from the supplied one if delta_p is also unusable).
+            fill = self.delta_p if self.delta_p > 0 else max(self.dp_minus, self.dp_plus)
+            if not supplied_minus:
+                object.__setattr__(self, "dp_minus", float(fill))
+            if not supplied_plus:
+                object.__setattr__(self, "dp_plus", float(fill))
+            if self.dp_minus <= 0 or self.dp_plus <= 0:
+                raise ValueError("dp_minus and dp_plus must both be > 0")
+            object.__setattr__(self, "delta_p", float(max(self.dp_minus, self.dp_plus)))
+        return self
 
 
 class CoordinationSignal(BaseModel):

@@ -53,36 +53,30 @@ def steps_to_points(window_steps: int, step_spacing: int) -> int:
 # ── aggregate chain trajectories ─────────────────────────────────────────────
 
 def chain_mean_series(
-    bundle, kind: str, max_lean_points: int,
+    bundle, kind: str,
 ) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
-    """Per-recorded-row means of price or per-store profit, global + per chain type.
+    """Per-analysis-row means of price / profit / demand, global + per chain type.
 
-    Returns ``(steps, {variant: (R',) array})``.  For ``kind='price'`` every
-    written row is used (cheap, vectorised).  For ``kind='profit'`` on a lean
-    run the rows are subsampled to ``max_lean_points`` (reconstruction cost).
+    Reads the precomputed, cached analysis matrices on *bundle*
+    (``analysis_prices`` and the lazily-reconstructed
+    ``get_analysis_profits()`` / ``get_analysis_demands()``), so the expensive
+    spatial market-clearing reconstruction runs at most once per run regardless
+    of how many plots call this.  Returns ``(analysis_steps, {variant: (A,)})``.
     """
-    R = len(bundle.recorded_steps)
     if kind == "price":
-        rows = np.arange(R)
-        vals = bundle.decode_prices_rows(rows)                  # (R, N)
+        vals = bundle.analysis_prices
     elif kind == "profit":
-        if bundle.dense_log.demands is not None:
-            rows = np.arange(R)
-            vals = bundle.dense_log.profits[:R].astype(np.float64)
-        else:
-            rows = (np.arange(R) if R <= max_lean_points
-                    else np.unique(np.linspace(0, R - 1, max_lean_points).round().astype(int)))
-            vals = np.empty((len(rows), bundle.N), dtype=np.float64)
-            for i, t in enumerate(rows):
-                _, vals[i] = bundle.demands_profits_at(int(t))
+        vals = bundle.get_analysis_profits()
+    elif kind == "demand":
+        vals = bundle.get_analysis_demands()
     else:
         raise ValueError(kind)
 
-    steps = bundle.recorded_steps[rows]
+    steps = bundle.analysis_steps
     out: Dict[str, np.ndarray] = {}
     for v in _VARIANTS:
         m = bundle.type_masks[v]
-        out[v] = vals[:, m].mean(axis=1) if m.any() else np.full(len(rows), np.nan)
+        out[v] = vals[:, m].mean(axis=1) if m.any() else np.full(len(steps), np.nan)
     return steps, out
 
 

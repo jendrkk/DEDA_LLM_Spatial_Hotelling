@@ -56,19 +56,32 @@ colours:
 
 # ── Per-chain-type colormaps for price/profit-coloured markers (#4,#5) ───────
 chain_cmaps:
-  discount: winter
-  standard: autumn
-  bio: summer
+  discount: Blues
+  standard: Reds
+  bio: Greens
+
+# ── Trajectory / time-series row subsampling (performance) ───────────────────
+# Controls how densely DenseLog rows are sampled for the 2-D trajectory plots
+# (#1 price, #2 profit, #3 Delta, and the time-series extras). On lean runs each
+# retained row costs one full spatial market-clearing reconstruction, so coarser
+# sampling is dramatically faster. Does NOT affect animations (#4-#9), which use
+# frames.n_frames. A 1000-step moving average still sees ~10 points per window at
+# the default 1-point-per-100-steps resolution.
+analysis:
+  auto_stride: true            # derive stride for ~1 analysis point / target_steps_per_point steps.
+  target_steps_per_point: 100  # target spacing (simulation steps) between analysis points.
+  stride: 1                    # used only when auto_stride: false; take every Nth recorded row.
+  max_points: 1000000          # hard cap on analysis points (overrides stride if exceeded).
 
 # ── Frame sampling for all animations ────────────────────────────────────────
 frames:
-  n_frames: 60               # evenly spaced DenseLog rows; capped at rows_written.
+  n_frames: 216              # evenly spaced DenseLog rows; capped at rows_written.
   mode: even                 # 'even' (n_frames evenly spaced) or 'all' (every recorded row).
-  max_frames: 240            # hard cap for mode: all.
+  max_frames: 216            # hard cap for mode: all.
 
 # ── Animation encoding ───────────────────────────────────────────────────────
 animation:
-  fps: 8
+  fps: 18
   format: webp               # webp | apng | gif | mp4.
                              #   webp/apng preserve full alpha (recommended with transparent: true).
                              #   gif has only 1-bit transparency; mp4 has none.
@@ -77,16 +90,16 @@ animation:
   transparent_format: webp   # format substituted when transparency is required but `format`
                              #   cannot carry alpha.
   loop: 0                    # 0 = loop forever.
-  lossless_webp: true
+  lossless_webp: false
 
 # ── Trajectory plots (#1,#2,#3 and time-series extras) ───────────────────────
 trajectory:
-  ma_window_steps: 1000      # moving-average window in SIMULATION STEPS (converted to recorded
+  ma_window_steps: 100000    # moving-average window in SIMULATION STEPS (converted to recorded
                              #   points using the dense-log stride). Set 0 to disable the MA.
   ma_kind: trailing          # trailing | centered
-  raw_alpha: 0.25            # opacity of the raw (un-smoothed) trajectory under the MA line.
+  raw_alpha: 0.2             # opacity of the raw (un-smoothed) trajectory under the MA line.
   show_benchmarks: true      # draw p^N_tau / p^M_tau (and pi^N_tau / pi^M_tau) reference levels.
-  max_lean_points: 4000      # lean runs: cap reconstructed rows for profit trajectories (subsampled).
+  max_lean_points: 10000     # lean runs: cap reconstructed rows for profit trajectories (subsampled).
   delta_clip: [-0.5, 1.5]    # clip range for Calvano Delta(t) (matches runner.py).
   figsize: [11.0, 5.2]
 
@@ -135,7 +148,7 @@ graph_loops:
   loop_cmap: RdYlGn_r        # [0,1] colourmap for per-loop Delta.
   draw_candidate_edges: false
   annotate: true             # print the Delta value at each loop centroid.
-  min_loop_size: 3           # smallest cycle length to treat as a 'loop'.
+  min_loop_size: 2           # smallest cycle length to treat as a 'loop'.
   per_loop_timeseries: true  # also emit a small-multiples Delta(t) panel per loop.
 
 # ── Per-store windowed learned state (used by #9 and summaries) ──────────────

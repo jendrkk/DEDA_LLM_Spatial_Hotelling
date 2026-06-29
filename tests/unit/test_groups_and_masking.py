@@ -74,4 +74,5 @@ def test_mask_snap_to_nearest_when_band_too_narrow():
     mask, _ = build_action_mask_and_epsilon(
         {"A": env}, ["A"], ["default"], price_grid, np.array([0.0]), 1, False,
     )
-    assert mask[0].sum() == 1  # snapped to the single nearest grid point
+    # ≥2 guaranteed by the snap-and-widen floor (band narrower than one grid step)
+    assert mask[0].sum() >= 2

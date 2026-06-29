@@ -948,12 +948,21 @@ def run_sweep(
     raise NotImplementedError
 
 
-def _build_components(config: dict) -> dict:
-    """Build City, Firms, env, warmed-ready batch agent, benchmarks, union grid.
+def _build_components(config: dict, output_dir=None) -> dict:
+    """Build City, Firms, env, two-stage-warmed batch agent, benchmarks, grids.
 
     Mirrors run_single_session's construction (kept separate so the Phase-0
-    baseline stays untouched). Returns a dict of components for the strategic run.
+    baseline stays untouched) so the strategic Phase-0 burn-in is behaviourally
+    identical to the baseline up to the CEO layer — including ``--graph-states``
+    (reciprocal rival graph + global/chain grids) and the two-stage exploration
+    schedule. Returns a dict of components for the strategic run.
+
+    When ``output_dir`` is given and state_mode == "graph_states", writes
+    ``graph_rivals.npy`` and (best-effort) ``rival_graph.html`` into it. For a
+    ``--from-run`` graph-states run the rivals are LOADED from the source run's
+    ``graph_rivals.npy`` so the loaded Q-table's state encoding matches exactly.
     """
+    import logging
     from pathlib import Path
 
     import geopandas as gpd
@@ -964,10 +973,13 @@ def _build_components(config: dict) -> dict:
     from hotelling.env.market_env import HotellingMarketEnv
     from hotelling.spatial.loader import load_berlin_city
 
+    _log = logging.getLogger("hotelling.strategic")
+
     env_cfg = config["env"]
     agent_cfg = config["agents"]
     seed = config["phase2"].get("seed", None)
     with_effort = bool(config.get("with_effort", False))
+    from_run = config.get("from_run")
 
     _cm_raw = env_cfg.get("catchment_minutes", None)
     city, firms = load_berlin_city(
@@ -1026,10 +1038,9 @@ def _build_components(config: dict) -> dict:
             grid_min = max(mc_min, nash_lo - xi * span)
             grid_max = mono_hi + xi * span
 
-    # --- Chain-type-specific grids for _build_components (optional) ---
+    # --- Chain-type-specific grids (GRID=CS and other chain_specific_grid runs) ---
     _bc_chain_grids: dict | None = None
     if bool(agent_cfg.get("chain_specific_grid", False)) and city.dist2_km2 is not None and p_nash_arr is not None:
-        import logging as _log_bc
         _xi_bc = float(agent_cfg.get("price_grid_xi", 0.1))
         _m_bc = int(agent_cfg.get("m", 25))
         _chain_types_bc = np.array([f.chain_type for f in firms], dtype=object)
@@ -1051,12 +1062,109 @@ def _build_components(config: dict) -> dict:
                 ct_lo = max(0.0, mc_ct)
                 ct_hi = p_mono_ct + _xi_bc * max(span_ct, 1e-6)
             _bc_chain_grids[ct] = np.linspace(ct_lo, ct_hi, _m_bc)
-            _log_bc.getLogger(__name__).info(
-                "Chain grid (strategic) %s: [%.4f, %.4f]", ct, ct_lo, ct_hi,
-            )
+            _log.info("Chain grid (strategic) %s: [%.4f, %.4f]", ct, ct_lo, ct_hi)
         if _bc_chain_grids:
             grid_min = float(min(g.min() for g in _bc_chain_grids.values()))
             grid_max = float(max(g.max() for g in _bc_chain_grids.values()))
+
+    # --- graph_states: reciprocal rival observation graph (mirrors run_single_session 1d) ---
+    _graph_rivals = None
+    _graph_obj = None
+    _graph_own_grid = str(agent_cfg.get("graph_own_grid_type", "G"))
+    if str(agent_cfg.get("state_mode", "neighbors")) == "graph_states":
+        if not (auto_grid and city.dist2_km2 is not None) or p_nash_arr is None or p_mono_arr is None:
+            raise ValueError(
+                "--graph-states requires dense benchmarks (dense_distances=true, "
+                "auto_price_grid=true); Bertrand-Nash / monopoly arrays are unavailable."
+            )
+        if city.catch_indptr is None:
+            raise ValueError(
+                "--graph-states requires a sparse catchment; set catchment_minutes "
+                "in the env config (e.g. catchment_minutes: 8.0)."
+            )
+        _xi_gs = float(agent_cfg.get("price_grid_xi", 0.1))
+        _chain_types_gs = np.array([f.chain_type for f in firms], dtype=object)
+
+        # "G": one global grid over the union of per-chain Nash..mono bands, dropping the
+        # dead [MC, p_N) region (NO mc_min floor). "CS": _bc_chain_grids already built above.
+        if _graph_own_grid == "G":
+            _los, _his = [], []
+            for _ct in ("discount", "standard", "bio"):
+                _mct = _chain_types_gs == _ct
+                if _mct.sum() == 0:
+                    continue
+                _pn = float(p_nash_arr[_mct].mean())
+                _pm = float(p_mono_arr[_mct].mean())
+                _gc = max(_pm - _pn, 1e-6)
+                _los.append(_pn - _xi_gs * _gc)
+                _his.append(_pm + _xi_gs * _gc)
+            grid_min = float(min(_los))
+            grid_max = float(max(_his))
+            _bc_chain_grids = None  # force a single global grid in the env
+            _log.info(
+                "graph_states 'G' global grid: [%.2f, %.2f]; m=%d -> step=%.3f EUR.",
+                grid_min, grid_max, int(agent_cfg.get("m", 18)),
+                (grid_max - grid_min) / max(int(agent_cfg.get("m", 18)) - 1, 1),
+            )
+
+        # --from-run: load the EXACT rivals the loaded Q-table was trained against.
+        _loaded_from_run = False
+        _from_src: Path | None = None
+        if from_run:
+            _from_src = Path(from_run)
+            _gr_path = _from_src / "graph_rivals.npy"
+            if _gr_path.exists():
+                _graph_rivals = np.load(_gr_path).astype(np.int64)
+                _loaded_from_run = True
+                _log.info("graph_states: loaded graph_rivals.npy from --from-run (%s).", _gr_path)
+            else:
+                _log.warning(
+                    "graph_states --from-run: no graph_rivals.npy in %s; rebuilding the "
+                    "graph deterministically (b-matching ties may differ from the source run).",
+                    _from_src,
+                )
+
+        if not _loaded_from_run:
+            from hotelling.env.rival_graph import (
+                build_rival_graph, compute_competition_matrix, diversion_edge_weights,
+            )
+            _eff0 = np.zeros(len(firms), dtype=np.float64)
+            _M_mat, _E_vec = compute_competition_matrix(city, p_nash_arr, _eff0)
+            _W_mat = diversion_edge_weights(_M_mat, _E_vec)
+            _graph_obj = build_rival_graph(
+                _W_mat,
+                int(agent_cfg.get("graph_k", 2)),
+                match_mode=str(agent_cfg.get("graph_rival_match", "A")),
+                chain_types=_chain_types_gs,
+                candidate_topn=int(agent_cfg.get("graph_candidate_topn", 8)),
+                min_edge_weight=float(agent_cfg.get("graph_min_edge_weight", 0.0)),
+            )
+            _graph_rivals = _graph_obj.rivals
+
+        # Persist artefacts into the strategic run folder (parity with baseline).
+        if output_dir is not None:
+            out_p = Path(output_dir)
+            np.save(out_p / "graph_rivals.npy", _graph_rivals)
+            if _graph_obj is not None:
+                try:
+                    from hotelling.viz.rival_graph_map import write_rival_graph_map
+                    write_rival_graph_map(
+                        out_p / "rival_graph.html", firms, _graph_obj,
+                        title=(
+                            f"Rival graph (k={agent_cfg.get('graph_k', 2)}, "
+                            f"grid={_graph_own_grid}, match={agent_cfg.get('graph_rival_match', 'A')})"
+                        ),
+                    )
+                except Exception as _map_exc:  # noqa: BLE001
+                    _log.warning("Rival-graph map generation failed: %s", _map_exc)
+            elif _loaded_from_run and _from_src is not None:
+                _src_html = _from_src / "rival_graph.html"
+                if _src_html.exists():
+                    import shutil
+                    try:
+                        shutil.copyfile(_src_html, out_p / "rival_graph.html")
+                    except Exception as _cp_exc:  # noqa: BLE001
+                        _log.warning("Could not copy rival_graph.html from --from-run: %s", _cp_exc)
 
     env = HotellingMarketEnv(
         city=city, firms=firms,
@@ -1074,8 +1182,56 @@ def _build_components(config: dict) -> dict:
         n_comp_bins=int(agent_cfg.get("n_comp_bins", 15)),
         p_nash_arr=p_nash_arr,
         p_mono_arr=p_mono_arr,
-        calvano_k=int(agent_cfg.get("calvano_k", 1)),  # TODO: pass hybrid params to _build_components env constructor (see Step 3 prompt)
+        calvano_k=int(agent_cfg.get("calvano_k", 1)),
+        hybrid_n_profit=int(agent_cfg.get("hybrid_n_profit", 5)),
+        hybrid_n_gap=int(agent_cfg.get("hybrid_n_gap", 9)),
+        hybrid_gap_lo=float(agent_cfg.get("hybrid_gap_lo", -0.20)),
+        hybrid_gap_hi=float(agent_cfg.get("hybrid_gap_hi", 0.20)),
+        graph_rivals=_graph_rivals,
+        graph_k=int(agent_cfg.get("graph_k", 2)),
+        graph_n_rival_bins=int(agent_cfg.get("graph_n_rival_bins", 10)),
+        graph_rival_match=str(agent_cfg.get("graph_rival_match", "A")),
     )
+
+    # --- Two-stage exploration schedule (mirrors run_single_session) ---
+    # Drives the Phase-0 burn-in so the strategic warm-up is identical to the
+    # baseline. Computed against the strategic burn-in length (phase2.T_burnin).
+    T_burnin = int(config["phase2"].get("T_burnin", 200_000))
+    _beta_auto = bool(agent_cfg.get("beta_decay_auto", True))
+    _sched_params: dict | None = None
+    if _beta_auto:
+        if str(agent_cfg.get("beta_schedule", "two_stage")) == "two_stage":
+            _sched_params = compute_two_stage_schedule(
+                T_burnin,
+                explore_fraction=float(agent_cfg.get("explore_fraction", 0.65)),
+                epsilon_transition=float(agent_cfg.get("epsilon_transition", 0.10)),
+                epsilon_min=float(agent_cfg.get("epsilon_min", 3e-4)),
+            )
+            agent_cfg["beta_decay"] = _sched_params["beta1"]
+            agent_cfg["beta1"] = _sched_params["beta1"]
+            agent_cfg["beta2"] = _sched_params["beta2"]
+            agent_cfg["t0_schedule"] = _sched_params["t0"]
+            agent_cfg["epsilon_min"] = _sched_params["epsilon_min"]
+            agent_cfg["epsilon_transition"] = _sched_params["epsilon_transition"]
+            agent_cfg["mean_epsilon_approx"] = _sched_params["mean_epsilon_approx"]
+        else:
+            _beta = compute_beta_decay(T_burnin)
+            agent_cfg["beta_decay"] = _beta
+            agent_cfg["beta_schedule"] = "single"
+            agent_cfg["beta1"] = None
+            agent_cfg["beta2"] = None
+            agent_cfg["t0_schedule"] = 0
+            agent_cfg["mean_epsilon_approx"] = float("nan")
+    else:
+        agent_cfg["beta_schedule"] = "single"
+        agent_cfg.setdefault("beta1", None)
+        agent_cfg.setdefault("beta2", None)
+        agent_cfg.setdefault("t0_schedule", 0)
+        agent_cfg.setdefault("mean_epsilon_approx", float("nan"))
+
+    _b1 = agent_cfg.get("beta1")
+    _b2 = agent_cfg.get("beta2")
+    _t0_sched = int(agent_cfg.get("t0_schedule", 0))
     batch_agent = BatchQLearningAgent(
         n_agents=len(firms), m=int(agent_cfg.get("m", 25)),
         m_effort=int(agent_cfg.get("m_effort", 1)), k=int(agent_cfg.get("k_neighbors", 1)),
@@ -1085,6 +1241,11 @@ def _build_components(config: dict) -> dict:
         seed=int(seed) if seed is not None else None,
         state_mode=str(agent_cfg.get("state_mode", "neighbors")),
         state_size=env.state_size,
+        epsilon_min=float(agent_cfg.get("epsilon_min", 3e-4)),
+        beta1=float(_b1) if _b1 is not None else None,
+        beta2=float(_b2) if _b2 is not None else None,
+        t0=_t0_sched,
+        epsilon_transition=float(agent_cfg.get("epsilon_transition", 0.10)),
     )
     grid_gdf = gpd.read_parquet(env_cfg.get("grid_path", "data/processed/demand_grid.parquet"))
     return {
@@ -1092,6 +1253,10 @@ def _build_components(config: dict) -> dict:
         "p_nash_arr": p_nash_arr, "p_mono_arr": p_mono_arr, "e_nash_arr": e_nash_arr,
         "grid_min": grid_min, "grid_max": grid_max, "grid_gdf": grid_gdf,
         "chain_type_grids": _bc_chain_grids,
+        "graph_rivals": _graph_rivals,
+        "graph_obj": _graph_obj,
+        "graph_own_grid_type": _graph_own_grid,
+        "two_stage_sched": _sched_params,
     }
 
 
@@ -1131,10 +1296,18 @@ def run_strategic_session(config: dict) -> dict:
     with (output_dir / "config.yaml").open("w") as f:
         yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
 
-    comp = _build_components(config)
+    comp = _build_components(config, output_dir=output_dir)
     env, batch_agent, firms = comp["env"], comp["batch_agent"], comp["firms"]
     p_nash_arr, p_mono_arr = comp["p_nash_arr"], comp["p_mono_arr"]
     e_nash_arr = comp.get("e_nash_arr")
+
+    # Price-grid artefacts (parity with run_baseline; graph_rivals.npy +
+    # rival_graph.html are already written inside _build_components).
+    np.save(output_dir / "price_grid.npy", env.price_grid)
+    _ctg = comp.get("chain_type_grids")
+    if _ctg:
+        for _ct, _grid in _ctg.items():
+            np.save(output_dir / f"price_grid_{_ct}.npy", _grid)
 
     phase2_cfg = config["phase2"]
     with_effort = bool(config.get("with_effort", False))
@@ -1193,6 +1366,27 @@ def run_strategic_session(config: dict) -> dict:
         burn_result = {"epsilon_mean": float(batch_agent.epsilon_mean)}
         _log.info("Loaded converged Q-table from %s; skipping Phase-0 burn-in.", from_run)
     else:
+        # Optional non-zero Q-table init (parity with run_baseline --qtable-init).
+        _qi_mode_str = str(config.get("qtable_init", "zero"))
+        if _qi_mode_str != "zero" and p_nash_arr is not None and comp["city"].dist2_km2 is not None:
+            from hotelling.agents.qtable_init import QtableInitMode, compute_q_init
+            _log.info("Computing Q-table initialization: mode=%s ...", _qi_mode_str)
+            _q_init = compute_q_init(
+                QtableInitMode.from_cli(_qi_mode_str),
+                env=env, city=comp["city"], n_agents=len(firms),
+                state_size=env.state_size, action_size=env._action_size,
+                m=int(config["agents"].get("m", 25)),
+                m_effort=int(config["agents"].get("m_effort", 1)),
+                delta=float(config["agents"].get("delta", 0.95)),
+                p_nash_arr=p_nash_arr, p_mono_arr=p_mono_arr,
+                transport_cost=float(config["env"].get("transport_cost", 0.01)),
+            )
+            batch_agent.set_q_init(_q_init)
+        elif _qi_mode_str != "zero":
+            _log.warning(
+                "--qtable-init=%s requires dense benchmarks; falling back to zero init.",
+                _qi_mode_str,
+            )
         burn = BatchSimulationEngine(
             env=env, batch_agent=batch_agent, max_steps=T_burnin,
             record_every=record_every, recorder=None, dense_log=None,
@@ -1235,15 +1429,39 @@ def run_strategic_session(config: dict) -> dict:
         backoff_max=float(ceo_cfg.get("backoff_max", 60.0)),
         capture_raw=save_comm,
     )
+    # ── Per-chain action-grid + rival-observation specs from the LIVE env ──────
+    # Sourced from the env actually used this run (mirrors the --from-run config
+    # exactly), so the CEO sees the true grid even though a --graph-states
+    # baseline's metadata.json omits m / grid bounds.
+    _brand_ct = {str(f.chain): str(f.chain_type) for f in firms}
+    grid_specs: dict[str, dict] = {}
+    graph_specs: dict[str, dict] = {}
+    for _brand, _ct in _brand_ct.items():
+        grid_specs[_brand] = env.grid_spec(_ct)
+        graph_specs[_brand] = env.graph_degree_spec(_ct)
+
+    # Auto-floor min_delta_p to at least one grid step so envelopes are grid-feasible
+    # regardless of the YAML euro value (which can silently undershoot the grid).
+    _grid_step_global = float(env.grid_spec(None).get("step", 0.0))
+    _min_dp_cfg = float(ceo_cfg.get("min_delta_p", 1.5))
+    _min_delta_p_eff = max(_min_dp_cfg, _grid_step_global)
+    if _min_delta_p_eff > _min_dp_cfg:
+        _log.info(
+            "min_delta_p floored to one grid step: cfg=%.3f € -> effective=%.3f € "
+            "(grid step=%.3f €).", _min_dp_cfg, _min_delta_p_eff, _grid_step_global,
+        )
+
     ceos = build_chain_ceos(
         firms, client=client, active_divisions=active_divisions,
         division_params=division_params, group_keys=group_keys,
-        min_delta_p=float(ceo_cfg.get("min_delta_p", 1.5)),
+        min_delta_p=_min_delta_p_eff,
         min_delta_e=float(ceo_cfg.get("min_delta_e", 0.1)), T_ceo=T_CEO,
         merge_system=bool(ceo_cfg.get("merge_system_prompt", True)),
         capture_comm=save_comm,
         with_effort=with_effort,
         with_comm=with_comm,
+        grid_specs=grid_specs,
+        graph_specs=graph_specs,
     )
 
     # ── Phase 2: strategic game (continues from warmed state, no reset) ────
@@ -1421,6 +1639,27 @@ def run_strategic_session(config: dict) -> dict:
         "group_keys": group_keys, "deltas_by_chain": deltas_by_chain,
         "deltas_profit_by_chain": deltas_profit_by_chain,
         "profit_delta_is_gross": True,
+        "state_mode": str(config["agents"].get("state_mode", "neighbors")),
+        "graph_k": int(config["agents"].get("graph_k", 2)),
+        "graph_n_rival_bins": int(config["agents"].get("graph_n_rival_bins", 10)),
+        "graph_own_grid_type": str(comp.get("graph_own_grid_type",
+                                             config["agents"].get("graph_own_grid_type", "G"))),
+        "graph_rival_match": str(config["agents"].get("graph_rival_match", "A")),
+        "graph_candidate_topn": int(config["agents"].get("graph_candidate_topn", 8)),
+        "graph_min_edge_weight": float(config["agents"].get("graph_min_edge_weight", 0.0)),
+        "chain_specific_grid": bool(config["agents"].get("chain_specific_grid", False)),
+        "qtable_init": str(config.get("qtable_init", "zero")),
+        "beta_schedule": str(config["agents"].get("beta_schedule", "two_stage")),
+        "beta_decay_auto": bool(config["agents"].get("beta_decay_auto", True)),
+        "beta1": (float(config["agents"]["beta1"])
+                  if config["agents"].get("beta1") is not None else None),
+        "beta2": (float(config["agents"]["beta2"])
+                  if config["agents"].get("beta2") is not None else None),
+        "t0_schedule": int(config["agents"].get("t0_schedule", 0)),
+        "epsilon_min": float(config["agents"].get("epsilon_min", 3e-4)),
+        "epsilon_transition": float(config["agents"].get("epsilon_transition", 0.10)),
+        "explore_fraction": float(config["agents"].get("explore_fraction", 0.65)),
+        "mean_epsilon_approx": float(config["agents"].get("mean_epsilon_approx", float("nan"))),
         "with_effort": with_effort, "with_comm": with_comm,
         "T_measure": (int(T_measure) if T_measure else int(T_CEO)),
         "ceo_temperature": float(ceo_cfg.get("temperature", 0)),
@@ -1436,6 +1675,24 @@ def run_strategic_session(config: dict) -> dict:
         "elapsed_s": round(time.time() - t_start, 2),
         "env_config_path": config.get("env_config_path"),
     }
+    _grid_meta = env.grid_spec(None)
+    _graph_meta_by_chain = {
+        ct: env.graph_degree_spec(ct) for ct in ("discount", "standard", "bio")
+    }
+    meta.update({
+        "price_grid_m": int(_grid_meta.get("m", 0)),
+        "price_grid_lo": float(_grid_meta.get("lo", 0.0)),
+        "price_grid_hi": float(_grid_meta.get("hi", 0.0)),
+        "price_grid_step": float(_grid_meta.get("step", 0.0)),
+        "price_grid_regime": str(_grid_meta.get("regime", "G")),
+        "min_delta_p_effective": float(_min_delta_p_eff),
+        "graph_mean_observed_rivals_by_chain": {
+            ct: float(d.get("mean_observed", 0.0)) for ct, d in _graph_meta_by_chain.items()
+        },
+        "graph_n_isolated_by_chain": {
+            ct: int(d.get("n_isolated", 0)) for ct, d in _graph_meta_by_chain.items()
+        },
+    })
     with (output_dir / "metadata.json").open("w") as f:
         json.dump(meta, f, indent=2)
 

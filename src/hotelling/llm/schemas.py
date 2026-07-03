@@ -136,8 +136,11 @@ class CoordinationSignal(BaseModel):
     )
     proposed_tier_price: float = Field(
         ...,
-        description="Price level (€) the chain proposes its type converge toward; "
-                    "must exceed marginal cost",
+        description="Price level (€) you propose the chains of your type move "
+                    "TOWARD NEXT — a forward target, not necessarily the current "
+                    "price. If mutual restraint held last epoch, this is typically "
+                    "one grid step above the current type level (a ratchet up); "
+                    "must exceed marginal cost.",
     )
 
     @field_validator("proposed_tier_price")
@@ -153,8 +156,27 @@ class ChainEnvelopeOutput(BaseModel):
 
     The dict key is the group label string (e.g. "heavy_rich"), matching the
     GroupDivision registry labels used at Phase 0 initialisation.
+
+    ``deliberation`` is defined FIRST so that under Instructor ``tools`` mode
+    (function-calling) the model generates its reasoning trace before the
+    envelope numbers — a provider-agnostic chain-of-thought that does not rely
+    on ``reasoning_effort`` / extended thinking.
     """
 
+    deliberation: str = Field(
+        ...,
+        description=(
+            "Step-by-step reasoning BEFORE the decision (produced first). Work "
+            "through, in order: (1) where your chain and each same-type rival "
+            "currently price, and how far that sits below the price sticky "
+            "demand can sustain; (2) whether flat profits mean you are at the "
+            "ceiling or merely stuck below it; (3) the one-epoch gain from "
+            "undercutting vs. the multi-epoch cost of a price war; (4) whether a "
+            "coordinated one-grid-step increase by your type is warranted this "
+            "epoch and what floor implements it. Several sentences; this is your "
+            "scratchpad, not a summary."
+        ),
+    )
     chain_id: str = Field(..., description="Chain identifier (e.g. 'edeka')")
     epoch: int = Field(..., description="CEO epoch index (incremented each T_CEO)")
     groups: dict[str, GroupEnvelope] = Field(
@@ -164,7 +186,10 @@ class ChainEnvelopeOutput(BaseModel):
         default=None,
         description="Cheap-talk coordination signal; populated only in --with-comm runs",
     )
-    rationale: str = Field(..., description="CEO chain-of-thought reasoning (logged only)")
+    rationale: str = Field(
+        ...,
+        description="One-sentence summary of the decision (logged for research)",
+    )
 
 
 class RivalUnderCutResponse(BaseModel):

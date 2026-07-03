@@ -21,7 +21,7 @@ EFFORT_GRID = np.array([0.0])
 
 def _env(p_bar: float, dp_minus: float, dp_plus: float, eps: float = 0.05) -> ChainEnvelopeOutput:
     return ChainEnvelopeOutput(
-        chain_id="A", epoch=0, rationale="test",
+        chain_id="A", epoch=0, deliberation="test", rationale="test",
         groups={"default": GroupEnvelope(
             p_bar=p_bar, dp_minus=dp_minus, dp_plus=dp_plus, epsilon=eps,
         )},
@@ -166,7 +166,7 @@ class TestEpsilonClamp:
     def test_epsilon_clamped_to_eps_lo(self):
         """epsilon below _EPS_LO (1e-3) is clamped up; but schema rejects < 0 anyway."""
         env = ChainEnvelopeOutput(
-            chain_id="A", epoch=0, rationale="t",
+            chain_id="A", epoch=0, deliberation="test", rationale="t",
             groups={"default": GroupEnvelope(p_bar=60.0, delta_p=4.0, epsilon=0.001)},
         )
         _, eps = build_action_mask_and_epsilon(
@@ -176,7 +176,7 @@ class TestEpsilonClamp:
 
     def test_epsilon_passthrough_within_bounds(self):
         env = ChainEnvelopeOutput(
-            chain_id="A", epoch=0, rationale="t",
+            chain_id="A", epoch=0, deliberation="test", rationale="t",
             groups={"default": GroupEnvelope(p_bar=60.0, delta_p=4.0, epsilon=0.1)},
         )
         _, eps = build_action_mask_and_epsilon(

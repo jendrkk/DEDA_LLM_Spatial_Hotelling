@@ -56,6 +56,11 @@ def main() -> None:
     ap.add_argument("--with-comm", action="store_true",
                     help="enable the CEO cheap-talk coordination signal (and its "
                          "memory in the prompt)")
+    ap.add_argument("--tier-commit", dest="tier_commit", action="store_true",
+                    help="Facilitating device: when all same-type chains mutually "
+                         "signal willingness at a tier price >= the current level, "
+                         "bind each same-type store's price FLOOR to that tier "
+                         "(enforced coordinated ratchet). Requires --with-comm.")
     ap.add_argument("--temp", type=float, default=None,
                     help="CEO LLM sampling temperature; Google AI Studio accepts "
                          "floats in [0.0, 2.0] (default 0 = deterministic). 0.3–0.7 "
@@ -74,6 +79,11 @@ def main() -> None:
                          "run_baseline run directory (skips Phase-0 burn-in)")
     ap.add_argument("--group-analytics", action="store_true",
                     help="enrich the CEO prompt with per-group competitive analytics (2.0)")
+    ap.add_argument("--strategic-analytics", dest="strategic_analytics",
+                    action="store_true",
+                    help="Enrich the CEO prompt with per-type Nash/joint-monopoly "
+                         "headroom and a coordinated tier-step profit counterfactual "
+                         "(analytic; oracle-ish, gate for a clean control arm).")
     ap.add_argument("--save-LLM-con", dest="save_llm_con", action="store_true",
                     help="dev tool: save each CEO LLM prompt + full response (incl. "
                          "reasoning if returned) to results/.../LLM_communication/"
@@ -215,6 +225,13 @@ def main() -> None:
         phase2_cfg["no_ceo"] = True
     if args.group_analytics:
         ceo_cfg["group_analytics"] = True
+    if args.strategic_analytics:
+        ceo_cfg["strategic_analytics"] = True
+    if args.tier_commit:
+        if not args.with_comm:
+            ap.error("--tier-commit requires --with-comm (it acts on the "
+                     "coordination signal).")
+        ceo_cfg["tier_commit"] = True
     if args.save_llm_con:
         ceo_cfg["save_communication"] = True
     if args.temp is not None:

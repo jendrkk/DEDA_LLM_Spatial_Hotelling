@@ -13,9 +13,38 @@ This is one epoch of a repeated game. The numbers below summarise the most recen
 {% if with_effort %}
 | Mean effort | {{ "%.3f"|format(own.mean_effort_last_T) }} |
 {% endif %}
-| Total demand | {{ "{:,.0f}".format(own.total_demand_last_T) }} units |
-| Total profit | {{ "%.2f"|format(own.total_profit_last_T) }} € |
+| Margin per unit (price − marginal cost) | {{ "%.3f"|format(own.margin_per_unit) }} € |
+| Profit per store per period | {{ "{:,.0f}".format(own.profit_per_store_per_period) }} € |
+| Total demand (window) | {{ "{:,.0f}".format(own.total_demand_last_T) }} units |
 | Profit trend vs. previous epoch | {{ "%+.1f"|format(own.profit_trend_pct) }}% |
+
+*A near-zero profit trend is ambiguous — it means either you are at the profit peak OR stuck on a low plateau below it. Use the headroom / counterfactual below (when shown), not the flat trend, to tell which.*
+
+{% if own.headroom is defined %}
+#### Where you sit vs. the sustainable ceiling (your type: {{ own.headroom.chain_type }})
+
+| Reference | Price |
+|-----------|-------|
+| Competitive floor (one-shot Bertrand-Nash) | {{ "%.3f"|format(own.headroom.nash_price) }} € |
+| Your current mean price | {{ "%.3f"|format(own.headroom.current_price) }} € |
+| Joint-profit-maximising ceiling (your-type cartel) | {{ "%.3f"|format(own.headroom.mono_price) }} € |
+
+You are capturing **{{ "%.0f"|format(own.headroom.surplus_captured_pct) }}%** of the surplus between the competitive floor and the sustainable ceiling. There is **{{ "%.2f"|format(own.headroom.room_to_mono_eur) }} €** ({{ "%.1f"|format(own.headroom.room_to_mono_steps) }} grid steps) of room above your current price before you reach the joint-profit-maximising level. Sticky, differentiated demand makes prices in this range self-sustaining **if your type holds them together**.
+{% endif %}
+
+{% if own.tier_counterfactual is defined %}
+#### What a coordinated step up would do to your gross profit
+
+Estimated change in YOUR chain's gross profit relative to holding the current tier:
+
+| Move | Your gross-profit change |
+|------|--------------------------|
+| Your whole type raises **one** grid step together | {{ "%+.1f"|format(own.tier_counterfactual.up1_reciprocal_pct) }}% |
+| Your whole type raises **two** grid steps together | {{ "%+.1f"|format(own.tier_counterfactual.up2_reciprocal_pct) }}% |
+| You raise one step **alone** (rivals hold) | {{ "%+.1f"|format(own.tier_counterfactual.up1_unilateral_pct) }}% |
+
+*Read the contrast: raising alone typically gains little or loses (rivals keep the low-price shoppers) — which is exactly why the tier never rises on its own. Raising together is what converts headroom into profit. This is the case for coordination, and for setting a band whose floor sits one step above the current level.*
+{% endif %}
 
 {% if active_divisions %}
 #### Performance by store group
@@ -93,4 +122,4 @@ High-status consumer share (ring-wide): {{ "%.1f"|format(consumers.high_status_s
 
 ---
 
-Think step by step about the long-run consequences of your move, then output your JSON decision.
+First write your reasoning in the `deliberation` field — work through your headroom, the hold-vs-raise-vs-cut trade-off, and (when shown) the coordinated-vs-unilateral counterfactual — then output the rest of your JSON decision.

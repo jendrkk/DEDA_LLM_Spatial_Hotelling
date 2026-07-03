@@ -168,6 +168,7 @@ def build_ceo_state(
     with_comm: bool = False,
     signals_last_epoch: dict | None = None,
     own_last_signal: dict | None = None,
+    strategic_analytics: dict | None = None,
 ) -> dict:
     """Assemble the per-epoch CEO state dict for state_ceo.jinja."""
     a = window.arrays()
@@ -239,6 +240,14 @@ def build_ceo_state(
             "last_signal": (signals_last_epoch or {}).get(brand),
         })
 
+    n_own = int(own_mask.sum())
+    W_win = int(price.shape[0]) if price.size else 0
+    own_mean_price = _mean(price, own_mask)
+    margin_per_unit = own_mean_price - float(marginal_cost)
+    profit_per_store_per_period = (
+        own_profit / (n_own * W_win) if (n_own > 0 and W_win > 0) else 0.0
+    )
+
     return {
         "epoch": int(epoch),
         "T_ceo": int(T_ceo),
@@ -249,7 +258,13 @@ def build_ceo_state(
             "total_demand_last_T": own_demand,
             "total_profit_last_T": own_profit,
             "profit_trend_pct": float(trend),
+            "margin_per_unit": float(margin_per_unit),
+            "profit_per_store_per_period": float(profit_per_store_per_period),
             "group_performance": group_perf,
+            **({"headroom": strategic_analytics["headroom"]}
+               if strategic_analytics and "headroom" in strategic_analytics else {}),
+            **({"tier_counterfactual": strategic_analytics["tier_counterfactual"]}
+               if strategic_analytics and "tier_counterfactual" in strategic_analytics else {}),
         },
         "history": history[-3:],
         "rivals": rivals,

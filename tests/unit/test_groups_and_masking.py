@@ -49,7 +49,7 @@ def test_mask_and_epsilon_price_only():
     price_grid = np.linspace(20.0, 55.0, 25)
     effort_grid = np.array([0.0])
     env = ChainEnvelopeOutput(
-        chain_id="A", epoch=0, rationale="t",
+        chain_id="A", epoch=0, deliberation="test", rationale="t",
         groups={"default": GroupEnvelope(p_bar=30.0, delta_p=3.0, e_bar=0.5,
                                          delta_e=0.2, epsilon=0.05)},
     )
@@ -67,7 +67,7 @@ def test_mask_and_epsilon_price_only():
 def test_mask_snap_to_nearest_when_band_too_narrow():
     price_grid = np.linspace(20.0, 55.0, 25)  # step ~1.46
     env = ChainEnvelopeOutput(
-        chain_id="A", epoch=0, rationale="t",
+        chain_id="A", epoch=0, deliberation="test", rationale="t",
         groups={"default": GroupEnvelope(p_bar=30.0, delta_p=0.1, e_bar=0.5,
                                          delta_e=0.2, epsilon=0.05)},
     )

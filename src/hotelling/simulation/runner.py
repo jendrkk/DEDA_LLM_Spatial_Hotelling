@@ -1497,6 +1497,10 @@ def run_strategic_session(config: dict) -> dict:
         with_effort=with_effort,
         with_comm=with_comm,
         T_measure=(int(T_measure) if T_measure else None),
+        p_nash_arr=p_nash_arr,
+        p_mono_arr=p_mono_arr,
+        strategic_analytics=bool(ceo_cfg.get("strategic_analytics", False)),
+        tier_commit=bool(ceo_cfg.get("tier_commit", False)),
     )
     dense_log.flush()
     import json as _json
@@ -1572,34 +1576,35 @@ def run_strategic_session(config: dict) -> dict:
     #    footing as the effort_fixed monopoly benchmark from Step 4). A full
     #    joint (price, effort) cartel benchmark is a documented follow-up.
     deltas_profit_by_chain: dict = {}
-    if p_nash_arr is not None and p_mono_arr is not None and comp["city"].dist2_km2 is not None:
+    if p_nash_arr is not None and p_mono_arr is not None:
         try:
-            from hotelling.core.market import cell_choice_mass
+            # Evaluate ALL demand vectors on the SAME path the substrate clears
+            # on: market_clearing auto-dispatches to the sparse catchment kernel
+            # when city.catch_indptr is not None (the simulation path), else
+            # dense. Real demand is taken analytically at the windowed mean
+            # prices — NOT from the sparse `windowed_demands` record — so real
+            # and benchmark profits share identical footing. Mixing the dense
+            # benchmark kernel with catchment sim demand was the bug
+            # that pinned profit-Δ to the -0.5 clamp. Mirrors run_single_session.
+            from hotelling.core.market import market_clearing as _mc_delta
             N = len(firms)
             cts = np.array([f.chain_type for f in firms], dtype=object)
             costs = np.array([f.marginal_cost for f in firms], dtype=np.float64)
-            quals = np.array([f.quality for f in firms], dtype=np.float64)
             city = comp["city"]
             tc = float(config["env"].get("transport_cost", 0.01))
             e_bench = (np.asarray(e_nash_arr, dtype=np.float64)
                        if (with_effort and e_nash_arr is not None) else np.zeros(N))
 
             def _demand_at(prices, efforts):
-                inside, _ = cell_choice_mass(
-                    prices=prices, efforts=efforts, dist2_km2=city.dist2_km2,
-                    cell_pop=city.cell_pop, lambda_phi=city.lambda_phi,
-                    pi_H=city.pi_H, pi_H_lambda_phi=city.pi_H_lambda_phi,
-                    alpha=city.alpha, quality=quals, beta=city.beta,
-                    transport_cost=tc, mu=city.mu, a0=city.a0,
-                    transport_exponent=getattr(city, "transport_exponent", 1.0),
-                )
-                return inside.sum(axis=0)
+                d, _ = _mc_delta(prices, efforts, city, tc)
+                return d
 
             wp = res.get("windowed_prices", {})
-            wd = res.get("windowed_demands", {})
             p_real = np.array([float(wp.get(str(f.id), np.nan)) for f in firms])
-            d_real = np.array([float(wd.get(str(f.id), 0.0)) for f in firms])
-            pi_real = (p_real - costs) * d_real
+            if np.any(np.isnan(p_real)):
+                raise ValueError("windowed prices contain NaN; profit-Δ skipped")
+
+            pi_real = (p_real     - costs) * _demand_at(p_real,     e_bench)
             pi_nash = (p_nash_arr - costs) * _demand_at(p_nash_arr, e_bench)
             pi_mono = (p_mono_arr - costs) * _demand_at(p_mono_arr, e_bench)
 

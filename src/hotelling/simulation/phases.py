@@ -271,6 +271,10 @@ class Phase2StrategicGame:
         with_effort: bool = True,
         with_comm: bool = False,
         T_measure: int | None = None,
+        p_nash_arr=None,
+        p_mono_arr=None,
+        strategic_analytics: bool = False,
+        tier_commit: bool = False,
     ) -> dict:
         import numpy as np
 
@@ -326,6 +330,25 @@ class Phase2StrategicGame:
 
             if (not no_ceo) and ((t + 1) % T_CEO == 0):
                 signals_prev = dict(current_signals)
+                analytics_by_brand: dict = {}
+                if strategic_analytics and p_nash_arr is not None and p_mono_arr is not None:
+                    from hotelling.llm.ceo_analytics import compute_strategic_analytics
+                    _win_now = window.arrays()
+                    if _win_now["price"].size:
+                        _cur_prices = _win_now["price"].mean(axis=0)
+                    else:
+                        _cur_prices = env.decode_prices(
+                            env._current_joint_actions_arr // m_effort
+                        )
+                    _mc_arr = np.array(
+                        [f.marginal_cost for f in env.firms], dtype=np.float64
+                    )
+                    analytics_by_brand = compute_strategic_analytics(
+                        env=env, current_prices=_cur_prices,
+                        store_chain=store_chain, store_chain_type=store_chain_type,
+                        p_nash_arr=p_nash_arr, p_mono_arr=p_mono_arr,
+                        marginal_costs=_mc_arr,
+                    )
                 for brand, ceo in ceos.items():
                     st = build_ceo_state(
                         window, chain_id=brand, store_chain=store_chain,
@@ -339,6 +362,7 @@ class Phase2StrategicGame:
                         with_effort=with_effort, with_comm=with_comm,
                         signals_last_epoch=signals_prev,
                         own_last_signal=signals_prev.get(brand),
+                        strategic_analytics=analytics_by_brand.get(brand),
                     )
                     nf_before = ceo.n_fail
                     out = ceo.decide(st, epoch, prev_env[brand])
@@ -385,10 +409,36 @@ class Phase2StrategicGame:
                             "delta_p": g.delta_p,
                             "e_bar": g.e_bar, "delta_e": g.delta_e, "epsilon": g.epsilon,
                         })
+                tier_floor_idx = None
+                if tier_commit and with_comm and current_signals:
+                    _cur_pidx = env._current_joint_actions_arr // m_effort
+                    _cur_prices = env.decode_prices(_cur_pidx)
+                    _sg = getattr(env, "_store_price_grids", None)
+                    tier_floor_idx = np.zeros(N, dtype=np.int64)
+                    for _ct, _ct_mask in chain_masks.items():
+                        if not _ct_mask.any():
+                            continue
+                        _idx_ct = np.nonzero(_ct_mask)[0]
+                        _brands_ct = sorted({store_chain[int(j)] for j in _idx_ct})
+                        _sigs = [current_signals.get(b) for b in _brands_ct]
+                        _cur_type_price = float(_cur_prices[_ct_mask].mean())
+                        _all_willing = bool(_sigs) and all(
+                            (s is not None and s.get("willing")
+                             and float(s.get("proposed_tier_price", -1.0)) >= _cur_type_price)
+                            for s in _sigs
+                        )
+                        if not _all_willing:
+                            continue
+                        _tier_price = min(float(s["proposed_tier_price"]) for s in _sigs)
+                        for j in _idx_ct:
+                            _g = _sg[int(j)] if _sg is not None else env.price_grid
+                            _below = np.nonzero(np.asarray(_g) <= _tier_price + 1e-9)[0]
+                            tier_floor_idx[int(j)] = int(_below.max()) if _below.size else 0
                 mask, eps = build_action_mask_and_epsilon(
                     chain_envelopes, store_chain, store_group_labels,
                     env.price_grid, env.effort_grid, m_effort, mask_effort,
                     store_price_grids=getattr(env, '_store_price_grids', None),
+                    tier_floor_idx=tier_floor_idx,
                 )
                 batch_agent.set_action_mask(mask)
                 batch_agent.set_epsilon_override(eps)

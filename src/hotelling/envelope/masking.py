@@ -70,6 +70,25 @@ def _allowed_grid_indices_asym(
     return np.array(pair, dtype=np.int64)
 
 
+def _apply_tier_floor(p_idx: np.ndarray, floor_idx: int, m: int) -> np.ndarray:
+    """Intersect allowed price indices with ``>= floor_idx``, keeping ≥ 2 points.
+
+    Enforces a mutually-agreed tier floor on top of the CEO's band. If flooring
+    removes all but <2 feasible points (the band sat entirely below the floor),
+    the two highest grid points ``{m-2, m-1}`` are returned, so the store is
+    pushed up to the committed level while retaining the hard 2-point guarantee.
+    """
+    if floor_idx <= 0:
+        return p_idx
+    kept = p_idx[p_idx >= floor_idx]
+    if kept.size >= 2:
+        return kept
+    if m <= 1:
+        return np.array([0], dtype=np.int64)
+    hi = min(m - 1, max(floor_idx, 1))
+    return np.array([hi - 1, hi], dtype=np.int64)
+
+
 def build_action_mask_and_epsilon(
     chain_envelopes: dict[str, ChainEnvelopeOutput],
     store_chain: list[str],
@@ -79,6 +98,7 @@ def build_action_mask_and_epsilon(
     m_effort: int,
     mask_effort: bool,
     store_price_grids: np.ndarray | None = None,
+    tier_floor_idx: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Build the (N, m*m_effort) action mask and (N,) epsilon vector.
 
@@ -94,6 +114,9 @@ def build_action_mask_and_epsilon(
     store_price_grids : optional (N, m) per-store price grids. When provided each
         store's envelope EUR band is matched against its OWN chain-specific grid;
         None uses ``price_grid`` for all stores.
+    tier_floor_idx : optional (N,) int array of minimum allowed price-grid indices.
+        When given, each store's allowed prices are intersected with >= its floor
+        (the >= 2-point guarantee is preserved). None = no floor (default).
 
     Returns
     -------
@@ -122,6 +145,8 @@ def build_action_mask_and_epsilon(
         p_idx = _allowed_grid_indices_asym(
             _grid_i, float(env.p_bar), float(env.dp_minus), float(env.dp_plus)
         )
+        if tier_floor_idx is not None:
+            p_idx = _apply_tier_floor(p_idx, int(tier_floor_idx[i]), m)
         if mask_effort and m_effort > 1:
             # Effort stays symmetric; reuse the asymmetric helper with equal widths.
             e_idx = _allowed_grid_indices_asym(

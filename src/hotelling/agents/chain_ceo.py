@@ -251,6 +251,9 @@ class ChainCEO:
         return ChainEnvelopeOutput(
             chain_id=self.chain_id, epoch=epoch, groups=groups,
             coordination_signal=signal,
+            deliberation=("FALLBACK: the LLM call failed or returned an invalid "
+                          "envelope; retaining a neutral status-quo band centred on "
+                          "the chain's recent mean price."),
             rationale="FALLBACK: neutral envelope (LLM call failed or invalid).",
         )
 

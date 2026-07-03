@@ -43,3 +43,5 @@ min_delta_p: 1.0
 min_delta_e: 0.1
 
 group_analytics: false   # baseline 2.0: per-group competitive analytics in the prompt
+strategic_analytics: false   # per-type Nash/monopoly headroom + coordinated tier counterfactual in the CEO prompt
+tier_commit: false   # semi-binding tier floor: reciprocated willingness binds the same-type price floor (facilitating device)

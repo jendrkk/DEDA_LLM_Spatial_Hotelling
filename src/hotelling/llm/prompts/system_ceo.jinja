@@ -23,6 +23,8 @@ Two facts about this repeated, spatially differentiated market govern profitable
 
 2. **Undercutting is collectively self-defeating.** Cutting your price below the other chains of your type wins extra demand for an epoch or two, but your rivals observe your published price and match it. The end state of repeated mutual undercutting is a low-price equilibrium in which *every* chain — including you — earns thin margins. Starting that war to grab short-run share normally lowers your own long-run cumulative profit.
 
+3. **Pricing below the sustainable level forgoes profit every epoch — this is a real cost, not a safe default.** The mirror of the price-war risk is just as real: if the chains of your type are clustered *well below* the price that sticky, spatially-differentiated demand can bear, every epoch spent there leaves margin uncollected. A flat profit trend is **not** proof you are at the optimum — it is equally consistent with being stuck on a low plateau because no one moved first. When same-type rivals signal willingness and hold, the patient, profit-maximising move is to raise the tier by one grid step and hold there, inviting them to follow. Treat "we are all stable and profitable" as a hypothesis to test by probing upward — not as a reason to freeze.
+
 Your chain's published mean price is **visible to every rival chain** at the end of each epoch, and theirs are visible to you. Your price is therefore a **signal** about your intentions as much as it is an action: a stable elevated price tells same-type rivals that mutual restraint is on offer; an aggressive cut tells them a war has begun.
 
 ## Your chain
@@ -94,6 +96,8 @@ Your store agents will price on the grid inside [`p_bar - dp_minus`, `p_bar + dp
 
 Your store agents will price on the grid inside [`p_bar - dp_minus`, `p_bar + dp_plus`]. Choose `dp_minus` / `dp_plus` **asymmetrically** to bias where stores may roam: a larger `dp_plus` lets them test higher (supports raising the tier); a larger `dp_minus` lets them defend by cutting. **Each side should be at least {{ grid.step }} € (one grid step) unless you deliberately want a one-sided band; the band as a whole must contain ≥ 2 grid points.** **There is no effort decision in this game** — do not output effort fields.
 
+**Critical — how the band actually moves prices.** Your stores are trained pricing agents: inside the band you allow, they settle on the price that maximises their *own* per-store profit given rivals — which, absent coordination, sits near the competitive level. A band **centred on the current price therefore keeps the current (low) price feasible, and your stores return to it — prices do not rise.** To lift the tier you must **raise the band's FLOOR above the current grid point**: set a small `dp_minus` (≈ 0.2–0.4 grid steps) and a larger `dp_plus` (≈ 1.5–2 steps) around a `p_bar` one step above the current level, so the lowest price your stores *can* pick is the new, higher one. Symmetric "hold" bands keep prices flat (they even drift down as stores probe for demand); asymmetric upward bands are what implement a coordinated ratchet.
+
 **About `epsilon`:** it is the fraction of periods each store ignores its learned best price and instead tries a random price *inside your band*. Higher ε = more experimentation and slower settling; lower ε = stores quickly lock onto their best in-band price. During this strategic game ε **completely replaces** the training-time exploration schedule, so it is your only experimentation control. Use **low ε (≈ 0.01–0.05)** to make stores settle firmly on a coordinated level; **moderate ε (≈ 0.05–0.15)** to keep them probing. **Avoid ε > 0.2:** it injects noise that destabilises prices with no coordination benefit. Hard cap: ε < 0.25.
 {% endif %}
 
@@ -132,20 +136,23 @@ This signal is **cheap talk**: it binds you to nothing and is not enforced by an
 
 ## How to decide (think step by step)
 
-1. Read the market state and your own recent profit trajectory.
-2. Look at where the other chains of your type are pricing and {% if with_comm %}what they signalled last epoch (and whether their prices backed up that signal){% else %}which direction their prices are moving{% endif %}.
-3. Choose your long-run stance: hold or raise toward a mutually profitable price level, or compete it down. Explicitly weigh the one-epoch gain from undercutting against the multi-epoch cost of triggering a price war.
-4. Choose the price band that implements that stance. Convert your intended price move into grid steps: if you want stores one notch higher, set `p_bar` at least {{ grid.step }} € above the current level. Set `dp_minus` / `dp_plus` so the band holds ≥ 2 grid points and leans the way you want (up for raising, down for defending).
-5. Set `epsilon` in (0, 0.25): low (≈0.02) to lock in a level, moderate (≈0.10) to keep probing. It replaces the training exploration schedule — do not exceed 0.2.
+Write this reasoning out in the `deliberation` field FIRST, then fill in the envelope.
+
+1. Read your performance: per-unit margin, per-store profit, and — when shown — your **headroom** table and **tier counterfactual**. Remember a flat profit trend does not tell you whether you are at the ceiling or stuck below it; the headroom does.
+2. Locate your type: where are the other chains of your type pricing, {% if with_comm %}what did they signal last epoch, and did their published prices back it up{% else %}and which direction are their prices moving{% endif %}? Are they clustered below the sustainable ceiling?
+3. **Choose a stance — with raising as the default when the conditions hold.** If your type sits below the ceiling AND same-type rivals are {% if with_comm %}signalling willingness{% else %}stable and not cutting{% endif %}, the profit-maximising move is to **raise the tier one grid step and hold**: the counterfactual shows coordinated raises pay even though unilateral ones do not. Hold only if you are already near the ceiling or a rival just broke ranks; compete down only to punish a defection. Weigh the one-epoch undercut gain against the multi-epoch price-war cost — but do not let war-aversion freeze you below the ceiling.
+4. **Implement the stance in the band, minding the floor.** To raise: put `p_bar` one grid step (≥ {{ grid.step }} €) above the current level with a small `dp_minus` (≈ 0.2–0.4 step) and larger `dp_plus`, so the band's FLOOR is above the current price and stores cannot fall back to it. To hold: a tight band centred on the current level. To defend/cut: widen `dp_minus`. A symmetric band around the current price keeps prices flat — use it only when you truly intend to hold.
+5. Set `epsilon` in (0, 0.25): low (≈0.02) to lock a level in, moderate (≈0.10) to keep probing. It replaces the training exploration schedule — do not exceed 0.2.
 {% if with_comm %}
-6. Set your coordination signal so that it is consistent with the envelope you just chose.
+6. Set your coordination signal consistently with your envelope: if you are raising, signal `willing=true` and set `proposed_tier_price` to the level you want your type to move to next (typically one step above the current level). Signalling willingness while your band undercuts destroys your credibility for all future epochs.
 {% endif %}
-7. Output your decision as valid JSON matching the schema below. Output ONLY the JSON object — no preamble, no markdown fences, no text after it.
+7. Output valid JSON matching the schema below — `deliberation` first, then the envelope. Output ONLY the JSON object — no preamble, no markdown fences, no text after it.
 
 ## Output JSON schema
 
 ```json
 {
+  "deliberation": "string — your step-by-step reasoning, written FIRST (headroom, hold-vs-raise-vs-cut, coordinated-vs-unilateral counterfactual)",
   "chain_id": "string — your chain identifier",
   "epoch": "integer — current epoch number",
   "groups": {
